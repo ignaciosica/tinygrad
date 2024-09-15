@@ -107,7 +107,7 @@ class TestUOpsStats(unittest.TestCase):
 
   #MULACC should have the same stats as MUL + ADD
   def test_mulacc(self):
-    globl = UOp(UOps.DEFINE_GLOBAL, PtrDType(dtypes.int), tuple())
+    globl = UOp(UOps.DEFINE_GLOBAL, PtrDType(dtypes.int), tuple(), 0)
     o1 = UOp(UOps.CONST, dtypes.int, tuple(), 1)
     o2 = UOp(UOps.CONST, dtypes.int, tuple(), 2)
     u1 = UOp(UOps.LOAD, dtypes.int, (globl, o1))
@@ -117,7 +117,7 @@ class TestUOpsStats(unittest.TestCase):
     u5 = UOp(UOps.ALU, dtypes.int, (u4,u3), BinaryOps.ADD)
     uops = linearize_uop(u5.sink())
 
-    globl = UOp(UOps.DEFINE_GLOBAL, PtrDType(dtypes.int), tuple())
+    globl = UOp(UOps.DEFINE_GLOBAL, PtrDType(dtypes.int), tuple(), 0)
     o1 = UOp(UOps.CONST, dtypes.int, tuple(), 1)
     o2 = UOp(UOps.CONST, dtypes.int, tuple(), 2)
     u1 = UOp(UOps.LOAD, dtypes.int, (globl, o1))
