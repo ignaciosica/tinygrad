@@ -363,6 +363,27 @@ code_for_op_hip = { UnaryOps.SQRT: lambda x,dtype: f"__ocml_sqrt_f{ {dtypes.half
                     UnaryOps.LOG2: lambda x,dtype: f"__ocml_log2_f{ {dtypes.half:16, dtypes.double:64}.get(dtype, 32)}({x})",
                     UnaryOps.EXP2: lambda x,dtype: f"__ocml_exp2_f{ {dtypes.half:16, dtypes.double:64}.get(dtype, 32)}({x})"}
 
+  # unsigned short data;
+  # inline __attribute__((device)) hip_bfloat16(float val) {
+  #   union { float fp32; unsigned int u32; } u = {val};
+  #   if (~u.u32 & 0x7f800000) {
+  #     u.u32 += 0x7fff + ((u.u32 >> 16) & 1);
+  #   } else if (u.u32 & 0xffff) {
+  #     u.u32 |= 0x10000;
+  #   }
+  #   data = (u.u32 >> 16);
+  # }
+
+def cast_float_bf16(x: UOp) -> UOp:
+  u_u32 = x.bitcast(dtypes.uint32)
+
+  is_not_inf_nan = -u_u32 & 0x7f800000
+  has_mantissa = u_u32 & 0xffff
+
+  u_u32 = is_not_inf_nan.where(u_u32 + 0x7fff + ((u_u32 >> 16) & 1), has_mantissa.where((u_u32 | 0x10000), u_u32))
+
+  return (u_u32 >> 16).bitcast(dtypes.bfloat16)
+
 class AMDRenderer(CStyleLanguage):
   device = "AMD"
   shared_max = 65536
@@ -387,11 +408,23 @@ class AMDRenderer(CStyleLanguage):
             '__builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup");'
   float4 = "make_float4"
   type_map = {dtypes.bfloat16: "hip_bfloat16"}
+  string_rewrite = PatternMatcher([
+    (UPat(UOps.BITCAST, name="x"), lambda r,x: f"*reinterpret_cast<{r.render_dtype(x.dtype)}*>(&{r[x.src[0]]})")]) + base_rewrite
+
   extra_matcher = PatternMatcher([
-    (UPat(UOps.ALU, arg=TernaryOps.WHERE, src=(UPat.var("b"), UPat.var("x", dtype=dtypes.bfloat16), UPat.var("y", dtype=dtypes.bfloat16))),
-      lambda b,x,y: UOp(UOps.ALU, arg=TernaryOps.WHERE, dtype=dtypes.float, src=(b,x.cast(dtypes.float),y.cast(dtypes.float))).cast(dtypes.bfloat16)),
-    *[(UPat(UOps.ALU, dtype=dtypes.bfloat16, name="x"),
-      lambda x: (UOp(x.op, dtypes.float, tuple(vv.cast(dtypes.float) for vv in x.src), x.arg).cast(dtypes.bfloat16)))]]) + extra_pm
+    (UPat(UOps.ALU, dtypes.bfloat16, (UPat.var("b"), UPat.var("x", dtype=dtypes.bfloat16), UPat.var("y", dtype=dtypes.bfloat16)), TernaryOps.WHERE),
+      lambda b,x,y: UOp(UOps.ALU, arg=TernaryOps.WHERE, src=(b, x.cast(dtypes.float), y.cast(dtypes.float))).cast(dtypes.bfloat16)),
+    (UPat(UOps.ALU, dtypes.bfloat16, name="x"),
+      lambda x: UOp(x.op, dtypes.float, tuple(v.cast(dtypes.float) for v in x.src), x.arg).cast(dtypes.bfloat16)),
+    (UPat(UOps.ALU, dtypes.bool, name="x"),
+      lambda x: UOp(x.op, dtypes.bool, tuple(v.cast(dtypes.float) for v in x.src), x.arg) if any(v.dtype==dtypes.bfloat16 for v in x.src) else None),
+    # add float as middle case for bfloat16
+    (UPat(UOps.CAST, name="x", src=UPat.var("y", dtypes.bfloat16)),
+      lambda x,y: y.cast(dtypes.float).cast(x.dtype) if x.dtype != dtypes.float else None),
+    (UPat(UOps.CAST, dtypes.bfloat16, UPat.var("x")), lambda x: x.cast(dtypes.float).cast(dtypes.bfloat16) if x.dtype != dtypes.float else None),
+    # bfloat16 casting
+    (UPat(UOps.CAST, dtype=dtypes.float, src=UPat.var("x", dtype=dtypes.bfloat16)), lambda x: (x.bitcast(dtypes.uint)<<16).bitcast(dtypes.float)),
+    (UPat(UOps.CAST, dtype=dtypes.bfloat16, src=UPat.var("x", dtype=dtypes.float)), cast_float_bf16)]) + extra_pm
 
   def render_vector_prefix(self, dtype:DType) -> str:
     vec, scal = self.render_dtype(dtype), self.render_dtype(dtype.scalar())
@@ -402,22 +435,7 @@ class AMDRenderer(CStyleLanguage):
     prefix = ["#define INFINITY (__builtin_inff())","#define NAN (__builtin_nanf(\"\"))","typedef long unsigned int size_t;","#define half _Float16"]
 
     # TODO: add BF16 vec dts
-    if any(uop.dtype == dtypes.bfloat16 for uop in uops): prefix.append("""
-struct hip_bfloat16 {
-  unsigned short data;
-  inline __attribute__((device)) hip_bfloat16(float val) {
-    union { float fp32; unsigned int u32; } u = {val};
-    if (~u.u32 & 0x7f800000) { u.u32 += 0x7fff + ((u.u32 >> 16) & 1); } else if (u.u32 & 0xffff) { u.u32 |= 0x10000; }
-    data = (u.u32 >> 16);
-  }
-  inline __attribute__((device)) operator float() const {
-    unsigned int uval = data << 16;
-    return *reinterpret_cast<float*>(&uval);
-  }
-};
-static inline __attribute__((device)) bool operator<(hip_bfloat16 a, hip_bfloat16 b) { return ((float)a) < ((float)b); }
-static inline __attribute__((device)) bool operator==(hip_bfloat16 a, hip_bfloat16 b) { return ((float)a) == ((float)b); }
-""")
+    if any(uop.dtype == dtypes.bfloat16 for uop in uops): prefix.append("struct hip_bfloat16 { unsigned short data; };")
 
     for dtype in dedup(uop.dtype for uop in uops if uop.dtype.count > 1): prefix.append(self.render_vector_prefix(dtype))
 
