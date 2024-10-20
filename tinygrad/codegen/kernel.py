@@ -6,7 +6,7 @@ from typing import Optional, List, Tuple, cast, Dict, Final, DefaultDict
 from enum import Enum, auto
 
 from tinygrad.ops import UNSAFE_PAD_OPS, BUFFER_UOPS, BinaryOps, KernelInfo, UOp, UOps, PatternMatcher, print_uops, type_verify, resolve, \
-    graph_rewrite, track_rewrites, Variable, sint
+    graph_rewrite, track_rewrites, Variable, sint, UPat
 from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, Program
 from tinygrad.dtype import ImageDType
@@ -659,9 +659,10 @@ class Kernel:
               for i,(src,fix_st_fxn) in enumerate(zip(rsrc.src, [fix_st1, fix_st2])):
                 st_load = [self.sts[self.bufs.index(op)].real_strides() for op in rsrc.parents if op.op is UOps.LOAD]
                 local_shape = tuple(s if max(cast(int, x[i]) for x in st_load) != 0 else 1 for i,s in enumerate(ex_shape))
-                st_uop = ShapeTracker.from_shape(local_shape).expand(ex_shape).to_uop()
+                st = ShapeTracker.from_shape(local_shape).expand(ex_shape)
+                st_uop = (st if fix_st_fxn is None else fix_st_fxn(st)).to_uop()
                 membuf = UOp(UOps.DEFINE_LOCAL, tc.dtype_in.ptr(local=True), (), (f"temp{-(-1-i)}", st_uop.arg.real_size()))
-                local_store = fixup_ast(UOp(UOps.STORE, tc.dtype_in, (membuf, st_uop, src)), fix_st_fxn)
+                local_store = fixup_ast(UOp(UOps.STORE, tc.dtype_in, (membuf, st_uop, src)),)
                 srcs.append(UOp(UOps.LOAD, tc.dtype_in, (membuf, st_uop, local_store)))
             else:
               # for TC=2, we can't do the shapetracker fixup
@@ -670,11 +671,15 @@ class Kernel:
             ret = UOp(UOps.REDUCE_AXIS, tc.dtype_out, (srcs[0].alu(BinaryOps.MUL, srcs[1]).cast(tc.dtype_out),), (alu_op, wmma_arg[-1]))
           else:
             # real WMMA, use CONTRACT/EXPAND to get the vectorization right
+            src0_st = self.sts[self.bufs.index(rsrc.src[0])]
+            src0_st_uop = (src0_st if fix_st1 is None else fix_st1(src0_st)).to_uop().replace(src = (rsrc.src[0],))
+            src1_st = self.sts[self.bufs.index(rsrc.src[1])]
+            src1_st_uop = (src1_st if fix_st2 is None else fix_st2(src1_st)).to_uop().replace(src = (rsrc.src[1],))
             wmma_upcast_axes = wmma_arg[-2]
             wmma_sz = [prod(x[1] for x in l) for l in wmma_upcast_axes]
             wmma = UOp(UOps.WMMA, dtype=tc.dtype_out.vec(wmma_sz[2]), src=(
-              UOp(UOps.CONTRACT, dtype=rsrc.src[0].dtype.vec(wmma_sz[0]), src=(fixup_ast(rsrc.src[0], fix_st1),), arg=wmma_upcast_axes[0]),
-              UOp(UOps.CONTRACT, dtype=rsrc.src[1].dtype.vec(wmma_sz[1]), src=(fixup_ast(rsrc.src[1], fix_st2),), arg=wmma_upcast_axes[1]),
+              UOp(UOps.CONTRACT, dtype=rsrc.src[0].dtype.vec(wmma_sz[0]), src=(fixup_ast(src0_st_uop),), arg=wmma_upcast_axes[0]),
+              UOp(UOps.CONTRACT, dtype=rsrc.src[1].dtype.vec(wmma_sz[1]), src=(fixup_ast(src1_st_uop),), arg=wmma_upcast_axes[1]),
               UOp.const(tc.dtype_out.vec(wmma_sz[2]), 0.0)), arg=wmma_arg)
             ret = UOp(UOps.EXPAND, tc.dtype_out, (wmma,), arg=wmma_upcast_axes[2])
           new_reduce_axes = tuple(i for i in axis if i-self.first_upcast not in [ax for ax, _ in tc.reduce_axes])
@@ -701,7 +706,12 @@ class Kernel:
         arg = KernelInfo(self.local_dims, self.upcasted, self.dont_use_locals)
       return op.replace(src=tuple(fixup_ast(x, apply_to_st) for x in op.src), arg=arg)
     # NOTE: rewrite with an empty PatternMatcher to dedup UOps
-    return graph_rewrite(fixup_ast(self.ast), PatternMatcher([]))
+    fixed_ast = fixup_ast(self.ast)
+    return graph_rewrite(fixed_ast, PatternMatcher([
+      (UPat(UOps.VIEW, src=(UPat(UOps.VIEW, name="s0"),), name="s1"), lambda s0,s1: s0.replace(arg=s1.st)),
+      (UPat(UOps.VIEW, src=(UPat((UOps.ALU, UOps.CAST, UOps.BITCAST, UOps.ASSIGN, UOps.CONTIGUOUS, *BUFFER_UOPS), name="e"),), name="v"),
+        lambda e,v: e.replace(src=tuple(s.view(v.st) if s.has_st else s for s in e.src))),
+    ]))
 
   # **** this is the lowerer ****
 
