@@ -621,7 +621,8 @@ class Kernel:
         st = op.st_arg if op.src[0].op is UOps.DEFINE_LOCAL else self.sts[self.bufs.index(op)]
         st_uop = (st if apply_to_st is None else apply_to_st(st)).to_uop()
         if op.op is UOps.VALID: return op.replace(src=(st_uop,))
-        if op.op is UOps.STORE: return op.replace(src=(op.src[0], st_uop, fixup_ast(op.src[2], apply_to_st)))
+        # if op.op is UOps.STORE:
+        #   return op.replace(src=(op.src[0], st_uop, fixup_ast(op.src[2], apply_to_st)))
         return op.replace(src=(op.src[0], st_uop, *[fixup_ast(x, apply_to_st) for x in op.src[2:]]))
       if op.op is UOps.REDUCE_AXIS:
         reduce_idx = len(self.bufs) + self.reduceops.index(op)*2
@@ -646,6 +647,12 @@ class Kernel:
           tcd_dims =  tuple(sz for _, sz in tc.reduce_axes + tc.early_upcast_axes)
           fix_st1 = functools.partial(fix_st, warp_dims, tcd_dims, tc.expanded_shape, *tc.st1_pattern) if tc.st1_pattern else None
           fix_st2 = functools.partial(fix_st, warp_dims, tcd_dims, tc.expanded_shape, *tc.st2_pattern) if tc.st2_pattern else None
+
+          # (st if apply_to_st is None else apply_to_st(st)).to_uop()
+          # if fix_st1:
+          # if fix_st1:
+          #   st1 = fix_st1(self.sts[1]).to_uop()
+          #   src_1 = rsrc.src[0].replace(st1)
 
           assert apply_to_st is None, "double tensor core? not supported"
           wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, self.opts.device, prod(t[1] for t in tc.threads),
