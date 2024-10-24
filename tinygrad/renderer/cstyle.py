@@ -1,11 +1,21 @@
 from __future__ import annotations
 from typing import Dict, List, Optional, Tuple, Union, DefaultDict, Literal, Callable, cast
-import os, math
+import os, math, subprocess
 from collections import defaultdict, Counter
 from tinygrad.ops import UnaryOps, BinaryOps, TernaryOps, UOps, UOp, PatternMatcher, UPat
 from tinygrad.helpers import strip_parens, getenv, prod, dedup, AMX
 from tinygrad.dtype import ImageDType, dtypes, DType, PtrDType
 from tinygrad.renderer import Renderer, TensorCore
+
+def is_dtype_supported(dtype: DType, device: str):
+  if dtype == dtypes.bfloat16:
+    if device in ("CLANG", "METAL"):
+      # https://clang.llvm.org/docs/LanguageExtensions.html#half-precision-floating-point
+      check_clang_version = int(subprocess.check_output("clang --version | grep -o '[0-9]\\+' | head -1", shell=True).decode()) >= 14
+      check_clang_target = any(target in os.uname().machine.lower() for target in ["aarch64", "arm", "riscv", "x86"])
+      return check_clang_version and check_clang_target
+    return device not in ("AMD",)
+  return True
 
 def _render_index(r:CStyleLanguage, buf:UOp, idx:UOp, dtype:DType) -> str:
   sidx = strip_parens(r[idx]) if idx.arg == BinaryOps.ADD else r[idx]
@@ -69,6 +79,35 @@ extra_pm = PatternMatcher([
   (UPat(UOps.ALU, name="m", arg=BinaryOps.MAX), lambda m: (m.src[0] < m.src[1]).where(m.src[1], m.src[0])),
 ])
 
+bf16_pm = PatternMatcher([
+    # remove bfloat16 intermediate casting
+    (UPat(UOps.CAST, dtype=dtypes.float, src=(UPat(UOps.CAST, dtype=dtypes.bfloat16, src=(UPat.var('x', dtype=dtypes.float),)),)), lambda x: x),
+    (UPat(UOps.CAST, dtype=dtypes.float, src=(UPat(UOps.CAST, dtype=dtypes.bfloat16, src=(UPat.var('x'),)),)), lambda x: x.cast(dtypes.float)),
+    # cast bfloat16 alus to float
+    (UPat(UOps.ALU, arg=TernaryOps.WHERE, src=(UPat.var("b"), UPat.var("x", dtype=dtypes.bfloat16), UPat.var("y", dtype=dtypes.bfloat16))),
+      lambda b,x,y: UOp(UOps.ALU, arg=TernaryOps.WHERE, dtype=dtypes.float, src=(b,x.cast(dtypes.float),y.cast(dtypes.float))).cast(dtypes.bfloat16)),
+    (UPat(UOps.ALU, dtype=dtypes.bfloat16, name="x"),
+      lambda x: UOp(x.op, dtypes.float, tuple(vv.cast(dtypes.float) for vv in x.src), x.arg).cast(dtypes.bfloat16)),
+    (UPat(UOps.ALU, dtypes.bool, name="alu", src=(UPat.var("x", dtype=dtypes.bfloat16), UPat.var("y", dtype=dtypes.bfloat16))),
+      lambda alu,x,y: UOp(alu.op, dtypes.bool, (x.cast(dtypes.float), y.cast(dtypes.float)), alu.arg)),
+    # add float intermediate casting for bfloat16
+    (UPat(UOps.CAST, name="x", src=UPat.var("y", dtypes.bfloat16)),lambda x,y: y.cast(dtypes.float).cast(x.dtype) if x.dtype!=dtypes.float else None),
+    (UPat(UOps.CAST, dtypes.bfloat16, UPat.var("x")),lambda x: x.cast(dtypes.float).cast(dtypes.bfloat16) if x.dtype!=dtypes.float else None)])
+
+def cast_float_bf16(x: UOp) -> UOp:
+  x = x.bitcast(dtypes.uint)
+
+  is_not_inf_nan = -x & 0x7f800000
+  has_mantissa = x & 0xffff
+  x = is_not_inf_nan.where(x + ((x >> 16) & 1) + 0x7fff, has_mantissa.where((x | 0x10000), x))
+
+  return (x >> 16).cast(dtypes.ushort).bitcast(dtypes.bfloat16)
+
+bf16_uop_casting_matcher = PatternMatcher([
+  (UPat(UOps.CAST, dtype=dtypes.bfloat16, src=UPat.var("x", dtype=dtypes.float)), cast_float_bf16),
+  (UPat(UOps.CAST, dtype=dtypes.float, src=UPat.var("x", dtype=dtypes.bfloat16)),
+    lambda x: (x.bitcast(dtypes.ushort).cast(dtypes.uint)<<16).bitcast(dtypes.float))])
+
 class CStyleLanguage(Renderer):
   kernel_prefix: str = ""
   buffer_prefix: str = ""
@@ -107,6 +146,8 @@ class CStyleLanguage(Renderer):
     prg = ''.join([f"{self.kernel_prefix}void {self.get_kernel_modifier(uops)}{function_name}(",] +
     [', '.join([f'{t} {name}' for name,t in buftypes] + self.extra_args)] +
     [") {\n" + tmp] + ['\n'.join(kernel), "\n}"])
+    if not is_dtype_supported(dtypes.bfloat16, self.device) and any(uop.dtype == dtypes.bfloat16 for uop in uops):
+      prefix = (prefix or []) + [f"typedef unsigned short {self.render_dtype(dtypes.bfloat16)};"]
     return prg if prefix is None else "\n".join(prefix)+f"\n{prg}"
 
   def render_dtype(self, dt:DType, mutable=True) -> str:
@@ -180,6 +221,7 @@ class ClangRenderer(CStyleLanguage):
   type_map = {dtypes.bool:"_Bool", dtypes.half:"__fp16"}
   code_for_op = {**({k:v for k,v in CStyleLanguage.code_for_op.items() if k not in [UnaryOps.EXP2, UnaryOps.SIN, UnaryOps.LOG2]}),
                  UnaryOps.SQRT: lambda x,dtype: f"__builtin_sqrtl({x})" if dtype == dtypes.float64 else f"__builtin_sqrtf({x})"}
+  if not is_dtype_supported(dtypes.bfloat16, device): extra_matcher, uop_casting_matcher = extra_pm+bf16_pm, extra_pm+bf16_uop_casting_matcher
 
   if AMX:
     tensor_cores = [TensorCore(dims=(sz,sz,1), threads=[], reduce_axes=[], upcast_axes=([(1,sz)],[(0,sz)],[(1,sz),(0,sz)]), dtype_in=dt, dtype_out=dt)
@@ -278,6 +320,7 @@ class MetalRenderer(CStyleLanguage):
       lambda x: (UOp(x.op, dtypes.float, tuple(vv.cast(dtypes.float) for vv in x.src), x.arg).cast(dtypes.bfloat16)))
       for op in [UnaryOps.SQRT, UnaryOps.EXP2, UnaryOps.LOG2, UnaryOps.SIN]]
   ]) + extra_pm
+  if not is_dtype_supported(dtypes.bfloat16, device): extra_matcher, uop_casting_matcher = extra_pm+bf16_pm, extra_pm+bf16_uop_casting_matcher
 
   string_rewrite = PatternMatcher([
     (UPat(UOps.BITCAST, name="x"), lambda r,x: f"as_type<{r.render_dtype(x.dtype)}>({r[x.src[0]]})"),
@@ -363,15 +406,6 @@ code_for_op_hip = { UnaryOps.SQRT: lambda x,dtype: f"__ocml_sqrt_f{ {dtypes.half
                     UnaryOps.LOG2: lambda x,dtype: f"__ocml_log2_f{ {dtypes.half:16, dtypes.double:64}.get(dtype, 32)}({x})",
                     UnaryOps.EXP2: lambda x,dtype: f"__ocml_exp2_f{ {dtypes.half:16, dtypes.double:64}.get(dtype, 32)}({x})"}
 
-def cast_float_bf16(x: UOp) -> UOp:
-  x = x.bitcast(dtypes.uint)
-
-  is_not_inf_nan = -x & 0x7f800000
-  has_mantissa = x & 0xffff
-  x = is_not_inf_nan.where(x + ((x >> 16) & 1) + 0x7fff, has_mantissa.where((x | 0x10000), x))
-
-  return (x >> 16).cast(dtypes.ushort).bitcast(dtypes.bfloat16)
-
 class AMDRenderer(CStyleLanguage):
   device = "AMD"
   shared_max = 65536
@@ -396,21 +430,8 @@ class AMDRenderer(CStyleLanguage):
             '__builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup");'
   float4 = "make_float4"
   type_map = {dtypes.bfloat16: "hip_bfloat16"}
-  extra_matcher = PatternMatcher([
-    # cast bfloat16 alus to float
-    (UPat(UOps.ALU, arg=TernaryOps.WHERE, src=(UPat.var("b"), UPat.var("x", dtype=dtypes.bfloat16), UPat.var("y", dtype=dtypes.bfloat16))),
-      lambda b,x,y: UOp(UOps.ALU, arg=TernaryOps.WHERE, dtype=dtypes.float, src=(b,x.cast(dtypes.float),y.cast(dtypes.float))).cast(dtypes.bfloat16)),
-    (UPat(UOps.ALU, dtype=dtypes.bfloat16, name="x"),
-      lambda x: UOp(x.op, dtypes.float, tuple(vv.cast(dtypes.float) for vv in x.src), x.arg).cast(dtypes.bfloat16)),
-    (UPat(UOps.ALU, dtypes.bool, name="alu", src=(UPat.var("x", dtype=dtypes.bfloat16), UPat.var("y", dtype=dtypes.bfloat16))),
-      lambda alu,x,y: UOp(alu.op, dtypes.bool, (x.cast(dtypes.float), y.cast(dtypes.float)), alu.arg)),
-    # add float intermediate casting for bfloat16
-    (UPat(UOps.CAST, name="x", src=UPat.var("y", dtypes.bfloat16)),lambda x,y: y.cast(dtypes.float).cast(x.dtype) if x.dtype!=dtypes.float else None),
-    (UPat(UOps.CAST, dtypes.bfloat16, UPat.var("x")),lambda x: x.cast(dtypes.float).cast(dtypes.bfloat16) if x.dtype!=dtypes.float else None),
-    # bfloat16 casting
-    (UPat(UOps.CAST, dtype=dtypes.float, src=UPat.var("x", dtype=dtypes.bfloat16)),
-      lambda x: (x.bitcast(dtypes.ushort).cast(dtypes.uint)<<16).bitcast(dtypes.float)),
-    (UPat(UOps.CAST, dtype=dtypes.bfloat16, src=UPat.var("x", dtype=dtypes.float)), cast_float_bf16)]) + extra_pm
+  # TODO: add BF16 vec dts
+  extra_matcher, uop_casting_matcher = extra_pm+bf16_pm, extra_pm+bf16_uop_casting_matcher
 
   def render_vector_prefix(self, dtype:DType) -> str:
     vec, scal = self.render_dtype(dtype), self.render_dtype(dtype.scalar())
@@ -419,9 +440,6 @@ class AMDRenderer(CStyleLanguage):
 
   def render_kernel(self, function_name, kernel, bufs, uops, prefix=None) -> str:
     prefix = ["#define INFINITY (__builtin_inff())","#define NAN (__builtin_nanf(\"\"))","typedef long unsigned int size_t;","#define half _Float16"]
-
-    # TODO: add BF16 vec dts
-    if any(uop.dtype == dtypes.bfloat16 for uop in uops): prefix.append("struct hip_bfloat16 { unsigned short data; };")
 
     for dtype in dedup(uop.dtype for uop in uops if uop.dtype.count > 1): prefix.append(self.render_vector_prefix(dtype))
 
