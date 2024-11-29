@@ -248,9 +248,24 @@ class IntelRenderer(OpenCLRenderer):
 class MetalRenderer(CStyleLanguage):
   device = "METAL"
   shared_max = 32768
-  tensor_cores = [TensorCore(dims=(8,8,8),threads=[(0,2),(1,4),(0,2),(1,2)],expanded_shape=(2,2,2,2),upcast_axes=([(1,2)],[(1,2)],[(1,2)]),
-    st1_pattern=(((1,1),(0,1),(1,0),(0,3)),((0,0),(0,2),(1,3),(1,2))),st2_pattern=(((0,0),(1,1),(1,2),(0,2),(1,0)),((0,1),(0,3),(1,3))),
-    dtype_in=di,dtype_out=do,reduce_axes=[(0,8)]) for di,do in [(dtypes.float,dtypes.float),(dtypes.half,dtypes.float),(dtypes.half,dtypes.half),
+  tensor_cores = [TensorCore(
+    dims=(8,8,8),
+    threads=[(0,2),(1,2),(1,2),(0,2),(1,2)],
+    expanded_shape=(2,2,2,2),
+    upcast_axes=([(3,2)],[(3,2)],[(3,2)]),
+    st1_pattern=(((1,1),(0,1),(0,2),(1,2),(0,4)),((1,3),(0,0),(0,3),(1,0))),
+    st2_pattern=(((0,0),(1,0),(1,1),(0,3),(1,2)),((0,1),(0,2),(0,4),(1,3))),
+
+    # st1_pattern=(((0,0),(0,1),(0,2),(0,3),(0,4)),((1,0),(1,1),(1,2),(1,3))),
+    # st2_pattern=(((0,0),(0,1),(0,2),(0,3),(0,4)),((1,0),(1,1),(1,2),(1,3))),
+    
+    # st1_pattern=(((1,1),(0,1),(1,0),(0,3)),((0,0),(0,2),(1,3),(1,2))),
+    # st1_pattern=(((1,1),(0,1),(1,0),(0,3)),((0,0),(0,2),(1,3),(1,2))),
+    # st1_pattern=(((1,1),(0,1),(1,2),(0,3)),((1,0),(0,0),(0,2),(1,3))),
+    # st2_pattern=(((0,0),(1,1),(1,2),(0,2),(1,0)),((0,1),(0,3),(1,3))),
+    # st2_pattern=(((0,0),(0,1),(0,2),(0,3)),((0,1),(1,1),(1,2),(1,3))),
+    dtype_in=di,dtype_out=do,
+    reduce_axes=[(0,2),(1,2),(2,2)]) for di,do in [(dtypes.float,dtypes.float),(dtypes.half,dtypes.float),(dtypes.half,dtypes.half),
                                                                 (dtypes.bfloat16,dtypes.float),(dtypes.bfloat16,dtypes.bfloat16)]]
   def __init__(self): self.tensor_cores = MetalRenderer.tensor_cores if hasattr(os, 'uname') and os.uname().machine == "arm64" else []
 
@@ -300,8 +315,8 @@ class CUDARenderer(CStyleLanguage):
   # https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-16816-float
   tensor_cores = [TensorCore(dims=(8,16,16), threads=[(0,2),(0,2),(1,2),(1,2),(1,2)], dtype_in=di, dtype_out=do, expanded_shape=(2,2,2,2,2,2),
     st1_pattern=(((1,1),(1,0),(0,2),(0,3),(0,4)),((1,3),(1,5),(1,2),(0,0),(0,1),(1,4))),
-    st2_pattern=(((1,1),(1,0),(1,4),(0,0),(0,1)),((0,4),(0,2),(1,5),(0,3),(1,3),(1,2))), reduce_axes=[(0,8),(1,2)],
-    upcast_axes=([(0,8)],[(2,2),(3,2)],[(3,2),(2,2)])) for di, do in ([(dtypes.half,dtypes.float),(dtypes.bfloat16,dtypes.float)])]
+    st2_pattern=(((1,1),(1,0),(1,4),(0,0),(0,1)),((0,4),(0,2),(1,5),(0,3),(1,3),(1,2))), reduce_axes=[(0,2),(1,2),(2,2),(3,2),(4,2)],
+    upcast_axes=([(0,8)],[(5,2),(6,2)],[(6,2),(5,2)])) for di, do in ([(dtypes.half,dtypes.float),(dtypes.bfloat16,dtypes.float)])]
   def __init__(self, arch:str): self.tensor_cores, self.arch = CUDARenderer.tensor_cores if int(arch[3:]) >= 80 else [], arch
   def __reduce__(self): return self.__class__, (self.arch,)
 
@@ -362,8 +377,8 @@ class AMDRenderer(CStyleLanguage):
   device = "AMD"
   shared_max = 65536
   # https://gpuopen.com/learn/wmma_on_rdna3/
-  tensor_cores = [TensorCore(dims=(16,16,16), threads=[(0,8),(0,2),(1,2)], dtype_in=di, dtype_out=do, reduce_axes=[(0,16)], opts_seq=("LC","UP"),
-    upcast_axes = ([(0,16)],[(0,16)],[(1,8)]), st1_pattern=(((1,2),(0,2),(1,1),(0,1)),((1,0),(0,0))), expanded_shape=(16,2,4))
+  tensor_cores = [TensorCore(dims=(16,16,16), threads=[(0,8),(1,4)], dtype_in=di, dtype_out=do, reduce_axes=[(0,16)], opts_seq=("LC","UP"),
+    upcast_axes = ([(0,16)],[(0,16)],[(1,8)]), st1_pattern=(((1,2),(1,1),(0,1)),((1,0),(0,0))), expanded_shape=(16,2,4))
     for (di, do) in [(dtypes.half, dtypes.float), (dtypes.half, dtypes.half)]]
 
   # language options

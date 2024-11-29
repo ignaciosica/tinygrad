@@ -634,7 +634,7 @@ class Kernel:
             new_shape = st.shape[:tcd] + tc.expanded_shape + st.shape[tcd+len(tcd_dims):]  # expand the tcd
             permaxis = list(range(wd)) + [y + (wd if x == 0 else tcd) for x,y in wd_pattern]  + list(range(wd+len(warp_dims),tcd)) + \
                                          [y + (wd if x == 0 else tcd) for x,y in tcd_pattern] + list(range(tcd+len(tc.expanded_shape),len(new_shape)))
-            return st.reshape(new_shape).permute(tuple(permaxis)).reshape(st.shape).simplify()
+            return st.permute(tuple(permaxis))
 
           srcs = list((ret.src[0] if ret.src[0].op is not Ops.CAST else ret.src[0].src[0]).src)
           for i, tc_pattern in enumerate([tc.st1_pattern, tc.st2_pattern]):
@@ -649,7 +649,7 @@ class Kernel:
               srcs[i] = UOp(Ops.LOAD, tc.dtype_in, (local_buffer, st.to_uop(), local_store))
 
           tc_reduce_axes = tuple(self.first_upcast + ax for ax, _ in tc.reduce_axes)
-          if self.use_tensor_cores == 1: # real WMMA, use CONTRACT/EXPAND to get the vectorization right
+          if self.use_tensor_cores == 1: # real WMMA
             upcast_axes = tuple(tuple((self.first_upcast + ax, sz) for ax, sz in up) for up in tc.upcast_axes)
             wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, self.opts.device, prod(sz for _, sz in tc.threads), upcast_axes, tc_reduce_axes)
             wmma_sz = [prod(x[1] for x in l) for l in upcast_axes]
@@ -658,6 +658,7 @@ class Kernel:
               UOp(Ops.CONTRACT, dtype=srcs[1].dtype.vec(wmma_sz[1]), src=(srcs[1],), arg=upcast_axes[1]),
               UOp.const(tc.dtype_out.vec(wmma_sz[2]), 0.0)), arg=wmma_arg)
             tc_uop = UOp(Ops.EXPAND, tc.dtype_out, (wmma,), arg=upcast_axes[2])
+            # tc_uop = UOp(Ops.WMMA, tc.dtype_out.vec(wmma_sz[2]), (srcs[0], srcs[1], UOp.const(tc.dtype_out.vec(wmma_sz[2]), 0.0)), wmma_arg)
 
           else: # for TC=3 MUL/SUM instead of WMMA
             tc_uop = UOp(Ops.REDUCE_AXIS, tc.dtype_out, ((srcs[0] * srcs[1]).cast(tc.dtype_out),), (Ops.ADD, tc_reduce_axes))
