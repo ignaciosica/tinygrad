@@ -639,15 +639,13 @@ class Kernel:
 
           srcs = list((ret.src[0] if ret.src[0].op is not Ops.CAST else ret.src[0].src[0]).src)
           for i, tc_pattern in enumerate([tc.st1_pattern, tc.st2_pattern]):
-            if tc_pattern: srcs[i] = srcs[i].view(fix_st(srcs[i].st_arg if srcs[i].op is Ops.LOAD else srcs[i].src[0].st_arg, *tc_pattern))
-
             if self.use_tensor_cores == 3:  # for TC=3, emulate the warp addressing with locals
               local_shape = tuple(1 if i >= self.first_reduce and i < self.first_upcast else s for i, s in enumerate(self.full_shape))
-              st = store_st = ShapeTracker.from_shape(local_shape)
-              local_buffer = UOp(Ops.DEFINE_LOCAL, tc.dtype_in.ptr(local=True), (), (f"temp{i + 1}", st.real_size()))
-              if tc_pattern: store_st = fix_st(store_st, *tc_pattern)
-              local_store = UOp.store(local_buffer, store_st.to_uop(), srcs[i])
-              srcs[i] = UOp(Ops.LOAD, tc.dtype_in, (local_buffer, st.to_uop(), local_store))
+              st_uop = ShapeTracker.from_shape(local_shape).to_uop()
+              local_buffer = UOp(Ops.DEFINE_LOCAL, tc.dtype_in.ptr(local=True), (), (f"temp{i + 1}", st_uop.arg.real_size()))
+              srcs[i] = UOp(Ops.LOAD, tc.dtype_in, (local_buffer, st_uop, UOp.store(local_buffer, st_uop, srcs[i])))
+            elif tc_pattern:  # for TC=1, swizzle the src for the correct thread pattern
+              srcs[i] = srcs[i].view(fix_st(srcs[i].st_arg if srcs[i].op is Ops.LOAD else srcs[i].src[0].st_arg, *tc_pattern))
 
           tc_reduce_axes = tuple(self.first_upcast + ax for ax, _ in tc.reduce_axes)
           if self.use_tensor_cores == 1: # real WMMA, use CONTRACT/EXPAND to get the vectorization right
