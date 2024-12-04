@@ -19,7 +19,6 @@ class TensorCore: # D = A * B + C, A is (M x K), B is (K x N), C and D are (M x 
   st1_pattern: Optional[Tuple[Tuple[Tuple[int,int], ...], Tuple[Tuple[int,int], ...]]] = None # pattern to fix shapetracker for A
   st2_pattern: Optional[Tuple[Tuple[Tuple[int,int], ...], Tuple[Tuple[int,int], ...]]] = None # pattern to fix shapetracker for B
   expanded_shape: Optional[Tuple[int, ...]] = None
-  opts_seq: Tuple[str,str] = ("UP","LC") # upcast input, local the thread pattern
   def __str__(self): return "_".join(["WMMA"] + list(map(str, self.dims)) + [self.dtype_in.name, self.dtype_out.name])
 
 @dataclass
