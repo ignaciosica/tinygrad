@@ -226,8 +226,9 @@ class OpenCLRenderer(CStyleLanguage):
 
 class IntelRenderer(OpenCLRenderer):
   device, suffix, kernel_prefix = "GPU", "INTEL", "__attribute__((intel_reqd_sub_group_size(8)))\n" + "__kernel "
-  tensor_cores = [TensorCore(dims=(8,8,16),threads=[(0,8)],dtype_in=di,dtype_out=do,reduce_axes=[(0,16)],upcast_axes=([(0,16)],[(0,16)],[(1,8)]),
-    st1_pattern=(((1,0),),((1,2),(1,1),(0,0))),expanded_shape=(8,2,8)) for di,do in [(dtypes.half,dtypes.float),(dtypes.bfloat16,dtypes.float)]]
+  tensor_cores = [TensorCore(dims=(8,8,16),threads=[(0,2),(0,2),(0,2)],reduce_axes=[(0,2),(1,2),(2,2),(3,2)],upcast_axes=([(6,16)],[(6,16)],[(7,8)]),
+                             st1_pattern=(((1,0),(1,1),(1,2)),((1,6),(1,3),(1,4),(1,5),(0,0),(0,1),(0,2))),dtype_in=di,dtype_out=do)
+                             for di,do in [(dtypes.half,dtypes.float),(dtypes.bfloat16,dtypes.float)]]
 
   string_rewrite = PatternMatcher([
     (UPat(Ops.CAST, dtype=dtypes.bfloat16, src=(UPat.var('x', dtype=dtypes.float))), lambda ctx,x: f"intel_convert_bfloat16_as_ushort({ctx[x[0]]})"),
@@ -245,10 +246,12 @@ class IntelRenderer(OpenCLRenderer):
 class MetalRenderer(CStyleLanguage):
   device = "METAL"
   shared_max = 32768
-  tensor_cores = [TensorCore(dims=(8,8,8),threads=[(0,2),(1,4),(0,2),(1,2)],expanded_shape=(2,2,2,2),upcast_axes=([(1,2)],[(1,2)],[(1,2)]),
-    st1_pattern=(((1,1),(0,1),(1,0),(0,3)),((0,0),(0,2),(1,3),(1,2))),st2_pattern=(((0,0),(1,1),(1,2),(0,2),(1,0)),((0,1),(0,3),(1,3))),
-    dtype_in=di,dtype_out=do,reduce_axes=[(0,8)]) for di,do in [(dtypes.float,dtypes.float),(dtypes.half,dtypes.float),(dtypes.half,dtypes.half),
-                                                                (dtypes.bfloat16,dtypes.float),(dtypes.bfloat16,dtypes.bfloat16)]]
+  tensor_cores = [
+    TensorCore(dims=(8, 8, 8), dtype_in=di, dtype_out=do, expanded_shape=(2,2,2,2), threads=[(0, 2), (1, 2), (1, 2), (0, 2), (1, 2)],
+      st1_pattern=(((1, 1), (0, 1), (0, 2), (1, 2), (0, 4)), ((0, 0), (0, 3), (1, 3), (1, 0))), upcast_axes=([(3, 2)], [(3, 2)], [(3, 2)]),
+      st2_pattern=(((0, 0), (1, 0), (1, 1), (0, 3), (1, 2)), ((0, 1), (0, 2), (0, 4), (1, 3))), reduce_axes=[(0, 2), (1, 2), (2, 2)])
+    for di, do in [(dtypes.float, dtypes.float), (dtypes.half, dtypes.float), (dtypes.half, dtypes.half),
+                   (dtypes.bfloat16, dtypes.float), (dtypes.bfloat16, dtypes.bfloat16)]]
   def __init__(self): self.tensor_cores = MetalRenderer.tensor_cores if hasattr(os, 'uname') and os.uname().machine == "arm64" else []
 
   # language options
@@ -295,11 +298,32 @@ class CUDARenderer(CStyleLanguage):
   local_max = (1024, 1024, 64)
   shared_max = 49152
   # https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-fragment-mma-16816-float
-  tensor_cores = [TensorCore(dims=(8,16,16), threads=[(0,2),(0,2),(1,2),(1,2),(1,2)], dtype_in=di, dtype_out=do, expanded_shape=(2,2,2,2,2,2),
-    st1_pattern=(((1,1),(1,0),(0,2),(0,3),(0,4)),((1,3),(1,5),(1,2),(0,0),(0,1),(1,4))),
-    st2_pattern=(((1,1),(1,0),(1,4),(0,0),(0,1)),((0,4),(0,2),(1,5),(0,3),(1,3),(1,2))), reduce_axes=[(0,8),(1,2)],
-    upcast_axes=([(0,8)],[(2,2),(3,2)],[(3,2),(2,2)])) for di, do in ([(dtypes.half,dtypes.float),(dtypes.bfloat16,dtypes.float)])]
-  def __init__(self, arch:str): self.tensor_cores, self.arch = CUDARenderer.tensor_cores if int(arch[3:]) >= 80 else [], arch
+  # pat=(((0,0),(0,1),(0,2),(0,3),(0,4)),((1,0),(1,1),(1,2),(1,3),(1,4),(1,5))),
+  tensor_cores_81616 = [TensorCore(dims=(8,16,16),st1_pattern=(((1,1),(1,2),(1,5),(0,2),(0,3)),((1,0),(0,4),(1,3),(0,0),(0,1),(1,4))),
+      threads=[(0,2),(0,2),(1,2),(1,2),(1,2)],st2_pattern=(((1,1),(1,2),(1,4),(0,0),(0,1)),((0,2),(0,3),(0,4),(1,0),(1,3),(1,5))),
+      reduce_axes=[(0,2),(1,2),(2,2),(3,2)],st3_pattern=(((0,0),(0,1),(1,5),(0,2),(0,3)),((1,0),(1,1),(1,2),(1,3),(1,4),(0,4))),
+      upcast_axes=([(2,2),(1,2),(0,2)],[(4,2),(3,2)],[(5,2),(4,2)]),dtype_in=di,dtype_out=do)
+    for di,do in ([(dtypes.half,dtypes.float),(dtypes.bfloat16,dtypes.float)])]
+  tensor_cores_tf32 = [TensorCore(dims=(8,16,8),st1_pattern=(((1,0),(1,1),(1,4),(0,2),(0,3)),((0,0),(1,3),(0,1),(1,2),(0,4))),
+      threads=[(0,2),(0,2),(1,2),(1,2),(1,2)],st2_pattern=(((1,0),(1,1),(1,3),(0,0),(0,1)),((0,2),(0,3),(0,4),(1,4),(1,2))),
+      upcast_axes=[[(3,2),(4,2)],[(4,2)],[(4,2),(3,2)]],st3_pattern=(((0,0),(0,1),(1,4),(0,2),(0,3)),((1,0),(1,1),(1,2),(1,3),(0,4))),
+      reduce_axes=[(0,2),(1,2),(2,2)],dtype_in=dtypes.float,dtype_out=dtypes.float)]
+  # slower than non tc alternative?
+  tensor_cores_f64 = [TensorCore(dims=(8,8,4),threads=[(0,2),(0,2),(1,2),(1,2),(1,2)],
+      st1_pattern=(((1,0),(1,1),(0,2),(0,3),(0,4)),((0,0),(0,1),(1,2))),reduce_axes=[(0,2),(1,2)],upcast_axes=[[(0,1)],[(0,1)],[(2,2)]],
+      st2_pattern=(((1,0),(1,1),(1,2),(0,0),(0,1)),((0,2),(0,3),(0,4))),dtype_in=dtypes.float64,dtype_out=dtypes.float64)]
+  # tensor_cores_s8 = [
+  #   TensorCore(
+  #     dims=(8, 16, 32),
+  #     threads=[(0, 2), (0, 2), (1, 2), (1, 2), (1, 2)],
+  #     reduce_axes=[(0, 2), (1, 2), (2, 2), (3, 2), (4, 2)],
+  #     upcast_axes=[[(5,8)],[(5,4)],[(5,8)]],
+  #     dtype_in=dtypes.int8,
+  #     dtype_out=dtypes.int32,
+  #   )
+  # ]
+  tensor_cores_80 = tensor_cores_81616 + tensor_cores_tf32 + tensor_cores_f64 + tensor_cores_s8
+  def __init__(self, arch:str): self.tensor_cores, self.arch = CUDARenderer.tensor_cores_80 if int(arch[3:]) >= 80 else [], arch
   def __reduce__(self): return self.__class__, (self.arch,)
 
   # language options
@@ -332,21 +356,22 @@ class CUDARenderer(CStyleLanguage):
     if any(dt.scalar() == dtypes.bfloat16 for dt in used_dtypes): prefix.append("#include <cuda_bf16.h>")
     prefix += [self.render_vector_prefix(dt) for dt in used_dtypes if dt.count in (4,8) and dt.scalar() in {dtypes.half, dtypes.bfloat16}]
 
-    dt_map = { dtypes.half: "f16", dtypes.bfloat16: "bf16" }
+    dt_map_in = { dtypes.half: "f16", dtypes.bfloat16: "bf16", dtypes.float: "tf32", dtypes.double: "f64", }
+    dt_map_out = { dtypes.half: "f16", dtypes.float: "f32", dtypes.double: "f64" }
     for name, (N, M, K), dtype_in, dtype_out, _, _, upcast_axes, _ in dedup([uop.arg for uop in uops if uop.op is Ops.WMMA]):
       upcast_sizes = [prod(size for _, size in upcast) for upcast in upcast_axes]
       wmma_dtypes = [self.render_dtype(dtype.vec(size)) for dtype, size in zip([dtype_in, dtype_in, dtype_out], upcast_sizes)]
-      n_operands = [size*dtype.itemsize//4 for dtype, size in zip([dtype_in, dtype_in, dtype_out], upcast_sizes)] # 4 => CUDA reg size in bytes
+      n_operands = [size * dtype.itemsize // dtype_out.itemsize for dtype, size in zip([dtype_in, dtype_in, dtype_out], upcast_sizes)]
       operands = [f"%{i}" for i in range(sum(n_operands))]
 
       # mma operands => {c}, {a}, {b}, {c}
       prefix.append(f"""__device__ {wmma_dtypes[2]} __{name}({wmma_dtypes[0]} a, {wmma_dtypes[1]} b, {wmma_dtypes[2]} c){{
-  int *a_pk = (int *)(&a), *b_pk = (int *)(&b);\n  asm("mma.sync.aligned.m{M}n{N}k{K}.row.col.f32.{dt_map[dtype_in]}.{dt_map[dtype_in]}.f32"
+  double *a_pk = (double *)(&a), *b_pk = (double *)(&b);\n  asm("mma.sync.aligned.m{M}n{N}k{K}.row.col.{dt_map_out[dtype_out]}.{dt_map_in[dtype_in]}.{dt_map_in[dtype_in]}.{dt_map_out[dtype_out]}"
       "{{{", ".join(operands[:n_operands[2]])}}}, {{{", ".join(operands[n_operands[2]:n_operands[2]+n_operands[0]])}}},"
       "{{{", ".join(operands[-n_operands[1]:])}}}, {{{", ".join(operands[:n_operands[2]])}}};"
-    : {", ".join([f'"+f"(c.{_nms[i]})' for i in range(n_operands[2])])}
-    : {", ".join([f'"r"(a_pk[{i}])' for i in range(n_operands[0])])}, {", ".join([f'"r"(b_pk[{i}])' for i in range(n_operands[1])])});
-  return c;\n}}""")
+    : {", ".join([f'"+d"(c.{_nms[i]})' for i in range(n_operands[2])])}
+    : {", ".join([f'"d"(a_pk[{i}])' for i in range(n_operands[0])])}, {", ".join([f'"d"(b_pk[{i}])' for i in range(n_operands[1])])});
+  return c;\n}}""") # noqa:E501
 
     return super().render_kernel(function_name, kernel, bufs, uops, prefix=prefix)
 
@@ -359,8 +384,11 @@ class AMDRenderer(CStyleLanguage):
   device = "AMD"
   shared_max = 65536
   # https://gpuopen.com/learn/wmma_on_rdna3/
-  tensor_cores = [TensorCore(dims=(16,16,16), threads=[(0,8),(0,2),(1,2)], dtype_in=di, dtype_out=do, reduce_axes=[(0,16)], opts_seq=("LC","UP"),
-    upcast_axes = ([(0,16)],[(0,16)],[(1,8)]), st1_pattern=(((1,2),(0,2),(1,1),(0,1)),((1,0),(0,0))), expanded_shape=(16,2,4))
+  # pat=(((0,0),(0,1),(0,2),(0,3),(0,4)),((1,0),(1,1),(1,2),(1,3),(1,4),(1,5)))
+  tensor_cores = [TensorCore(dims=(16, 16, 16), upcast_axes=([(3,2),(2,2),(1,2),(0,2)],[(3,2),(2,2),(1,2),(0,2)],[(6,2),(5,2),(4,2)]),
+      st1_pattern=(((0,3),(0,4),(1,5),(1,6),(0,1)),((1,0),(1,1),(1,2),(1,3),(1,4),(0,2),(0,0))), reduce_axes=[(0, 2),(1, 2),(2, 2),(3, 2)],
+      st2_pattern=(((0,0),(0,1),(0,2),(1,4),(0,4)),((1,0),(1,1),(1,2),(1,3),(0,3),(1,5),(1,6))), threads=[(0, 2),(0, 2),(0, 2),(1, 2),(1, 2)],
+      st3_pattern=(((0,0),(0,1),(0,2),(1,4),(0,3)),((1,0),(1,1),(1,2),(1,3),(0,4),(1,5),(1,6))), opts_seq=("LC","UP"), dtype_in=di, dtype_out=do)
     for (di, do) in [(dtypes.half, dtypes.float), (dtypes.half, dtypes.half)]]
 
   # language options
