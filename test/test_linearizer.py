@@ -27,8 +27,9 @@ def helper_realized_ast(r:Union[Tensor, List[Tensor]]) -> Tuple[UOp, List[Buffer
   return s[-1].ast, bufs
 
 def helper_tc_allclose(n:int, m:int, k:int, dtype_in:DType, dtype_out:DType, axis:int=0, tc_opt:int=0):
-  a, b = Tensor.rand(m, k, dtype=dtype_in), Tensor.rand(k, n, dtype=dtype_in)
-  np_a, np_b = a.numpy(), b.numpy()
+  if dtype_in in dtypes.ints: a, b = Tensor.randint((m, k), dtype=dtype_in), Tensor.randint((k, n), dtype=dtype_in)
+  else: a, b = Tensor.rand(m, k, dtype=dtype_in), Tensor.rand(k, n, dtype=dtype_in)
+  np_a, np_b = a.numpy().astype(np.float32), b.numpy().astype(np.float32)
   r = a.matmul(b, acc_dtype=dtype_out)
   sched = create_schedule([r.lazydata])
   realized_ast = sched[-1].ast
@@ -41,12 +42,13 @@ def helper_tc_allclose(n:int, m:int, k:int, dtype_in:DType, dtype_out:DType, axi
   assert len([x for x in k.applied_opts if x.op is OptOps.TC]) == 1, "tensor core opt not included"
   np_c = np_a @ np_b
   if dtype_out == dtypes.half: tc_atol, tc_rtol = 1e-2, 1e-3
-  elif dtype_out == dtypes.bfloat16: tc_atol, tc_rtol = 1e-2, 1e-2
+  elif dtype_in == dtypes.bfloat16: tc_atol, tc_rtol = 1e-2, 1e-2
   else: tc_atol, tc_rtol = 5e-3, 1e-4
   np.testing.assert_allclose(np_c, out, atol=tc_atol, rtol=tc_rtol)
 
 def helper_tc_ensure_uops_and_opts_count(n: int, m:int, k:int, dtype_in:DType, dtype_out:DType, axis:int=0, tc_opt:int=0, ensure_triggered:bool=True):
-  a, b = Tensor.rand(m, k, dtype=dtype_in), Tensor.rand(k, n, dtype=dtype_in)
+  if dtype_in in dtypes.ints: a, b = Tensor.randint((m, k), dtype=dtype_in), Tensor.randint((k, n), dtype=dtype_in)
+  else: a, b = Tensor.rand(m, k, dtype=dtype_in), Tensor.rand(k, n, dtype=dtype_in)
   r = a.matmul(b, acc_dtype=dtype_out)
   sched = create_schedule([r.lazydata])
   realized_ast = sched[-1].ast
@@ -1050,6 +1052,7 @@ class TestLinearizer(unittest.TestCase):
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   def test_tensor_cores_padded(self):
     for tc in Device[Device.DEFAULT].renderer.tensor_cores:
+      print(tc.dtype_in, "----", tc.dtype_out)
       if (getenv("EMULATE_CUDA") or getenv("EMULATE_METAL")) and (tc.dtype_in == dtypes.bfloat16 or tc.dtype_out == dtypes.bfloat16): continue
       if CI and Device.DEFAULT == "METAL" and (tc.dtype_in == dtypes.bfloat16 or tc.dtype_out == dtypes.bfloat16): continue
       pad = 1
@@ -1081,8 +1084,12 @@ class TestLinearizer(unittest.TestCase):
       # this will be a M=G16, N=G32, M=G16, M=G16, K=R16, K=R16, K=R16 with 9 choices of TC MNK axes
       golden_result = None
       for axis in range(9):
-        a = Tensor.rand(16, 16, 29, 29, dtype=tc.dtype_in).realize()
-        b = Tensor.rand(32, 16, 16, 16, dtype=tc.dtype_in).realize()
+        if tc.dtype_in in dtypes.ints:
+          a = Tensor.randint((16, 16, 29, 29), dtype=tc.dtype_in).realize()
+          b = Tensor.randint((32, 16, 16, 16), dtype=tc.dtype_in).realize()
+        else:
+          a = Tensor.rand(16, 16, 29, 29, dtype=tc.dtype_in).realize()
+          b = Tensor.rand(32, 16, 16, 16, dtype=tc.dtype_in).realize()
         c = a.conv2d(b, padding=1, acc_dtype=tc.dtype_out)
         realized_ast, real_bufs = helper_realized_ast(c)
 
