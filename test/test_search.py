@@ -107,7 +107,7 @@ class TestBEAM(unittest.TestCase):
     len([tc for tc in Device[Device.DEFAULT].renderer.tensor_cores if tc.dtype_in == dtypes.half and tc.dtype_out == dtypes.float]) < 2,
     "only one tc shape available to search over",
   )
-  def test_search_for_tc_shape(self):
+  def test_search_over_shape(self):
     from test.test_linearizer import helper_realized_ast
     a = Tensor.rand(16, 16, dtype=dtypes.half)
     b = Tensor.rand(16, 16, dtype=dtypes.half)
