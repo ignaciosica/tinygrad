@@ -363,8 +363,8 @@ class Kernel:
 
     if opt.op is OptOps.TC:
       check(len(self.applied_opts) == 0, "tensor core opts must be first") # TODO: things like PADTO might be fine
-      check(opt.axis is not None and opt.amt is not None and opt.arg is not None, "tensor core opts must have an axis and amt and arg")
-      check(opt.amt < len(self.opts.tensor_cores), "tens")
+      check(opt.axis is not None and opt.arg is not None, "tensor core opts must have an axis and arg")
+      check(opt.amt is not None and opt.amt < len(self.opts.tensor_cores), "tensor core must have valid amt")
       check((use_tensor_cores:=USE_TC.value) == 2 or len(self.opts.tensor_cores) > 0, "must have tensor cores or TC=2")
       check(self._apply_tc_opt(use_tensor_cores, cast(int, opt.axis), cast(int, opt.amt), cast(int, opt.arg)), "no tensor core available")
       self.applied_opts.append(opt)
