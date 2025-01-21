@@ -11,7 +11,7 @@ from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec
 from tinygrad.dtype import ImageDType
 from tinygrad.helpers import all_same, colored, ansilen, dedup, getenv, prod, round_up, all_int, to_function_name, diskcache_put, unwrap, ContextVar
-from tinygrad.helpers import DEBUG, TC_OPT, TC_PREF, USE_TC, AMX, CAPTURE_PROCESS_REPLAY
+from tinygrad.helpers import DEBUG, TC_OPT, TC_SELECT, USE_TC, AMX, CAPTURE_PROCESS_REPLAY
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import strides_for_shape
 from tinygrad.codegen.linearize import linearize_uop
@@ -292,11 +292,9 @@ class Kernel:
     if DEBUG >= 3: print("TENSOR CORES", axis_buf0, axis_buf1, tc)
     return TensorCoreOptions(axes=(s0, s1, s2), axes_exist=(True, True), axis_pads=axis_pads)
 
-  def _apply_tc_opt(self, use_tensor_cores:int, axis:int, preference:int, opt_level:int) -> bool:
+  def _apply_tc_opt(self, use_tensor_cores:int, axis:int, select:int, opt_level:int) -> bool:
     if use_tensor_cores and self.reduceop is not None and self.reduceop.arg[0] is Ops.ADD:
-      if preference >= len(self.opts.tensor_cores): return False
-      tensor_cores = self.opts.tensor_cores if preference == -1 else [self.opts.tensor_cores[preference]]
-      for tc in tensor_cores:
+      for tc in [self.opts.tensor_cores[select]] if select >= 0 else self.opts.tensor_cores:
         tensor_core_opts = [self._create_tc_opts(reduceop, tc, axis, opt_level) for reduceop in self.reduceops]
         # can only fuse reduces with the same tc options
         assert all_same(tensor_core_opts)
@@ -316,7 +314,7 @@ class Kernel:
     return False
 
   def apply_tensor_cores(
-    self, use_tensor_cores=1, extra_opts: Optional[list[Opt]] = None, axis: int = 0, tc_pref: Optional[int] = None, tc_opt: Optional[int] = None
+    self, use_tensor_cores=1, extra_opts: Optional[list[Opt]] = None, axis: int = 0, tc_select: Optional[int] = None, tc_opt: Optional[int] = None
   ) -> bool:
     """ Attempts to apply a tensor core optimization to the kernel. If one exists and applies properly, return true, otherwise return false.
     Tensor cores are optimized instructions that matrix multiply-accumulate across a wave of threads: D(M, N) = A(M, K) * B(K, N) + C(M, N).
@@ -330,16 +328,19 @@ class Kernel:
     tc_pref -- controls which tensor core gets preference
       -1: default, iterates over all tc and uses the first one that matches requirements
       [0, n]: enables only n'th tc, useful for search
+    tc_select -- specifies which tensor core(s) to use for optimization (default -1)
+      -1: iterates through all available tensor cores in order and uses the first one that matches the requirements (shape and dtypes)
+      [0, N]: uses only the n'th tensor core available; useful for search
     tc_opt -- controls which kinds of kernels may be eligible for tensor cores application (default 2 during BEAM, 0 otherwise)
       0: applies to only kernels with a single reduce axis and direct UOps.LOAD into Ops.MUL
       1: allows kernels with multiple reduce axes and also multiplication of UOps.CAST'd buffers
       2: allows kernels with M, N, K axes that are not multiples of the tensor core dimensions by applying padding those axes as needed
     """
     if tc_opt is None: tc_opt = TC_OPT.value
-    if tc_pref is None: tc_pref = TC_PREF.value
+    if tc_select is None: tc_select = TC_SELECT.value
     if not self.opts.tensor_cores and use_tensor_cores != 2: return False
     try: # check TC first and apply hand-coded opts if successful
-      self.apply_opt(Opt(OptOps.TC, axis, tc_pref, tc_opt))
+      self.apply_opt(Opt(OptOps.TC, axis, tc_select, tc_opt))
 
       if (tc_opts:=self.tensor_core_opts) is not None:
         if extra_opts is not None:
@@ -363,6 +364,7 @@ class Kernel:
     if opt.op is OptOps.TC:
       check(len(self.applied_opts) == 0, "tensor core opts must be first") # TODO: things like PADTO might be fine
       check(opt.axis is not None and opt.amt is not None and opt.arg is not None, "tensor core opts must have an axis and amt and arg")
+      check(opt.amt < len(self.opts.tensor_cores), "tens")
       check((use_tensor_cores:=USE_TC.value) == 2 or len(self.opts.tensor_cores) > 0, "must have tensor cores or TC=2")
       check(self._apply_tc_opt(use_tensor_cores, cast(int, opt.axis), cast(int, opt.amt), cast(int, opt.arg)), "no tensor core available")
       self.applied_opts.append(opt)
