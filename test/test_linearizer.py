@@ -1092,7 +1092,7 @@ class TestLinearizer(unittest.TestCase):
         realized_ast, real_bufs = helper_realized_ast(c)
 
         k = Kernel(realized_ast)
-        k.apply_tensor_cores(1, axis=axis, tc_pref=0, tc_opt=2)
+        k.apply_tensor_cores(1, axis=axis, tc_select=-1, tc_opt=2)
         k.linearize()
         assert len([uop for uop in k.uops if uop.op is Ops.WMMA]) > 0, "tensor core not triggered"
         assert len([x for x in k.applied_opts if x.op is OptOps.TC]) == 1, "tensor core opt not included"
