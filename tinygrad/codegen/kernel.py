@@ -292,9 +292,9 @@ class Kernel:
     if DEBUG >= 3: print("TENSOR CORES", axis_buf0, axis_buf1, tc)
     return TensorCoreOptions(axes=(s0, s1, s2), axes_exist=(True, True), axis_pads=axis_pads)
 
-  def _apply_tc_opt(self, use_tensor_cores:int, axis:int, select:int, opt_level:int) -> bool:
+  def _apply_tc_opt(self, use_tensor_cores:int, axis:int, tc_select:int, opt_level:int) -> bool:
     if use_tensor_cores and self.reduceop is not None and self.reduceop.arg[0] is Ops.ADD:
-      tensor_cores = [self.opts.tensor_cores[select]] if select >= 0 else self.opts.tensor_cores
+      tensor_cores = [self.opts.tensor_cores[tc_select]] if tc_select >= 0 else self.opts.tensor_cores
       for tc in tensor_cores:
         tensor_core_opts = [self._create_tc_opts(reduceop, tc, axis, opt_level) for reduceop in self.reduceops]
         # can only fuse reduces with the same tc options
@@ -314,9 +314,8 @@ class Kernel:
         return True
     return False
 
-  def apply_tensor_cores(
-    self, use_tensor_cores=1, extra_opts: Optional[list[Opt]] = None, axis: int = 0, tc_select: Optional[int] = None, tc_opt: Optional[int] = None
-  ) -> bool:
+  def apply_tensor_cores(self, use_tensor_cores=1, extra_opts: Optional[list[Opt]] = None, axis: int = 0, tc_select: Optional[int] = None,
+                         tc_opt: Optional[int] = None) -> bool:
     """ Attempts to apply a tensor core optimization to the kernel. If one exists and applies properly, return true, otherwise return false.
     Tensor cores are optimized instructions that matrix multiply-accumulate across a wave of threads: D(M, N) = A(M, K) * B(K, N) + C(M, N).
 
@@ -326,12 +325,9 @@ class Kernel:
       1: enable tensor cores
       2: apply tensor core shape but don't use UOp.WMMA
     extra_opts -- additional Opt's to apply after the tensor core instead of the hand-coded additional Opt's (default None)
-    tc_pref -- controls which tensor core gets preference
-      -1: default, iterates over all tc and uses the first one that matches requirements
-      [0, n]: enables only n'th tc, useful for search
     tc_select -- specifies which tensor core(s) to use for optimization (default -1)
-      -1: iterates through all available tensor cores in order and uses the first one that matches the requirements (shape and dtypes)
-      [0, N]: uses only the n'th tensor core available; useful for search
+      -1: iterates through all available tensor cores in order and uses the first one that matches the requirements (dims and dtypes)
+      [0-N]: uses only the n'th tensor core available; useful for search
     tc_opt -- controls which kinds of kernels may be eligible for tensor cores application (default 2 during BEAM, 0 otherwise)
       0: applies to only kernels with a single reduce axis and direct UOps.LOAD into Ops.MUL
       1: allows kernels with multiple reduce axes and also multiplication of UOps.CAST'd buffers
