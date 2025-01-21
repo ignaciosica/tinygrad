@@ -105,7 +105,7 @@ class ContextVar:
 DEBUG, IMAGE, BEAM, NOOPT = ContextVar("DEBUG", 0), ContextVar("IMAGE", 0), ContextVar("BEAM", 0), ContextVar("NOOPT", 0)
 JIT = ContextVar("JIT", 2 if platform.system() == 'Darwin' and ('Intel' in platform.processor() or 'i386' in platform.processor()) else 1)
 WINO, CAPTURING, TRACEMETA = ContextVar("WINO", 0), ContextVar("CAPTURING", 1), ContextVar("TRACEMETA", 1)
-USE_TC, TC_OPT, TC_PREF, AMX, = ContextVar("TC", 1), ContextVar("TC_OPT", 0), ContextVar("TC_PREF", 0), ContextVar("AMX", 0)
+USE_TC, TC_OPT, TC_PREF, AMX, = ContextVar("TC", 1), ContextVar("TC_OPT", 0), ContextVar("TC_PREF", -1), ContextVar("AMX", 0)
 TRANSCENDENTAL = ContextVar("TRANSCENDENTAL", 1)
 FUSE_ARANGE, FUSE_CONV_BW = ContextVar("FUSE_ARANGE", 0), ContextVar("FUSE_CONV_BW", 0)
 SPLIT_REDUCEOP, NO_MEMORY_PLANNER, RING = ContextVar("SPLIT_REDUCEOP", 1), ContextVar("NO_MEMORY_PLANNER", 0), ContextVar("RING", 1)

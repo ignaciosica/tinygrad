@@ -294,7 +294,8 @@ class Kernel:
 
   def _apply_tc_opt(self, use_tensor_cores:int, axis:int, preference:int, opt_level:int) -> bool:
     if use_tensor_cores and self.reduceop is not None and self.reduceop.arg[0] is Ops.ADD:
-      for tc in self.opts.tensor_cores[preference:] + self.opts.tensor_cores[:preference]:
+      tensor_cores = self.opts.tensor_cores if preference == -1 else [self.opts.tensor_cores[preference]]
+      for tc in tensor_cores:
         tensor_core_opts = [self._create_tc_opts(reduceop, tc, axis, opt_level) for reduceop in self.reduceops]
         # can only fuse reduces with the same tc options
         assert all_same(tensor_core_opts)
@@ -326,9 +327,8 @@ class Kernel:
       2: apply tensor core shape but don't use UOp.WMMA
     extra_opts -- additional Opt's to apply after the tensor core instead of the hand-coded additional Opt's (default None)
     tc_pref -- controls which tensor core gets preference
-      0: default
-      1: second tc gets preference
-      n: n'th tc gets preference
+      -1: default, iterates over all tc and uses the first one that matches requirements
+      [0, n]: enables only n'th tc, useful for search
     tc_opt -- controls which kinds of kernels may be eligible for tensor cores application (default 2 during BEAM, 0 otherwise)
       0: applies to only kernels with a single reduce axis and direct UOps.LOAD into Ops.MUL
       1: allows kernels with multiple reduce axes and also multiplication of UOps.CAST'd buffers
