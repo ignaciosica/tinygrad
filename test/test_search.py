@@ -118,7 +118,7 @@ class TestBEAM(unittest.TestCase):
       realized_ast, _ = helper_realized_ast(a.matmul(b, acc_dtype=dtype_out))
 
       lins = get_kernel_actions(Kernel(realized_ast)).values()
-      assert len({lin.tensor_core.dims for lin in lins if lin.tensor_core is not None}) > 1
+      assert len(set(lin.tensor_core.dims for lin in lins if lin.tensor_core is not None)) > 1
 
   def test_filter_global_buffer(self):
     # taken from https://github.com/tinygrad/tinygrad/issues/4612
