@@ -108,7 +108,7 @@ def get_kernel_actions(lin:Kernel, include_0=True) -> dict[int, Kernel]:
   if len(lin.applied_opts) == 0: # tensor core opts must be first
     for tc_action in [action for action in actions if action.op == OptOps.TC]:
       axis, tc_opt = tc_action.axis, cast(tuple, tc_action.arg)[1]
-      tc_actions += [Opt(op=OptOps.TC, axis=axis, arg=(select, tc_opt)) for select, _ in enumerate(lin.opts.tensor_cores)]
+      tc_actions += [Opt(op=OptOps.TC, axis=axis, arg=(tc_select, tc_opt)) for tc_select,_ in enumerate(lin.opts.tensor_cores)]
 
   for i,a in enumerate(kernel_actions + tc_actions):
     if a.axis is not None and a.op is not OptOps.TC:
