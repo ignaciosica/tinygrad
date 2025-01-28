@@ -110,7 +110,7 @@ class TestBEAM(unittest.TestCase):
     dtype_pairs = [(tc.dtype_in, tc.dtype_out) for tc in Device[Device.DEFAULT].renderer.tensor_cores]
     multi_shape_dtype_pairs = [dts for dts in dtype_pairs if dtype_pairs.count(dts) > 1]
 
-    if len(multi_shape_dtype_pairs) == 0: raise unittest.SkipTest("only one tc shape per dtype pair to search over")
+    if len(multi_shape_dtype_pairs) == 0: raise unittest.SkipTest("only one tc available per dtype pair to search over")
 
     for (dtype_in, dtype_out) in multi_shape_dtype_pairs:
       a = Tensor.rand(16, 16, dtype=dtype_in)
