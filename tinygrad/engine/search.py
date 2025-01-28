@@ -102,7 +102,7 @@ def bufs_from_lin(lin:Kernel, allocate:bool=True) -> list[Buffer]:
 
 # get dictionary of all possible actions
 def get_kernel_actions(lin:Kernel, include_0=True) -> dict[int, Kernel]:
-  acted_lins, max_up, max_lcl = {0:lin} if include_0 else {}, getenv("BEAM_UPCAST_MAX", 256), getenv("BEAM_LOCAL_MAX", 1024),
+  acted_lins, max_up, max_lcl = {0:lin} if include_0 else {}, getenv("BEAM_UPCAST_MAX", 256), getenv("BEAM_LOCAL_MAX", 1024)
   kernel_actions, tc_actions = [action for action in actions if action.op != OptOps.TC], []
 
   if len(lin.applied_opts) == 0: # tensor core opts must be first
