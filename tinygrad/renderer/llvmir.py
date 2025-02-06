@@ -1,6 +1,6 @@
 from typing import cast
 import math, struct
-from tinygrad.renderer import Renderer
+from tinygrad.renderer import Renderer, get_amx_tensor_cores_if_available
 from tinygrad.ops import UOp, PatternMatcher, UPat, Ops, GroupOp
 from tinygrad.dtype import dtypes, DType, PtrDType, truncate
 
@@ -84,6 +84,9 @@ llvm_rewrite = PatternMatcher([
   # if
   (UPat(Ops.IF, name="x"), lambda ctx,x: f"  br i1 {ctx[x.src[0]]}, label %ifbody_{ctx[x][1:]}, label %ifskip_{ctx[x][1:]}\nifbody_{ctx[x][1:]}:"),
   (UPat(Ops.ENDIF, name="x"), lambda ctx,x: f"  br label %ifskip_{ctx[x.src[0]][1:]}\nifskip_{ctx[x.src[0]][1:]}:"),
+
+  # wmma
+  (UPat(Ops.WMMA, name="x"), lambda ctx, x: f"  {ctx[x]} = call {ldt(x.dtype)} @{x.arg[0]}({', '.join([f'{ldt(y.dtype)} {ctx[y]}' for y in x.src])})")
 ])
 
 def llvm_bf16_cast(buf:UOp, idx:UOp, root:UOp):
@@ -96,6 +99,7 @@ class LLVMRenderer(Renderer):
   has_local = False
   has_shared = False
   global_max = None
+  tensor_cores = get_amx_tensor_cores_if_available()
 
   extra_matcher = PatternMatcher([
     # rewrite RECIP with FDIV

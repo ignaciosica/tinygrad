@@ -2,9 +2,9 @@ from __future__ import annotations
 from typing import Optional, Callable
 import functools, math
 from dataclasses import dataclass, field, replace
-from tinygrad.helpers import to_function_name, dedup, prod
+from tinygrad.helpers import to_function_name, dedup, prod, AMX
 from tinygrad.ops import Ops, UOp, sym_infer, sint, Variable, ssimplify, GroupOp, PatternMatcher
-from tinygrad.dtype import DType
+from tinygrad.dtype import DType, dtypes
 
 @dataclass(frozen=True)
 class TensorCore: # D = A * B + C, A is (M x K), B is (K x N), C and D are (M x N)
@@ -28,6 +28,11 @@ class TensorCore: # D = A * B + C, A is (M x K), B is (K x N), C and D are (M x 
       f"{self.elements_per_thread[2]} elements from C are processed per thread but found {2**upcast_axes} in {self.opts}")
     assert all(len(perm[0]) == local_axes and len(perm[1]) == reduce_axes + upcast_axes for perm in self.swizzle if perm), (
       f"swizzle perm should be of len (({local_axes})({reduce_axes + upcast_axes}))")
+
+def get_amx_tensor_cores_if_available():
+  amx_tc = [TensorCore(dims=(sz,sz,1), threads=1, elements_per_thread=(sz,sz,sz*sz), dtype_in=dt, dtype_out=dt, swizzle=(None,((),(4,5,6,7,0,1,2,3))),
+                       opts=("u0","u0","u0","u0","u1","u1","u1","u1")) for dt,sz in [(dt, 64 // dt.itemsize) for dt in [dtypes.float]]]
+  return amx_tc if AMX else []
 
 @dataclass(frozen=True)
 class Estimates:
