@@ -3,6 +3,7 @@ import math, struct
 from tinygrad.renderer import Renderer, get_amx_tensor_cores_if_available
 from tinygrad.ops import UOp, PatternMatcher, UPat, Ops, GroupOp
 from tinygrad.dtype import dtypes, DType, PtrDType, truncate
+from tinygrad.helpers import dedup
 
 def ldt(dt:DType):
   if dt.vcount > 1: return f"<{dt.vcount} x {ldt(dt.scalar())}>"
@@ -30,17 +31,16 @@ def lcast(input_type:DType, output_type:DType):
   raise NotImplementedError(f"cast from {input_type} -> {output_type} not implemented")
 
 def render_wmma(ctx, wmma: UOp) -> str:
-  def AMX(op, gpr):return f'call void asm sideeffect ".word (0x201000+($0<<5)+0$1-((0$1>>4)*6))", "i,r,~{{memory}}"(i32 {op}, i64 {gpr}) #2'
+  def AMX(op, gpr): return f'call void asm sideeffect ".word (0x201000+($0<<5)+0$1-((0$1>>4)*6))", "i,r,~{{memory}}"(i32 {op}, i64 {gpr}) #2'
 
   return "\n".join([
-    *[f"  store {ldt(src.dtype)} {ctx[src]}, {ldt(src.dtype)}* %wmma_{i}, align {src.dtype.itemsize}" for i, src in enumerate(wmma.src)],
-    f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"() #0 ; AMX set',
-    *[f"  {ctx[wmma]}_ld_{i} = add i64 %ptr_wmma_2, {i * 4 << 56 | i * 64}  \n  {AMX(4, f'{ctx[wmma]}_ld_{i}')}" for i in range(16)],
-    f"  {AMX(0, '%ptr_wmma_1')}", f"  {AMX(1, '%ptr_wmma_0')}", f"  {AMX(12, 0)}",
-    *[f"  {ctx[wmma]}_st_{i} = add i64 %ptr_wmma_2, {i * 4 << 56 | i * 64}  \n  {AMX(5, f'{ctx[wmma]}_st_{i}')}" for i in range(16)],
-    f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"() #0 ; AMX clr',
-    f"  {ctx[wmma]} = load <256 x float>, ptr %wmma_2, align 1024",
-  ])
+    *[f"  store {ldt(src.dtype)} {ctx[src]}, {ldt(src.dtype)}* %amx_{i}, align {src.dtype.itemsize}" for i, src in enumerate(wmma.src)],
+      f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"() #0 ; AMX set',
+    *[f"  {ctx[wmma]}_ld_{i} = add i64 %ptr_amx_2, {i * 4 << 56 | i * 64}  \n  {AMX(4, f'{ctx[wmma]}_ld_{i}')}" for i in range(16)],
+      f"  {AMX(0, '%ptr_amx_1')}\n  {AMX(1, '%ptr_amx_0')}\n  {AMX(12, 0)}",
+    *[f"  {ctx[wmma]}_st_{i} = add i64 %ptr_amx_2, {i * 4 << 56 | i * 64}  \n  {AMX(5, f'{ctx[wmma]}_st_{i}')}" for i in range(16)],
+      f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"() #0 ; AMX clr',
+      f"  {ctx[wmma]} = load <256 x float>, ptr %amx_2, align 1024"])
 
 # llvm ops, lop[<dtype>][<op>]
 unsigned_lop = { Ops.ADD: "add", Ops.MUL: "mul", Ops.IDIV: "udiv", Ops.MOD: "urem",
@@ -135,6 +135,10 @@ class LLVMRenderer(Renderer):
     end_lines: dict[str, None] = {}
     vc = -1
 
+    for arg in dedup([uop.arg for uop in uops if uop.op is Ops.WMMA]):
+      dts = [arg[2].vec(sz) for sz in (arg[1][0], arg[1][0], arg[1][0]*arg[1][0])]
+      kernel+=[f"  %amx_{i} = alloca {ldt(dt)}, align {dt.itemsize}\n  %ptr_amx_{i} = ptrtoint {ldt(dt)}* %amx_{i} to i64" for i,dt in enumerate(dts)]
+
     # prealloc all assigns
     acc_to_assign: dict[UOp, UOp] = {}
     for u in uops:
@@ -176,9 +180,6 @@ class LLVMRenderer(Renderer):
     # output the function. chr(10) is '\n' (python < 3.12 doesn't support backslashes in f-strings)
     return f'''\n\
 define{(' '+self.abi) if self.abi is not None else ''} void @{name}({','.join(args)}) #0 {{
-%wmma_0 = alloca <16 x float>, align 64 \n %ptr_wmma_0 = ptrtoint <16 x float>* %wmma_0 to i64
-%wmma_1 = alloca <16 x float>, align 64 \n %ptr_wmma_1 = ptrtoint <16 x float>* %wmma_1 to i64
-%wmma_2 = alloca <256 x float>, align 1024 \n %ptr_wmma_2 = ptrtoint <256 x float>* %wmma_2 to i64
 {chr(10).join(kernel)}
   ret void
 }}
