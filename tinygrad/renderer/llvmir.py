@@ -85,10 +85,11 @@ def render_wmma(ctx, wmma):
   # def AMX(op: int, off): return f'call void asm sideeffect ".word (0x201000+($0 << 5)+0$1-((0$1>>4)*6))", "i,r,~{{memory}}"(i32 {op}, i64 %7+{off})'
   return "\n".join([
     f"  {ctx[wmma]} = bitcast <256 x float> {ctx[wmma.src[2]]} to <256 x float>",
-    f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"()',
+    f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"() #1',
     # *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)], # loads from wmma.src[2]
+    # compute
     # *[f"  {AMX(5, i*4<<56 | i*64)})" for i in range(16)], # stores into wmma
-    f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"()',
+    f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"() #1',
   ])
 
 # llvm ops, lop[<dtype>][<op>]
@@ -180,7 +181,6 @@ class LLVMRenderer(Renderer):
   def render(self, name: str, uops: list[UOp]) -> str:
     r: dict[UOp, str] = {}
     args: list[str] = []
-    prefix: list[str] = []
     kernel: list[str] = []
     end_lines: dict[str, None] = {}
     vc = -1
@@ -224,11 +224,12 @@ class LLVMRenderer(Renderer):
               r[x] = f"%acc{vc}"
 
     # output the function. chr(10) is '\n' (python < 3.12 doesn't support backslashes in f-strings)
-    return "\n".join(prefix)+f'''\n\
+    return f'''\n\
 define{(' '+self.abi) if self.abi is not None else ''} void @{name}({','.join(args)}) #0 {{
 {chr(10).join(kernel)}
   ret void
 }}
 {chr(10).join(end_lines.keys())}
 attributes #0 = {{ nounwind "no-builtins" "no-trapping-math"="true" }}
+attributes #1 = {{ nounwind }}
 '''
