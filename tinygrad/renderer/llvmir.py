@@ -82,9 +82,12 @@ def lcast(input_type:DType, output_type:DType):
 #   f"  ret {dto} %data0\n}}"]
 
 def render_wmma(ctx, wmma):
+  # def AMX(op: int, off): return f'call void asm sideeffect ".word (0x201000+($0 << 5)+0$1-((0$1>>4)*6))", "i,r,~{{memory}}"(i32 {op}, i64 %7+{off})'
   return "\n".join([
     f"  {ctx[wmma]} = bitcast <256 x float> {ctx[wmma.src[2]]} to <256 x float>",
     f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"()',
+    # *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)], # loads from wmma.src[2]
+    # *[f"  {AMX(5, i*4<<56 | i*64)})" for i in range(16)], # stores into wmma
     f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"()',
   ])
 
@@ -146,7 +149,6 @@ llvm_rewrite = PatternMatcher([
 
   # wmma
   (UPat(Ops.WMMA, name="wmma"), render_wmma),
-  # (UPat(Ops.WMMA, name="x"), lambda ctx, x: f"  {ctx[x]} = call {ldt(x.dtype)} @{x.arg[0]}({', '.join([f'{ldt(y.dtype)} {ctx[y]}' for y in x.src])})")
 ])
 
 def llvm_bf16_cast(buf:UOp, idx:UOp, root:UOp):
