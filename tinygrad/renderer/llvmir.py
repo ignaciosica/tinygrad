@@ -84,12 +84,15 @@ def lcast(input_type:DType, output_type:DType):
 def render_wmma(ctx, wmma):
   # def AMX(op: int, off): return f'call void asm sideeffect ".word (0x201000+($0 << 5)+0$1-((0$1>>4)*6))", "i,r,~{{memory}}"(i32 {op}, i64 %7+{off})'
   return "\n".join([
-    f"  {ctx[wmma]} = bitcast <256 x float> {ctx[wmma.src[2]]} to <256 x float>",
-    f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"() #1',
+    "%ptr_wmma_in_0 = alloca <16 x float>, align 64", f"store <16 x float> {ctx[wmma.src[0]]}, <16 x float>* %ptr_wmma_in_0, align 64",
+    "%ptr_wmma_in_1 = alloca <16 x float>, align 64", f"store <16 x float> {ctx[wmma.src[1]]}, <16 x float>* %ptr_wmma_in_0, align 64",
+    "%ptr_wmma_out  = alloca <256 x float>, align 1024", f"store <256 x float> {ctx[wmma.src[2]]}, <256 x float>* %ptr_wmma_in_0, align 1024",
+    f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"() #0',
     # *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)], # loads from wmma.src[2]
     # compute
     # *[f"  {AMX(5, i*4<<56 | i*64)})" for i in range(16)], # stores into wmma
-    f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"() #1',
+    f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"() #0',
+    f"{ctx[wmma]} = load <256 x float>, ptr %ptr_wmma_out, align 1024"
   ])
 
 # llvm ops, lop[<dtype>][<op>]
@@ -231,5 +234,4 @@ define{(' '+self.abi) if self.abi is not None else ''} void @{name}({','.join(ar
 }}
 {chr(10).join(end_lines.keys())}
 attributes #0 = {{ nounwind "no-builtins" "no-trapping-math"="true" }}
-attributes #1 = {{ nounwind }}
 '''
