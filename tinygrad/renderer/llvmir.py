@@ -176,9 +176,9 @@ class LLVMRenderer(Renderer):
     # output the function. chr(10) is '\n' (python < 3.12 doesn't support backslashes in f-strings)
     return f'''\n\
 define{(' '+self.abi) if self.abi is not None else ''} void @{name}({','.join(args)}) #0 {{
-%wmma_0 = alloca <16 x float>, align 64 \n %ptr_wmma_0 = ptrtoint ptr %wmma_0 to i64
-%wmma_1 = alloca <16 x float>, align 64 \n %ptr_wmma_1 = ptrtoint ptr %wmma_1 to i64
-%wmma_2 = alloca <256 x float>, align 1024 \n %ptr_wmma_2 = ptrtoint ptr %wmma_2 to i64
+%wmma_0 = alloca <16 x float>, align 64 \n %ptr_wmma_0 = ptrtoint <16 x float>* %wmma_0 to i64
+%wmma_1 = alloca <16 x float>, align 64 \n %ptr_wmma_1 = ptrtoint <16 x float>* %wmma_1 to i64
+%wmma_2 = alloca <256 x float>, align 1024 \n %ptr_wmma_2 = ptrtoint <256 x float>* %wmma_2 to i64
 {chr(10).join(kernel)}
   ret void
 }}
