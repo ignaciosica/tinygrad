@@ -48,8 +48,8 @@ llvm_rewrite = PatternMatcher([
    f"  {ctx[x]}_yes = load {ldt(x.dtype)}, {ldt(idx.dtype)} {ctx[idx]}\n"
    f"  br label {ctx[x]}_exit\n{ctx[x][1:]}_exit:\n"
    f"  {ctx[x]} = phi {ldt(x.dtype)} [{ctx[x]}_yes, {ctx[x]}_load], [{ctx[alt]}, {ctx[x]}_entry]"),
-  (UPat(Ops.LOAD, src=(UPat.var('idx'),), name="x"), lambda ctx,x,idx: f"  {ctx[x]} = load {ldt(x.dtype)}, {ldt(idx.dtype)} {ctx[idx]}"),
-  (UPat(Ops.STORE, name="x"), lambda ctx,x: f"  store {ldt(x.src[1].dtype)} {ctx[x.src[1]]}, {ldt(x.src[0].dtype)} {ctx[x.src[0]]}"),
+  (UPat(Ops.LOAD, src=(UPat.var('idx'),), name="x"), lambda ctx,x,idx: f"  {ctx[x]} = load {ldt(x.dtype)}, {ldt(idx.dtype)} {ctx[idx]}, align {x.src[0].dtype.itemsize}"),
+  (UPat(Ops.STORE, name="x"), lambda ctx,x: f"  store {ldt(x.src[1].dtype)} {ctx[x.src[1]]}, {ldt(x.src[0].dtype)} {ctx[x.src[0]]}, align {x.src[0].dtype.itemsize}"),
 
   # GEP/VECTORIZE/CAST for float4 support
   (UPat(Ops.GEP, name="x"), lambda ctx,x: f"  {ctx[x]} = extractelement {ldt(x.src[0].dtype)} {ctx[x.src[0]]}, i32 {x.arg[0]}"),
@@ -87,6 +87,7 @@ llvm_rewrite = PatternMatcher([
   (UPat(Ops.ENDIF, name="x"), lambda ctx,x: f"  br label %ifskip_{ctx[x.src[0]][1:]}\nifskip_{ctx[x.src[0]][1:]}:"),
 
   # wmma
+  (UPat(Ops.WMMA, name="x"), lambda ctx, x: f"  {ctx[x]} = bitcast <256 x float> {ctx[x.src[2]]} to <256 x float>"),
   (UPat(Ops.WMMA, name="x"), lambda ctx, x: f"  {ctx[x]} = call {ldt(x.dtype)} @{x.arg[0]}({', '.join([f'{ldt(y.dtype)} {ctx[y]}' for y in x.src])})")
 ])
 
@@ -133,7 +134,7 @@ class LLVMRenderer(Renderer):
         assert u.src[0] not in acc_to_assign, "can't assign to DEFINE_ACC twice"
         acc_to_assign[u.src[0]] = u.src[1]
 
-    for wmma_name, (N, M, _), dtype_in, dtype_out, _, _, _, _ in dedup([uop.arg for uop in uops if uop.op is Ops.WMMA]):
+    # for wmma_name, (N, M, _), dtype_in, dtype_out, _, _, _, _ in dedup([uop.arg for uop in uops if uop.op is Ops.WMMA]):
 # static float256 __WMMA_16_16_1_float_float(float16 data1, float16 data2, float256 data0){
 # AMX_SET(0);
 # for(int ridx0 = 0; ridx0 < 16; ridx0++){ AMX(4, (int *)(&data0), (ridx0*4ull)<<56 | ridx0*64ull); }
@@ -176,14 +177,14 @@ class LLVMRenderer(Renderer):
   # call void asm sideeffect ".word $0", "r,~{memory}" (i64 %offset)\n  ret void\n}""",
   # call void asm sideeffect "nop\0Anop\0Anop\0A.word (u0x201000 + (17 << 5) + 1)", "~{{memory}}"() # 2; AMX clr
       # def AMX(op: int, off): return f'call void asm sideeffect ".word (0x201000+($0 << 5)+0$1-((0$1>>4)*6))", "i,r,~{{memory}}"(i32 {op}, i64 %7+{off})'
-      prefix += [
-  f"define internal {(dto := ldt(dtype_out.vec(N * N)))} @{wmma_name}({(dti := ldt(dtype_in.vec(N)))} %data1, {dti} %data2, {dto} %data0){{\nentry:",
-  # f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"()',
-# *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)],
-#  *["  call void @AMX(i32 0, (int *)(&data2), i64 0)", "  call void @AMX(i32 1, (int *)(&data1), i64 0)", "  call void @AMX(i32 12, 0, i64 0)"],
-#  *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)],
-  # f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"()',
-  f"  ret {dto} %data0\n}}"]
+#       prefix += [
+#   f"define internal {(dto := ldt(dtype_out.vec(N * N)))} @{wmma_name}({(dti := ldt(dtype_in.vec(N)))} %data1, {dti} %data2, {dto} %data0){{\nentry:",
+#   # f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"()',
+# # *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)],
+# #  *["  call void @AMX(i32 0, (int *)(&data2), i64 0)", "  call void @AMX(i32 1, (int *)(&data1), i64 0)", "  call void @AMX(i32 12, 0, i64 0)"],
+# #  *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)],
+#   # f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"()',
+#   f"  ret {dto} %data0\n}}"]
 
     for u in uops:
       # hack for defining sqrt function (TODO: can we get a transcendental for this?)
