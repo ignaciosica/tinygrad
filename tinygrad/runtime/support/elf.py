@@ -32,8 +32,8 @@ def elf_loader(blob:bytes, force_section_align:int=1) -> tuple[memoryview, list[
   for sh, trgt_sh_name, c_rels in rel + rela:
     target_image_off = next(tsh for tsh in sections if tsh.name == trgt_sh_name).header.sh_addr
     rels = [(r.r_offset, symtab[libc.ELF64_R_SYM(r.r_info)], libc.ELF64_R_TYPE(r.r_info), getattr(r, "r_addend", 0)) for r in c_rels]
-    for roff, sym, r_type_, r_addend in rels:
-      if sym.st_shndx == 0: raise RuntimeError(f'Attempting to relocate against an undefined symbol {repr(_strtab(sh_strtab, sym.st_name))}')
+    # for roff, sym, r_type_, r_addend in rels:
+    #   if sym.st_shndx == 0: raise RuntimeError(f'Attempting to relocate against an undefined symbol {repr(_strtab(sh_strtab, sym.st_name))}')
     relocs += [(target_image_off + roff, sections[sym.st_shndx].header.sh_addr + sym.st_value, rtype, raddend) for roff, sym, rtype, raddend in rels]
 
   return memoryview(image), sections, relocs
@@ -48,6 +48,8 @@ def relocate(instr: int, ploc: int, tgt: int, r_type: int):
       rel_pg = (tgt & ~0xFFF) - (ploc & ~0xFFF)
       return instr | (getbits(rel_pg, 12, 13) << 29) | (getbits(rel_pg, 14, 32) << 5)
     case libc.R_AARCH64_ADD_ABS_LO12_NC: return instr | (getbits(tgt, 0, 11) << 10)
+    case libc.R_AARCH64_ABS32: return instr | getbits(tgt, 0, 31)
+    case libc.R_AARCH64_PREL32: return instr | getbits(tgt, 0, 31)
     case libc.R_AARCH64_LDST16_ABS_LO12_NC: return instr | (getbits(tgt, 1, 11) << 10)
     case libc.R_AARCH64_LDST32_ABS_LO12_NC: return instr | (getbits(tgt, 2, 11) << 10)
     case libc.R_AARCH64_LDST64_ABS_LO12_NC: return instr | (getbits(tgt, 3, 11) << 10)

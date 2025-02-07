@@ -1,4 +1,4 @@
-import platform, subprocess, sys
+import platform, subprocess, sys, os
 from tinygrad.helpers import capstone_flatdump
 from tinygrad.device import Compiled, Compiler, MallocAllocator, CPUProgram
 from tinygrad.runtime.support.elf import jit_loader
@@ -13,6 +13,11 @@ class ClangJITCompiler(Compiler):
     target = 'x86_64' if sys.platform == 'win32' else platform.machine()
     args = ['-march=native', f'--target={target}-none-unknown-elf', '-O2', '-fPIC', '-ffreestanding', '-fno-math-errno', '-nostdlib']
     arch_args = ['-ffixed-x18'] if target == 'arm64' else []
+
+    llvm_ir_path = os.path.join(os.getcwd(), "llvm_ir")
+    subprocess.run(['clang', '-x', 'c', '-emit-llvm', '-S', *args, *arch_args, '-', '-o', llvm_ir_path], input=src.encode('utf-8'), check=True)
+    with open(llvm_ir_path, 'r') as f: print("=== LLVM IR Output ===\n", f.read())
+
     obj = subprocess.check_output(['clang', '-c', '-x', 'c', *args, *arch_args, '-', '-o', '-'], input=src.encode('utf-8'))
     return jit_loader(obj)
 

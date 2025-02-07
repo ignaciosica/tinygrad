@@ -3,6 +3,7 @@ import math, struct
 from tinygrad.renderer import Renderer, get_amx_tensor_cores_if_available
 from tinygrad.ops import UOp, PatternMatcher, UPat, Ops, GroupOp
 from tinygrad.dtype import dtypes, DType, PtrDType, truncate
+from tinygrad.helpers import dedup
 
 def ldt(dt:DType):
   if dt.vcount > 1: return f"<{dt.vcount} x {ldt(dt.scalar())}>"
@@ -118,6 +119,7 @@ class LLVMRenderer(Renderer):
   def render(self, name: str, uops: list[UOp]) -> str:
     r: dict[UOp, str] = {}
     args: list[str] = []
+    prefix: list[str] = []
     kernel: list[str] = []
     end_lines: dict[str, None] = {}
     vc = -1
@@ -130,6 +132,58 @@ class LLVMRenderer(Renderer):
         r[u] = r[u.src[1]] = f"%assign{vc}"
         assert u.src[0] not in acc_to_assign, "can't assign to DEFINE_ACC twice"
         acc_to_assign[u.src[0]] = u.src[1]
+
+    for wmma_name, (N, M, _), dtype_in, dtype_out, _, _, _, _ in dedup([uop.arg for uop in uops if uop.op is Ops.WMMA]):
+# static float256 __WMMA_16_16_1_float_float(float16 data1, float16 data2, float256 data0){
+# AMX_SET(0);
+# for(int ridx0 = 0; ridx0 < 16; ridx0++){ AMX(4, (int *)(&data0), (ridx0*4ull)<<56 | ridx0*64ull); }
+# AMX(0, (int *)(&data2), 0ull); AMX(1, (int *)(&data1), 0ull); AMX(12, 0, 0ull);
+# for(int ridx0 = 0; ridx0 < 16; ridx0++){ AMX(5, (int *)(&data0), (ridx0*4ull)<<56 | ridx0*64ull); }
+# AMX_SET(1);
+# return data0;
+
+  # %4 = alloca <16 x float>, align 64
+  # %5 = alloca <16 x float>, align 64
+  # %6 = alloca <256 x float>, align 1024
+  # %7 = ptrtoint ptr %6 to i64
+  # %8 = add i64 %7, 288230376151711808
+  # %9 = add i64 %7, 576460752303423616
+  # %10 = add i64 %7, 864691128455135424
+  # %11 = add i64 %7, 1152921504606847232
+  # %12 = add i64 %7, 1441151880758559040
+  # %13 = add i64 %7, 1729382256910270848
+  # %14 = add i64 %7, 2017612633061982656
+  # %15 = add i64 %7, 2305843009213694464
+  # %16 = add i64 %7, 2594073385365406272
+  # %17 = add i64 %7, 2882303761517118080
+  # %18 = add i64 %7, 3170534137668829888
+  # %19 = add i64 %7, 3458764513820541696
+  # %20 = add i64 %7, 3746994889972253504
+  # %21 = add i64 %7, 4035225266123965312
+  # %22 = add i64 %7, 4323455642275677120
+  # %23 = ptrtoint ptr %5 to i64
+  # %24 = ptrtoint ptr %4 to i64
+  # br label %57
+
+  # store <16 x float> %125, ptr %4, align 64, !tbaa !4, !noalias !9
+  # store <16 x float> %109, ptr %5, align 64, !tbaa !4, !noalias !9
+  # store <256 x float> %59, ptr %6, align 1024, !tbaa !4, !noalias !9
+  # call void asm sideeffect "nop\0Anop\0Anop\0A.word (u0x201000 + (17 << 5) + 0)", "~{{memory}}"() # 2; AMX set
+  #       """define internal void @AMX(i32 %op, i64 %gpr, i64 %btf) {\nentry:
+  # %sum = add i64 %gpr, %btf
+  # %shl = shl i64 %sum, 5
+  # %offset = add i64 %shl, u0x201000
+  # call void asm sideeffect ".word $0", "r,~{memory}" (i64 %offset)\n  ret void\n}""",
+  # call void asm sideeffect "nop\0Anop\0Anop\0A.word (u0x201000 + (17 << 5) + 1)", "~{{memory}}"() # 2; AMX clr
+      # def AMX(op: int, off): return f'call void asm sideeffect ".word (0x201000+($0 << 5)+0$1-((0$1>>4)*6))", "i,r,~{{memory}}"(i32 {op}, i64 %7+{off})'
+      prefix += [
+  f"define internal {(dto := ldt(dtype_out.vec(N * N)))} @{wmma_name}({(dti := ldt(dtype_in.vec(N)))} %data1, {dti} %data2, {dto} %data0){{\nentry:",
+  # f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"()',
+# *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)],
+#  *["  call void @AMX(i32 0, (int *)(&data2), i64 0)", "  call void @AMX(i32 1, (int *)(&data1), i64 0)", "  call void @AMX(i32 12, 0, i64 0)"],
+#  *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)],
+  # f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"()',
+  f"  ret {dto} %data0\n}}"]
 
     for u in uops:
       # hack for defining sqrt function (TODO: can we get a transcendental for this?)
@@ -161,7 +215,7 @@ class LLVMRenderer(Renderer):
               r[x] = f"%acc{vc}"
 
     # output the function. chr(10) is '\n' (python < 3.12 doesn't support backslashes in f-strings)
-    return f'''\
+    return "\n".join(prefix)+f'''\n\
 define{(' '+self.abi) if self.abi is not None else ''} void @{name}({','.join(args)}) #0 {{
 {chr(10).join(kernel)}
   ret void
