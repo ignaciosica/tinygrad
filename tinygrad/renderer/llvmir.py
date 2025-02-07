@@ -81,18 +81,22 @@ def lcast(input_type:DType, output_type:DType):
 #   # f'  call void asm sideeffect "nop\0Anop\0Anop\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"()',
 #   f"  ret {dto} %data0\n}}"]
 
-def render_wmma(ctx, wmma):
+#define AMX_OP_GPR(op, gpr) \
+    # __asm(".word (0x201000 + (%0 << 5) + 0%1 - ((0%1 >> 4) * 6))" : : "i"(op), "r"((uint64_t)(gpr)) : "memory")
+
+def render_wmma(ctx, wmma:UOp) -> str:
   # def AMX(op: int, off): return f'call void asm sideeffect ".word (0x201000+($0 << 5)+0$1-((0$1>>4)*6))", "i,r,~{{memory}}"(i32 {op}, i64 %7+{off})'
+  def AMX(op, gpr): return f'call void asm sideeffect ".word (0x201000+($0<<5)+0$1-((0$1>>4)*6))", "i,r,~{{memory}}"(i32 {op}, i64 {gpr}) #2'
   return "\n".join([
-    "%ptr_wmma_in_0 = alloca <16 x float>, align 64", f"store <16 x float> {ctx[wmma.src[0]]}, <16 x float>* %ptr_wmma_in_0, align 64",
-    "%ptr_wmma_in_1 = alloca <16 x float>, align 64", f"store <16 x float> {ctx[wmma.src[1]]}, <16 x float>* %ptr_wmma_in_0, align 64",
-    "%ptr_wmma_out  = alloca <256 x float>, align 1024", f"store <256 x float> {ctx[wmma.src[2]]}, <256 x float>* %ptr_wmma_in_0, align 1024",
+    "  %wmma_in_0 = alloca <16 x float>, align 64", f"store <16 x float> {ctx[wmma.src[0]]}, <16 x float>* %wmma_in_0, align 64", "%ptr_wmma_in_0 = ptrtoint ptr %wmma_in_0 to i64",
+    "  %wmma_in_1 = alloca <16 x float>, align 64", f"store <16 x float> {ctx[wmma.src[1]]}, <16 x float>* %wmma_in_1, align 64", "%ptr_wmma_in_1 = ptrtoint ptr %wmma_in_1 to i64",
+    "  %wmma_out  = alloca <256 x float>, align 1024", f"store <256 x float> {ctx[wmma.src[2]]}, <256 x float>* %wmma_out, align 1024", "%ptr_wmma_out = ptrtoint ptr %wmma_out to i64",
     f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 0})", "~{{memory}}"() #0',
-    # *[f"  {AMX(4, i*4<<56 | i*64)})" for i in range(16)], # loads from wmma.src[2]
-    # compute
-    # *[f"  {AMX(5, i*4<<56 | i*64)})" for i in range(16)], # stores into wmma
+    *[f"  %ld_{i} = add i64 %ptr_wmma_out, {i*4<<56 | i*64}  \n  {AMX(4, f'%ld_{i}')}" for i in range(16)], # loads from wmma.src[2]
+    f"  {AMX(0, '%ptr_wmma_in_1')}", f"  {AMX(1, '%ptr_wmma_in_0')}", f"  {AMX(12, 0)}",
+    *[f"  %st_{i} = add i64 %ptr_wmma_out, {i*4<<56 | i*64}  \n  {AMX(5, f'%st_{i}')}" for i in range(16)], # stores into wmma
     f'  call void asm sideeffect "nop\\0Anop\\0Anop\\0A.word ({0x201000 + (17 << 5) + 1})", "~{{memory}}"() #0',
-    f"{ctx[wmma]} = load <256 x float>, ptr %ptr_wmma_out, align 1024"
+    f"{ctx[wmma]} = load <256 x float>, ptr %wmma_out, align 1024"
   ])
 
 # llvm ops, lop[<dtype>][<op>]
