@@ -375,7 +375,7 @@ def gep_through_wmma(gep:UOp, wmma:UOp):
     tsrcs.append(s.gep(tuple(src_args)))
   return UOp(Ops.WMMA, gep.dtype, tuple(tsrcs), wmma.arg)
 
-acc_pat, rng_pat = UPat(Ops.DEFINE_ACC, name="acc"), UPat(Ops.RANGE, name="rng")
+acc_pat, rng_pat = UPat(Ops.DEFINE_REG, name="acc"), UPat(Ops.RANGE, name="rng")
 rng_aug = UPat.any(rng_pat, UPat.var("add")+rng_pat, UPat.var("mul")*rng_pat, UPat.var("add")+UPat.var("mul")*rng_pat)
 
 index_load = UPat.var("buf").index(rng_aug).load(name="ld")
@@ -384,7 +384,7 @@ arange_augrng = UPat.any(rng_aug, rng_aug+UPat.var("idx2"), rng_aug+UPat.var("id
 arange_m = ((arange_augrng<UPat.cvar("compval"))!=UPat(Ops.CONST, name="ne", arg=True)).where(UPat.cvar("multconst"), UPat.const(None, 0))
 
 # this moves the accumulation variable down an unrolled add chain which allows for more efficient accumulation using mulacc
-mulacc_unrolled = PatternMatcher([(UPat.var("x")+UPat.var("y")+acc_pat, lambda x,y,acc: (acc+x)+y if y.op is not Ops.DEFINE_ACC else None)])
+mulacc_unrolled = PatternMatcher([(UPat.var("x")+UPat.var("y")+acc_pat, lambda x,y,acc: (acc+x)+y if y.op is not Ops.DEFINE_REG else None)])
 
 # this is symbolic 2.0
 sym = symbolic_flat+PatternMatcher([
@@ -442,7 +442,7 @@ sym = symbolic_flat+PatternMatcher([
   # parentless reduce  # TODO: add MUL
   (acc_pat.assign(UPat((Ops.ADD, Ops.MAX), src=[acc_pat, UPat.var("ret")], name="alu")), reduce_collapse),
   # ** self folding **
-  (UPat(Ops.DEFINE_ACC, src=(UPat.var("x"),)), lambda x: x),            # a DEFINE_ACC without ranges is a CONST
+  (UPat(Ops.DEFINE_REG, src=(UPat.var("x"),)), lambda x: x),            # a DEFINE_ACC without ranges is a CONST
   (UPat(Ops.ASSIGN, src=(UPat.cvar(),UPat.var("x"))), lambda x: x),     # an ASSIGN to a const is a NOOP
   # x!=0 -> (bool)x
   (UPat.var("x")!=0, lambda x: x.cast(dtypes.bool.vec(x.dtype.count))),

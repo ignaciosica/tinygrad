@@ -87,7 +87,7 @@ def block_merge(ctx, x:UOp):
       if len(parent_blocks) == 1:
         parent_block = parent_blocks[0]
         # range needs DEFINE_ACC to be before the range (never in DEFINE_ACC for if)
-        early_ops, late_ops = partition(x.arg.lst, lambda y: y.op is Ops.DEFINE_ACC and x.arg.end in y.src)
+        early_ops, late_ops = partition(x.arg.lst, lambda y: y.op is Ops.DEFINE_REG and x.arg.end in y.src)
         return UOp(Ops.BLOCK, dtypes.void, tuple(y for y in x.src if y is not parent_block)+parent_block.src,
                   BasicBlock(tuple(y for y in x.arg.ctx if y is not x.arg.end), tuple(early_ops)+parent_block.arg.lst+tuple(late_ops)))
 
@@ -180,7 +180,7 @@ def linearize_uop(sink:UOp, skip_check:bool=not __debug__) -> list[UOp]:
           this_block_ctx += [x for x in store_context if x not in idx_context and x.op is Ops.RANGE]
       elif s.op is Ops.ASSIGN:
         # flow though assign, but remove the ranges used in the assign
-        assert s.src[0].op is Ops.DEFINE_ACC
+        assert s.src[0].op is Ops.DEFINE_REG
         this_block_ctx += [x for x in temp_block_ctxs[s.src[1]] if x not in s.src[0].src[1:]]
       else:
         # flow though everything else
