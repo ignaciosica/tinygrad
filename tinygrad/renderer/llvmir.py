@@ -158,7 +158,7 @@ class LLVMRenderer(Renderer):
         # NOTE: MallocAllocator promises 0x20 alignment
         args.append(f"{ldt(u.dtype)}{' noalias align 32' if isinstance(u.dtype, PtrDType) else ''} {r[u]}")
       elif u.op is Ops.ASSIGN: pass  # assign is already handled by the first pass
-      elif u.op is Ops.DEFINE_ACC: r[u] = r[u.src[0]]  # a define acc can be used and never be assigned to
+      elif u.op is Ops.DEFINE_REG: r[u] = r[u.src[0]]  # a define acc can be used and never be assigned to
       elif u.op is Ops.CONST: r[u] = lconst(u.arg, u.dtype)
       elif u.op is Ops.CAST and ldt(u.dtype) == ldt(u.src[0].dtype): r[u] = r[u.src[0]] # cast from signed to unsigned of the same size is a noop
       else:

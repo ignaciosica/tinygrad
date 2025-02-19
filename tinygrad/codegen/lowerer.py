@@ -120,7 +120,7 @@ def lower_reduce_axis(ctx: IndexContext, x: UOp):
     ret = functools.reduce(lambda x,y: x.alu(alu_op, y), [ret.gep(i) for i in range(ret.dtype.count)])
   if not len(reduce_range): return ret
   # create ACC and assign
-  acc = UOp(Ops.DEFINE_ACC, x.dtype, (x.const_like(identity_element(alu_op, x.dtype.scalar())),) + tuple(reduce_range), (ctx.acc_num,))
+  acc = UOp(Ops.DEFINE_REG, x.dtype, (x.const_like(identity_element(alu_op, x.dtype.scalar())),) + tuple(reduce_range), (ctx.acc_num,))
   ctx.acc_num += 1
   return acc.assign(acc.alu(alu_op, ret))
 

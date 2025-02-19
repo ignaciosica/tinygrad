@@ -177,7 +177,7 @@ devectorize = PatternMatcher([
   # no ALU on vectorized dtypes
   (UPat((*GroupOp.ALU, Ops.CAST, Ops.BITCAST, Ops.ASSIGN, Ops.INDEX), name="alu"), no_vectorized_alu),
   (UPat(Ops.WMMA, name="wmma"), no_vectorized_wmma),
-  (UPat(Ops.DEFINE_ACC, name="acc"), no_vectorized_acc),
+  (UPat(Ops.DEFINE_REG, name="acc"), no_vectorized_acc),
   (UPat((Ops.LOAD, Ops.STORE), name="ls"), no_vectorized_load_store),
 ])
 
