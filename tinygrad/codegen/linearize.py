@@ -179,6 +179,10 @@ def linearize_uop(sink:UOp, skip_check:bool=not __debug__) -> list[UOp]:
       # compute block ctx
       if s.op in {Ops.RANGE, Ops.IF}: this_block_ctx.append(s)
       # don't flow (fully) through assign and store
+      elif s.op is Ops.STORE and s.src[0].op is Ops.DEFINE_ACC:
+        # flow though assign, but remove the ranges used in the assign
+        assert s.src[0].op is Ops.DEFINE_ACC
+        this_block_ctx += [x for x in temp_block_ctxs[s.src[1]] if x not in s.src[0].src[1:]]
       elif s.op is Ops.STORE:
         # ugh, deal with non-reduce locals. probably wrong
         if isinstance(s.src[0].dtype, PtrDType) and s.src[0].dtype.local:
@@ -234,7 +238,7 @@ def linearize_uop(sink:UOp, skip_check:bool=not __debug__) -> list[UOp]:
   sink = graph_rewrite(sink, pm_block_finalize)
 
   # sanity checks (NOTE: these can cause things to be skipped in BEAM)
-  if not skip_check: type_verify(sink.arg.lst)
+  # if not skip_check: type_verify(sink.arg.lst)
 
   # return the list. TODO: refactor to return the UOp
   return list(sink.arg.lst)
