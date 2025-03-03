@@ -45,6 +45,7 @@ base_rewrite = PatternMatcher([
   # new load/store
   (UPat(Ops.INDEX, src=(UPat.var("buf"), UPat.var('idx'))),
    lambda ctx,buf,idx: f"({ctx[buf]}+{strip_parens(ctx[idx]) if idx.arg == Ops.ADD else ctx[idx]})"),
+  (UPat(Ops.LOAD, src=(UPat(Ops.DEFINE_ACC, name="acc"),), allow_any_len=True), lambda ctx,acc: "// noop acc load "+ctx[acc]+""),
   (UPat(Ops.LOAD, src=(UPat.var('bidx'), UPat.var("var"), UPat.var("gate"))), lambda ctx,bidx,var,gate: f"({ctx[gate]}?*{ctx[bidx]}:{ctx[var]})"),
   (UPat(Ops.LOAD, src=(UPat.var('bidx'),), allow_any_len=True), lambda ctx,bidx: f"*{ctx[bidx]}"),
   (UPat(Ops.STORE, src=(UPat(Ops.DEFINE_ACC, name="acc"), UPat.var("var")), allow_any_len=True), lambda ctx,acc,var: f"{ctx[acc]} = {ctx[var]};"),
@@ -149,6 +150,8 @@ class CStyleLanguage(Renderer):
       prefix = None
       if u.op is Ops.SPECIAL:
         r[u] = u.arg[0]
+      elif u.op is Ops.LOAD and u.src[0].op is Ops.DEFINE_ACC:
+        r[u] = r[u.src[0]]+"/*loaded*/"
       else:
         prefix = {Ops.RANGE: "ridx", Ops.WMMA: "wmma", Ops.DEFINE_LOCAL: "temp", Ops.CONST: "const",
                   Ops.CAST: "cast", Ops.BITCAST: "cast", Ops.GEP: "gep", Ops.VECTORIZE: "cast", Ops.NOOP: "precast",

@@ -120,9 +120,9 @@ def lower_reduce_axis(ctx: IndexContext, x: UOp):
   ctx.acc_num += 1
   if len(contract_axis:=flatten(x.arg for x in reduce_expand)):
     ret = UOp(Ops.CONTRACT, x.dtype.vec(prod(x[1] for x in contract_axis)), (ret,), tuple(contract_axis))
-    ret = functools.reduce(lambda x,y: x.alu(alu_op, y), [acc]+[ret.gep(i) for i in range(ret.dtype.count)])
+    ret = functools.reduce(lambda x,y: x.alu(alu_op, y), [acc.load()]+[ret.gep(i) for i in range(ret.dtype.count)])
   else:
-    ret = acc.alu(alu_op, ret)
+    ret = acc.load().alu(alu_op, ret)
   if not len(reduce_range): return ret
   # create ACC and assign
   return acc.store(ret)
