@@ -162,9 +162,9 @@ def no_vectorized_alu(alu):
 
 def no_vectorized_load_store(ls:UOp):
   idx = ls.src[0]
-  assert isinstance(idx.dtype, PtrDType)
-  if idx.dtype.v == 1: return None
-  tv = [UOp(ls.op, ls.dtype.scalar(), tuple(j.gep(i) for j in ls.src)) for i in range(idx.dtype.v)]
+  # assert isinstance(idx.dtype, PtrDType)
+  if idx.dtype.vcount == 1: return None
+  tv = [UOp(ls.op, ls.dtype.scalar(), tuple(j.gep(i) for j in ls.src)) for i in range(idx.dtype.vcount)]
   return UOp(Ops.VECTORIZE, ls.dtype, tuple(tv))
 
 def no_vectorized_acc(acc:UOp):

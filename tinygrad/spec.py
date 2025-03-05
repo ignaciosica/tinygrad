@@ -65,6 +65,7 @@ spec = PatternMatcher([
   (UPat(Ops.CONST, name="x"), lambda x: type(x.arg) is type(dtypes.as_const(x.arg, x.dtype))),
 
   # early LOAD has a <buf, shapetracker, store?>
+  (UPat(Ops.LOAD, src=(UPat((Ops.DEFINE_ACC)))), lambda: True),
   (UPat(Ops.LOAD, src=(UPat((Ops.DEFINE_GLOBAL, Ops.DEFINE_LOCAL)), UPat(Ops.VIEW))), lambda: True),
   (UPat(Ops.LOAD, src=(UPat((Ops.DEFINE_GLOBAL, Ops.DEFINE_LOCAL)), UPat(Ops.VIEW), UPat(Ops.STORE))), lambda: True),
 

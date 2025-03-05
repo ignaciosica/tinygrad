@@ -9,7 +9,7 @@ from tinygrad.codegen.devectorizer import no_vectorized_alu
 
 base_rewrite = PatternMatcher([
   (UPat(Ops.DEFINE_ACC, name="x"), lambda ctx,x: ctx[x.src[0]]),
-  (UPat(Ops.ASSIGN, name="x"), lambda ctx,x: f"{ctx[x.src[0]]} = {ctx[x.src[1]]};"),
+  # (UPat(Ops.ASSIGN, name="x"), lambda ctx,x: f"{ctx[x.src[0]]} = {ctx[x.src[1]]};"),
   (UPat(Ops.IF, name="x"), lambda ctx,x: f"if ({ctx[x.src[0]]}) {{"),
   (UPat((Ops.ENDIF, Ops.ENDRANGE)), lambda ctx: "}"),
   (UPat(Ops.WMMA, name="x"), lambda ctx,x: f"__{x.arg[0]}({ctx[x.src[0]]}, {ctx[x.src[1]]}, {ctx[x.src[2]]})"),
@@ -45,8 +45,10 @@ base_rewrite = PatternMatcher([
   # new load/store
   (UPat(Ops.INDEX, src=(UPat.var("buf"), UPat.var('idx'))),
    lambda ctx,buf,idx: f"({ctx[buf]}+{strip_parens(ctx[idx]) if idx.arg == Ops.ADD else ctx[idx]})"),
+  (UPat(Ops.LOAD, src=(UPat(Ops.DEFINE_ACC, name="acc"),), allow_any_len=True), lambda ctx,acc: "// noop acc load "+ctx[acc]+""),
   (UPat(Ops.LOAD, src=(UPat.var('bidx'), UPat.var("var"), UPat.var("gate"))), lambda ctx,bidx,var,gate: f"({ctx[gate]}?*{ctx[bidx]}:{ctx[var]})"),
   (UPat(Ops.LOAD, src=(UPat.var('bidx'),), allow_any_len=True), lambda ctx,bidx: f"*{ctx[bidx]}"),
+  (UPat(Ops.STORE, src=(UPat(Ops.DEFINE_ACC, name="acc"), UPat.var("var")), allow_any_len=True), lambda ctx,acc,var: f"{ctx[acc]} = {ctx[var]};"),
   (UPat(Ops.STORE, src=(UPat.var('bidx'), UPat.var("var")), allow_any_len=True), lambda ctx,bidx,var: f"*{ctx[bidx]} = {ctx[var]};"),
   # alu/gep
   (UPat(GroupOp.ALU, name="x"), lambda ctx,x: ctx.code_for_op[x.op](
@@ -148,6 +150,8 @@ class CStyleLanguage(Renderer):
       prefix = None
       if u.op is Ops.SPECIAL:
         r[u] = u.arg[0]
+      elif u.op is Ops.LOAD and u.src[0].op is Ops.DEFINE_ACC:
+        r[u] = r[u.src[0]]+"/*loaded*/"
       else:
         prefix = {Ops.RANGE: "ridx", Ops.WMMA: "wmma", Ops.DEFINE_LOCAL: "temp", Ops.CONST: "const",
                   Ops.CAST: "cast", Ops.BITCAST: "cast", Ops.GEP: "gep", Ops.VECTORIZE: "cast", Ops.NOOP: "precast",
@@ -163,6 +167,7 @@ class CStyleLanguage(Renderer):
         r[u] = l
       else:
         if u.op in {Ops.RANGE, Ops.ASSIGN, Ops.DEFINE_LOCAL} or u.dtype == dtypes.void:
+          if u.op is Ops.STORE and u.src[0].op is Ops.DEFINE_ACC: r[u] = r[u.src[0]]
           if u.op is Ops.ASSIGN: r[u] = r[u.src[0]]
         else:
           l = f"{self.render_dtype(u.dtype)} {r[u]} = {l}" + (";" if u.op is not Ops.SPECIAL else "")
