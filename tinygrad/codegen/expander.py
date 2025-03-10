@@ -87,6 +87,8 @@ expander = PatternMatcher([
   # vectorize DEFINE_ACC
   (UPat(Ops.VECTORIZE, src=UPat(Ops.DEFINE_ACC, name="acc"), name="v"),
     lambda acc,v: acc.replace(dtype=v.dtype, src=(acc.src[0].broadcast(v.dtype.count),)+acc.src[1:])),
+  (UPat(Ops.VECTORIZE, src=UPat(Ops.LOAD, name="ld", src=UPat(Ops.DEFINE_ACC, name="acc")), name="v"),
+    lambda ld,acc,v: ld.replace(dtype=v.dtype, src=(acc.replace(dtype=v.dtype, src=(acc.src[0].broadcast(v.dtype.count),)+acc.src[1:]),))),
   # BARRIERs aren't actually expanded
   (UPat(Ops.BARRIER, src=(UPat(Ops.UNROLL, name="ex"),)),
    lambda ex: UOp(Ops.UNROLL, src=(UOp(Ops.BARRIER, src=ex.src),)*len(ex.src), arg=ex.arg)),
