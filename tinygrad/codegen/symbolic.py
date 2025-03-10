@@ -350,7 +350,7 @@ def loop_collapse(compval, multconst, rng:UOp, acc:UOp, extra:UOp, idx2=None,idx
 
 def index_collapse(idx:UOp,rng:UOp,buf:UOp,ld:UOp,acc:UOp,add=UOp.const(dtypes.int, 0),mul=UOp.const(dtypes.int, 1)):
   if rng not in acc.src: return None
-  new_load = UOp.load(buf.index(add+mul*idx, (idx >= rng.src[0]) & (idx < rng.src[1])), dtype=ld.dtype)
+  new_load = UOp.load(buf.index(add+mul*idx, (idx >= rng.src[0]) & (idx < rng.src[1])))
   new_acc = acc.replace(src=acc.src[0:1]+tuple(x for x in acc.src[1:] if x is not rng))
   return new_acc.assign(new_acc+new_load)
 

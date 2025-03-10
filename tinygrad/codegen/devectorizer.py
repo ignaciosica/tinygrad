@@ -207,7 +207,7 @@ load_store_indexing = PatternMatcher([
 def move_mask(x:UOp, buf:UOp, idx:UOp, mask:UOp, cast:UOp|None=None) -> UOp:
   # this moves the mask from the indexing to the load/store op for rendering
   nidx = buf.index(idx).cast(cast.dtype) if cast is not None else buf.index(idx)
-  return UOp.load(nidx, x.const_like(0), mask, *x.src[1:], dtype=x.dtype) if x.op is Ops.LOAD else UOp.store(nidx, x.src[1], mask, *x.src[2:])
+  return UOp.load(nidx, x.const_like(0), mask, *x.src[1:]) if x.op is Ops.LOAD else UOp.store(nidx, x.src[1], mask, *x.src[2:])
 
 pm_render = PatternMatcher([
   # for rendering, we use explicit VECTORIZE

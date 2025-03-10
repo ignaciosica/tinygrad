@@ -115,7 +115,7 @@ class TestLinearizer(unittest.TestCase):
   @unittest.expectedFailure
   def test_const_alu_indexing(self):
     st = ShapeTracker.from_shape((4,)).to_uop()
-    load = UOp.load(UOp(Ops.DEFINE_GLOBAL, dtypes.float.ptr(), arg=1, src=()), st, dtype=dtypes.float)
+    load = UOp.load(UOp(Ops.DEFINE_GLOBAL, dtypes.float.ptr(), arg=1, src=()), st)
     op = load+UOp.const(dtypes.float, 1.0)*UOp.const(dtypes.float, -1)
     store = UOp.store(UOp(Ops.DEFINE_GLOBAL, dtypes.float.ptr(), arg=0, src=()), st, op)
     Tensor.manual_seed(0)
@@ -126,7 +126,7 @@ class TestLinearizer(unittest.TestCase):
   @unittest.expectedFailure
   def test_const_alu_indexing_one_const_fine(self):
     st = ShapeTracker.from_shape((4,)).to_uop()
-    load = UOp.load(UOp(Ops.DEFINE_GLOBAL, dtypes.float.ptr(), arg=1, src=()), st, dtype=dtypes.float)
+    load = UOp.load(UOp(Ops.DEFINE_GLOBAL, dtypes.float.ptr(), arg=1, src=()), st)
     op = load+UOp.const(dtypes.float, 1.0)
     store = UOp.store(UOp(Ops.DEFINE_GLOBAL, dtypes.float.ptr(), arg=0, src=()), st, op)
     Tensor.manual_seed(0)

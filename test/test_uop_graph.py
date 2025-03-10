@@ -452,13 +452,13 @@ class TestUOpGraph(unittest.TestCase):
     uops = to_uops_list([UOp(Ops.STORE, dtypes.void, (glbl0.index(idx), ld1+ld0))])
     ld0 = uops[-1].src[-1]
     # the gate and invalid value are deleted from ld1
-    self.assertEqual(ld0, UOp.load(glbl2.index(idx), dtype=dtypes.int))
+    self.assertEqual(ld0, UOp.load(glbl2.index(idx)))
 
   def test_fold_gated_load_local(self):
     glbl0 = UOp(Ops.DEFINE_GLOBAL, dtypes.int.ptr(), (), 0)
     smem = UOp(Ops.DEFINE_LOCAL, dtypes.int.ptr(size=1, local=True), (), "temp")
     lidx = UOp(Ops.SPECIAL, dtypes.int, (), ("lidx0", 16))
-    st = UOp(Ops.STORE, dtypes.void, (smem.index(lidx), UOp.load(glbl0.index(lidx), dtype=dtypes.int)))
+    st = UOp(Ops.STORE, dtypes.void, (smem.index(lidx), UOp.load(glbl0.index(lidx))))
     barrier = UOp(Ops.BARRIER, dtypes.void, (st, ))
     ld0 = UOp(Ops.LOAD, dtypes.int, (smem.index(lidx+1, UOp.const(dtypes.bool, False)), barrier))
     ld1 = UOp(Ops.LOAD, dtypes.int, (smem.index(lidx+2, UOp.const(dtypes.bool, True)), barrier))
