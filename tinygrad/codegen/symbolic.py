@@ -344,9 +344,9 @@ def loop_collapse(compval, multconst, rng:UOp, acc:UOp, extra:UOp, idx2=None,idx
   new_reduce_op = comprange.cast(multconst.dtype) * multconst
   # TODO: what does it mean to have the same numbered DEFINE_ACC with different ranges?
   new_acc = acc.replace(src=acc.src[0:1]+tuple(x for x in acc.src[1:] if x is not rng))
-  ret = new_acc.assign(new_acc+new_reduce_op)
+  ret = UOp(Ops.LOAD, acc.dtype, src=(new_acc.assign(UOp(Ops.LOAD, acc.dtype, src=(new_acc,))+new_reduce_op),))
   # if extra is not UOp(Ops.LOAD, acc.dtype, src=(acc,)): ret = ret + acc.assign(extra)
-  if extra is not UOp(Ops.LOAD, acc.dtype, src=(acc,)): ret = UOp(Ops.LOAD, acc.dtype, src=(ret,)) + UOp(Ops.LOAD, acc.dtype, src=(acc.assign(extra),))
+  if extra is not UOp(Ops.LOAD, acc.dtype, src=(acc,)): ret = ret + UOp(Ops.LOAD, acc.dtype, src=(acc.assign(extra),))
   return ret
   # ret = UOp(Ops.LOAD, new_acc.dtype, src=(new_acc.assign(new_acc+new_reduce_op),))
   # if extra is not UOp(Ops.LOAD, acc.dtype, src=(acc,)): ret = ret + acc.assign(extra)
@@ -355,7 +355,7 @@ def index_collapse(idx:UOp,rng:UOp,buf:UOp,ld:UOp,acc:UOp,add=UOp.const(dtypes.i
   if rng not in acc.src: return None
   new_load = UOp.load(buf.index(add+mul*idx, (idx >= rng.src[0]) & (idx < rng.src[1])), dtype=ld.dtype)
   new_acc = acc.replace(src=acc.src[0:1]+tuple(x for x in acc.src[1:] if x is not rng))
-  return new_acc.assign(new_acc+new_load)
+  return UOp(Ops.LOAD, acc.dtype, src=(new_acc.assign(UOp(Ops.LOAD, acc.dtype, src=(new_acc,))+new_load),))
 
 def reduce_collapse(acc:UOp, ret:UOp, alu:UOp):
   reduce_parented, reduce_unparented = partition(acc.src[1:], lambda x: x in ret.toposort)
@@ -436,18 +436,17 @@ sym = symbolic_flat+PatternMatcher([
   ((UPat.var('x', dtypes.uint64)&(UPat.var('y').where(UPat.const(dtypes.uint64, 0xFFFFFFFF), UPat.const(dtypes.uint64, 0)))).cast(dtypes.uint32),
    lambda x,y: y.where(x.cast(dtypes.uint32), UOp.const(dtypes.uint32, 0))),
   # arange loop folding
-  (acc_pat.assign(arange_m+UPat.var("extra")), loop_collapse),
+  (acc_pat.assign(arange_m+UPat.var("extra")).load(), loop_collapse),
   # indexing, with cast or where
-  # (acc_pat.assign(UPat.var("idx").eq(UPat(Ops.RANGE, name="rng")).cast()*index_load+acc_pat), index_collapse),
+  # (acc_pat.assign(UPat.var("idx").eq(UPat(Ops.RANGE, name="rng")).cast()*index_load+acc_pat).load(), index_collapse),
   # (acc_pat.assign(UPat.var("idx").eq(UPat(Ops.RANGE, name="rng")).where(index_load, UPat.const(None, 0.0))+acc_pat), index_collapse),
   # parentless reduce  # TODO: add MUL
   # (acc_pat.assign(UPat((Ops.ADD, Ops.MAX), src=[acc_pat, UPat.var("ret")], name="alu")), reduce_collapse),
   # ** self folding **
   (UPat(Ops.LOAD, src=(UPat(Ops.DEFINE_ACC, src=(UPat.cvar("x"),)),)), lambda x: x),            # a LOAD -> DEFINE_ACC without ranges is a CONST
   (UPat(Ops.DEFINE_ACC, src=(UPat.var("x"),)), lambda x: x),                                   # DEFINE_ACC without ranges is a CONST
-  (UPat(Ops.LOAD, src=(UPat(Ops.ASSIGN, src=(UPat.cvar(),UPat.var("x"))))), lambda x: x),     # an ASSIGN to a const is a NOOP
+  # (UPat(Ops.LOAD, src=(UPat(Ops.ASSIGN, src=(UPat.cvar(),UPat.var("x"))))), lambda x: x),     # an ASSIGN to a const is a NOOP
   (UPat(Ops.ASSIGN, src=(UPat.cvar(),UPat.var("x"))), lambda x: x),     # an ASSIGN to a const is a NOOP
-  (UPat(Ops.LOAD, src=(UPat.var("x"))), lambda x: x if x.op in (*GroupOp.ALU, Ops.CAST) else None),
   # x!=0 -> (bool)x
   (UPat.var("x")!=0, lambda x: x.cast(dtypes.bool.vec(x.dtype.count))),
   # ** where **

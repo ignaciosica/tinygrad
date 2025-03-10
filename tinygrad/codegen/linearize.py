@@ -234,7 +234,7 @@ def linearize_uop(sink:UOp, skip_check:bool=not __debug__) -> list[UOp]:
   sink = graph_rewrite(sink, pm_block_finalize)
 
   # sanity checks (NOTE: these can cause things to be skipped in BEAM)
-  # if not skip_check: type_verify(sink.arg.lst)
+  if not skip_check: type_verify(sink.arg.lst)
 
   # return the list. TODO: refactor to return the UOp
   return list(sink.arg.lst)
