@@ -120,12 +120,12 @@ def lower_reduce_axis(ctx: IndexContext, x: UOp):
   ctx.acc_num += 1
   if len(contract_axis:=flatten(x.arg for x in reduce_expand)):
     ret = UOp(Ops.CONTRACT, x.dtype.vec(prod(x[1] for x in contract_axis)), (ret,), tuple(contract_axis))
-    ret = functools.reduce(lambda x,y: x.alu(alu_op, y), [acc]+[ret.gep(i) for i in range(ret.dtype.count)])
+    ret = functools.reduce(lambda x,y: x.alu(alu_op, y), [UOp(Ops.LOAD, x.dtype, src=(acc,))]+[ret.gep(i) for i in range(ret.dtype.count)])
   else:
-    ret = acc.alu(alu_op, ret)
+    ret = UOp(Ops.LOAD, x.dtype, src=(acc,)).alu(alu_op, ret)
   if not len(reduce_range): return ret
   # create ACC and assign
-  return acc.assign(ret)
+  return  UOp(Ops.LOAD, x.dtype, src=(acc.assign(ret),))
 
 def lower_load_store(ctx: IndexContext, x: UOp):
   idx, valid = x.st_arg.to_indexed_uops(ctx.ridxs if x.op is Ops.LOAD and x.src[0].op is Ops.DEFINE_LOCAL else ctx.idxs)

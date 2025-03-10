@@ -77,7 +77,7 @@ spec = PatternMatcher([
   (UPat(Ops.INDEX, src=(UPat((Ops.DEFINE_GLOBAL, Ops.DEFINE_LOCAL)), UPat())), lambda: True),
 
   # LOAD takes a <bufidx, alt?, gate?, barrier?>
-  (UPat(Ops.LOAD, src=(UPat((Ops.INDEX, Ops.CAST)),)), lambda: True),
+  (UPat(Ops.LOAD, src=(UPat((Ops.INDEX, Ops.CAST, Ops.DEFINE_ACC, Ops.ASSIGN)),)), lambda: True),
   (UPat(Ops.LOAD, src=(UPat((Ops.INDEX, Ops.CAST)), UPat((Ops.IF, Ops.BARRIER)))), lambda: True),
   (UPat(Ops.LOAD, src=(UPat((Ops.INDEX, Ops.CAST)), UPat.var("alt"), UPat(dtype=dtypes.bool)), name="ld"), lambda ld,alt: ld.dtype == alt.dtype),
 
