@@ -445,8 +445,8 @@ sym = symbolic_flat+PatternMatcher([
   # ** self folding **
   (UPat(Ops.LOAD, src=(UPat(Ops.DEFINE_ACC, src=(UPat.cvar("x"),)),)), lambda x: x),            # a LOAD -> DEFINE_ACC without ranges is a CONST
   (UPat(Ops.DEFINE_ACC, src=(UPat.var("x"),)), lambda x: x),                                   # DEFINE_ACC without ranges is a CONST
-  # (UPat(Ops.LOAD, src=(UPat(Ops.ASSIGN, src=(UPat.cvar(),UPat.var("x"))))), lambda x: x),     # an ASSIGN to a const is a NOOP
-  (UPat(Ops.ASSIGN, src=(UPat.cvar(),UPat.var("x"))), lambda x: x),     # an ASSIGN to a const is a NOOP
+  (UPat(Ops.LOAD, src=(UPat(Ops.ASSIGN, src=(UPat.cvar(),UPat.var("x"))))), lambda x: x),     # an ASSIGN to a const is a NOOP
+  # (UPat(Ops.ASSIGN, src=(UPat.cvar(),UPat.var("x"))), lambda x: x),     # an ASSIGN to a const is a NOOP
   # x!=0 -> (bool)x
   (UPat.var("x")!=0, lambda x: x.cast(dtypes.bool.vec(x.dtype.count))),
   # ** where **
