@@ -333,24 +333,27 @@ class CUDARenderer(CStyleLanguage):
   if getenv("ALLOW_TF32", 0): tc_sm80 += tc_8168_tf32
   tc_sm75 = tc_8168_f16
   def __init__(self, arch:str):
-    # self.tensor_cores = [TensorCore(dims=(16,16,8), threads=32, elements_per_thread=(4,4,8), dtype_in=dtypes.float, dtype_out=dtypes.float,
-              # opts=("u0","u0","u0","l0","l1","l1","l1","l1"), swizzle=(((7,1,2,3,4),(0,8,9,10,5,6)), ((10,0,5,6,7,),(1,2,3,4,8,9))))]
+    self.tensor_cores = [TensorCore(dims=(16,16,8), threads=32, elements_per_thread=(4,4,8), dtype_in=dtypes.float, dtype_out=dtypes.float,
+              opts=("u0","u0","u0","l0","l1","l1","l1","l1"),
+              swizzle=(((7,1,2,3,4),(0,8,9,10,5,6)), ((10,0,5,6,7,),(1,2,3,4,8,9))))]
     # self.tensor_cores = [TensorCore(dims=(16,16,4), threads=32, elements_per_thread=(2,2,8), dtype_in=dtypes.float, dtype_out=dtypes.float,
-              # opts=("u0","u0","u0","l0","l1","l1","l1","l1"), swizzle=(((6,1,2,3,4),(0,7,8,9,5)), ((8,9,0,5,6),(1,2,3,4,7))))]
+    #           opts=("u0","u0","u0","l0","l1","l1","l1","l1"),
+    #           swizzle=(((6,1,2,3,4),(0,7,8,9,5)), ((8,9,0,5,6),(1,2,3,4,7))))]
     # self.tensor_cores = [TensorCore(dims=(128,128,4), threads=256, elements_per_thread=(2,2,64), dtype_in=dtypes.float, dtype_out=dtypes.float,
     #           opts=("u0","u0","u0","u0","u0","u0","l0","l1","l1","l1","l1","l1","l1","l1"),
     #           swizzle=(((9,1,2,3,4,5,6,7),(0,10,11,12,13,14,15,8)), ((11,12,13,14,15,0,8,9),(1,2,3,4,5,6,7,10))))]
-    self.tensor_cores = [TensorCore(dims=(64,128,4), threads=128, elements_per_thread=(2,2,64), dtype_in=dtypes.float, dtype_out=dtypes.float,
-              opts=("u0","u0","l0","l0","u0","u0","u1","u1","l1","l1","l1","l1","l1"),
-              swizzle=(((8,13,14,2,3,4,5),(0,1,6,9,10,11,12,7)), ((10,0,1,11,12,7,8),(2,3,4,5,6,13,14,9))))]
+    # self.tensor_cores = [TensorCore(dims=(64,128,4), threads=128, elements_per_thread=(2,2,64), dtype_in=dtypes.float, dtype_out=dtypes.float,
+    #           opts=("u0","u0","l0","l0","u0","u0","u1","u1","l1","l1","l1","l1","l1"),
+    #           swizzle=(((8,13,14,2,3,4,5),(0,1,6,9,10,11,12,7)), ((10,0,1,11,12,7,8),(2,3,4,5,6,13,14,9))))]
     # self.tensor_cores = [TensorCore(dims=(8,8,8), threads=8, elements_per_thread=(8,8,8), dtype_in=dtypes.float, dtype_out=dtypes.float,
-              # opts=("u0","u0","u0","l1","l1","l1"), swizzle=(((0,1,2),(6,7,8,3,4,5)), ((3,4,5),(0,1,2,6,7,8))))]
+    #           opts=("u0","u0","u0","l1","l1","l1"),
+    #           swizzle=(((0,1,2),(6,7,8,3,4,5)), ((3,4,5),(0,1,2,6,7,8))))]
     # self.tensor_cores = [TensorCore(dims=(32,32,32), threads=256, elements_per_thread=(4,4,4), dtype_in=dtypes.float, dtype_out=dtypes.float,
-    #                                 opts=("u0","u0","l0","l0","l0","l1","l1","l1","l1","l1"),
-    #                                 swizzle=(((10,11,12,3,4,5,6,7),(0,1,2,13,14,8,9)),((0,1,2,8,9,10,11,12,),(3,4,5,6,7,13,14))))]
+    #           opts=("u0","u0","l0","l0","l0","l1","l1","l1","l1","l1"),
+    #           swizzle=(((10,11,12,3,4,5,6,7),(0,1,2,13,14,8,9)),((0,1,2,8,9,10,11,12,),(3,4,5,6,7,13,14))))]
     # self.tensor_cores = [TensorCore(dims=(8,8,32), threads=32, elements_per_thread=(8,8,2), dtype_in=dtypes.float, dtype_out=dtypes.float,
-    #                                 opts=("u0","l0","l0","l1","l1","l1"),
-    #                                 swizzle=(((8,9,2,3,4),(0,1,10,5,6,7)),((5,6,7,8,9),(2,3,4,10,0,1))))]
+    #           opts=("u0","l0","l0","l1","l1","l1"),
+    #           swizzle=(((8,9,2,3,4),(0,1,10,5,6,7)),((5,6,7,8,9),(2,3,4,10,0,1))))]
     self.arch = arch
     # self.tensor_cores, self.arch = CUDARenderer.tc_sm80 if int(arch[3:]) >= 80 else CUDARenderer.tc_sm75 if int(arch[3:]) >= 75 else [], arch
   def __reduce__(self): return self.__class__, (self.arch,)
