@@ -319,6 +319,7 @@ class Kernel:
       if (tc_opts:=self.tensor_core_opts) is not None:
         if extra_opts is not None:
           for opt in extra_opts: self.apply_opt(opt)
+        if getenv("NO_HANDCODED_TC_OPTS", 0): return True
         else:
           if AMX: return True # skip hand-coded TC opts if AMX, upcasting will make kernel slower
           # hand-coded TC opts
@@ -667,7 +668,7 @@ class Kernel:
 
     if DEBUG >= 3:
       print(self.name)
-      if DEBUG >= 5: print(self.ast)
+      if DEBUG >= 5: print(modified_ast)
       for i,(buf,st) in enumerate([(buf,st) for buf,st in zip(self.bufs, self.sts) if buf.op not in {Ops.CONST, Ops.VALID}]):
         print(f"{i:2d}: {str(st.shape):25s} {str(buf.src[0].dtype).replace('dtypes.',''):20s}", st.real_strides())
       print(self.applied_opts)
