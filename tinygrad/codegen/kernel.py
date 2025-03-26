@@ -326,8 +326,8 @@ class Kernel:
             szs = [sz for sz in [5,4,3,2] if self.full_shape[tc_opts.axes[tc_dim]] % sz == 0]
             if szs: self.apply_opt(Opt(OptOps.UPCAST, tc_opts.axes[tc_dim], szs[0]))
 
-          if tc_opts.axes_exist[0] and (szs := [sz for sz in [4,2] if self.full_shape[tc_opts.axes[0]] % sz == 0]): # attempt to local N
-            self.apply_opt(Opt(OptOps.LOCAL, tc_opts.axes[0], szs[0]))
+          # if tc_opts.axes_exist[0] and (szs := [sz for sz in [4,2] if self.full_shape[tc_opts.axes[0]] % sz == 0]): # attempt to local N
+            # self.apply_opt(Opt(OptOps.LOCAL, tc_opts.axes[0], szs[0]))
       return True
     except KernelOptError:
       return False
@@ -685,11 +685,13 @@ class Kernel:
       global_load = global_load.replace(src=(buf, src_st.permute(tuple(perm)).to_uop()))
       ctx[1].add(global_load)
       local_store = UOp.store(local_buffer, store_st.permute(tuple(perm)).to_uop(), global_load)
+      print("using LDS!!")
       return UOp(Ops.LOAD, global_load.dtype, (local_buffer, load_st.to_uop(), local_store))
 
-    if OptOps.UNROLL not in [opt.op for opt in self.applied_opts] or OptOps.LOCAL not in [opt.op for opt in self.applied_opts]:
-      print("There should be local and unroll for lds")
-      return ast
+    if (OptOps.UNROLL not in [opt.op for opt in self.applied_opts] or OptOps.LOCAL not in [opt.op for opt in self.applied_opts]):
+      if OptOps.TC not in [opt.op for opt in self.applied_opts]:
+        print("There should be local and unroll for lds")
+        return ast
 
     if not all_same([opt.arg for opt in self.applied_opts if opt.op in (OptOps.UNROLL, OptOps.LOCAL)]):
       print("unroll and local opts should be the same size")
