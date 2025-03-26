@@ -671,11 +671,15 @@ class Kernel:
       print("perm", perm, ctx[0].first_reduce)
       print(ctx[0].upcasted_axis(buf.arg))
       print(ctx[0].local_dims)
+      print("fist reduce", ctx[0].first_reduce)
+      print("fist upcast", ctx[0].first_upcast)
       for i in range(len(perm)):
         if i >= ctx[0].global_dims and i < ctx[0].first_reduce and local_shape[i] == 1:
           print("we need to permute this local")
-          for ii,s in enumerate(local_shape[ctx[0].first_reduce+1:]):
-            if ctx[0].upcasted_axis(buf.arg)[ii][2]: perm[i], perm[ii + ctx[0].first_reduce+1] = perm[ii + ctx[0].first_reduce+1], perm[i]
+          for ii,s in enumerate(local_shape[ctx[0].first_upcast:]):
+            if ctx[0].upcasted_axis(buf.arg)[ii][2]:
+              print(f"permuting {perm[i]} for {perm[ii + ctx[0].first_upcast]}")
+              perm[i], perm[ii + ctx[0].first_upcast] = perm[ii + ctx[0].first_upcast], perm[i]
       print(perm)
       local_buffer = UOp(Ops.DEFINE_LOCAL, global_load.dtype.ptr(size=store_st.real_size(), local=True), (), f"temp{buf.arg}")
       global_load = global_load.replace(src=(buf, src_st.permute(tuple(perm)).to_uop()))
