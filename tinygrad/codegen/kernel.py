@@ -396,6 +396,7 @@ class Kernel:
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
     elif opt.op is OptOps.UPCAST:                     # yellow
+      return self
       check(axis < self.first_reduce, "upcast is for non-reduce")
       check(not (self.tensor_core and self.global_dims <= axis < self.global_dims+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
       check((self.opts is not None and self.opts.device == "DSP") or amt <= 16, "don't upcast more than 16")
@@ -526,7 +527,7 @@ class Kernel:
         if self.first_reduce < self.first_upcast and s <= 3 and isinstance(s2:=self.full_unupcasted_shape[-1], int) and s2 <= 3:
           self.apply_opt(Opt(OptOps.UNROLL, len(self.full_unupcasted_shape)-1-self.first_reduce, 0))
       else:
-        for splits in [4]:
+        for splits in [8,4]:
           if self.full_unupcasted_shape[-1]%splits == 0:
             self.apply_opt(Opt(OptOps.UNROLL, len(self.full_unupcasted_shape)-1-self.first_reduce, splits))
             break
@@ -548,7 +549,7 @@ class Kernel:
         to_local: list[tuple[int, int]] = []
         for _, axis in sorted(local_axis_ranking, key=lambda x: (-x[0], -x[1])):
           local_size = prod(sz for _, sz in to_local)
-          local_sz: Optional[int] = next((x for x in ([32] * (axis == 0) + [16, 8, 4, 3, 2]) if self.full_shape[axis] % x == 0 and local_size * x <= 128), None)  # noqa: E501
+          local_sz: Optional[int] = next((x for x in ([32] * (axis == 0) + [8, 4, 3, 2]) if self.full_shape[axis] % x == 0 and local_size * x <= 128), None)  # noqa: E501
           if local_sz is not None: to_local.append((axis, local_sz))
         deleted_shape = 0
         for axis, local_sz in sorted(to_local[:3]):
@@ -657,22 +658,33 @@ class Kernel:
 
   def lds(self, ast) -> UOp:
     from tinygrad.ops import UPat
-    def transform_load(ctx:tuple[Kernel, set[UOp]], load:UOp):
-      if load.src[0].op is not Ops.DEFINE_GLOBAL or load in ctx[1]: return None
-      ctx[1].add(load)
-      src_st, buf = load.st_arg, load.src[0]
+    def transform_load(ctx:tuple[Kernel, set[UOp]], global_load:UOp):
+      if global_load.src[0].op is not Ops.DEFINE_GLOBAL: return None
+      if global_load in ctx[1]: return None
+      ctx[1].add(global_load)
+      src_st, buf = global_load.st_arg, global_load.src[0]
       wd, fr, tcd = ctx[0].global_dims, ctx[0].first_reduce, ctx[0].first_upcast
       local_shape = tuple(1 if st == 0 or i < wd or (i >= fr and i < tcd) else src_st.shape[i] for i,st in enumerate(src_st.real_strides()))
-
-      print(local_shape, buf.arg)
-      print(load)
-
       load_st = store_st = ShapeTracker.from_shape(local_shape)
-      local_buffer = UOp(Ops.DEFINE_LOCAL, load.dtype.ptr(size=store_st.real_size(), local=True), (), f"temp{buf.arg}")
-      local_store = UOp.store(local_buffer, store_st.to_uop(), load)
-      return UOp(Ops.LOAD, load.dtype, (local_buffer, load_st.to_uop(), local_store))
+      local_buffer = UOp(Ops.DEFINE_LOCAL, global_load.dtype.ptr(size=store_st.real_size(), local=True), (), f"temp{buf.arg}")
+      if buf.arg == 1:
+        perm = (0,2,1)
+        perm = (0,1,5,2,4,3)
+        src_st = src_st.permute(perm)
+        store_st = store_st.permute(perm)
+      else:
+        perm = (1,2,0)
+        perm = (0,1,3,5,4,2)
+        src_st = src_st.permute(perm)
+        store_st = store_st.permute(perm)
+    # u0, l0, l0
+    # [Opt(op=OptOps.UNROLL, axis=0, arg=0), Opt(op=OptOps.LOCAL, axis=0, arg=8), Opt(op=OptOps.LOCAL, axis=0, arg=8)]        
+      global_load = global_load.replace(src=(buf, src_st.to_uop()))
+      ctx[1].add(global_load)
+      local_store = UOp.store(local_buffer, store_st.to_uop(), global_load)
+      return UOp(Ops.LOAD, global_load.dtype, (local_buffer, load_st.to_uop(), local_store))
 
-    return graph_rewrite(ast, PatternMatcher([(UPat(Ops.LOAD, name="load"), transform_load)]), ctx=(self, set()))
+    return graph_rewrite(ast, PatternMatcher([(UPat(Ops.LOAD, name="global_load"), transform_load)]), ctx=(self, set()))
 
   # **** this is the lowerer ****
 
