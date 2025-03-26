@@ -687,6 +687,13 @@ class Kernel:
       local_store = UOp.store(local_buffer, store_st.permute(tuple(perm)).to_uop(), global_load)
       return UOp(Ops.LOAD, global_load.dtype, (local_buffer, load_st.to_uop(), local_store))
 
+    if OptOps.UNROLL not in [opt.op for opt in self.applied_opts] or OptOps.LOCAL not in [opt.op for opt in self.applied_opts]:
+      print("There should be local and unroll for lds")
+      return ast
+
+    if not all_same([opt.arg for opt in self.applied_opts if opt.op in (OptOps.UNROLL, OptOps.LOCAL)]):
+      print("unroll and local opts should be the same size")
+      return ast
     return graph_rewrite(ast, PatternMatcher([(UPat(Ops.LOAD, name="global_load"), transform_load)]), ctx=(self, set()))
 
   # **** this is the lowerer ****
