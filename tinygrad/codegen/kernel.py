@@ -670,35 +670,17 @@ class Kernel:
       perm = list(range(len(ctx[0].full_shape)))
       print("perm", perm, ctx[0].first_reduce)
       print(ctx[0].upcasted_axis(buf.arg))
+      print(ctx[0].local_dims)
       for i in range(len(perm)):
-        if i < ctx[0].global_dims: continue
-        if i < ctx[0].first_reduce and local_shape[i] == 1:
+        if i >= ctx[0].global_dims and i < ctx[0].first_reduce and local_shape[i] == 1:
+          print("we need to permute this local")
           for ii,s in enumerate(local_shape[ctx[0].first_reduce+1:]):
-            print(ctx[0].upcasted_axis(buf.arg)[ii][2])
-            if ctx[0].upcasted_axis(buf.arg)[ii][2]:
-              print(f"permute {i} for {ii + ctx[0].first_reduce+1}")
-              temp = perm[i]
-              perm[i] = perm[ii + ctx[0].first_reduce+1]
-              perm[ii + ctx[0].first_reduce+1] = temp
-              print(perm)
-      # if buf.arg == 1:
-      #   # perm = (0,2,1)
-      #   perm = (0,1,2,5,4,3)
-      perm = tuple(perm)
+            if ctx[0].upcasted_axis(buf.arg)[ii][2]: perm[i], perm[ii + ctx[0].first_reduce+1] = perm[ii + ctx[0].first_reduce+1], perm[i]
       print(perm)
-      src_st = src_st.permute(perm)
-      store_st = store_st.permute(perm)
-      # else:
-      #   # perm = (1,2,0)
-      #   perm = (0,1,5,3,4,2)
-      # src_st = src_st.permute(perm)
-      # store_st = store_st.permute(perm)
-    # u0, l0, l1
-    # [Opt(op=OptOps.UNROLL, axis=0, arg=8), Opt(op=OptOps.LOCAL, axis=0, arg=8), Opt(op=OptOps.LOCAL, axis=1, arg=8)]
       local_buffer = UOp(Ops.DEFINE_LOCAL, global_load.dtype.ptr(size=store_st.real_size(), local=True), (), f"temp{buf.arg}")
-      global_load = global_load.replace(src=(buf, src_st.to_uop()))
+      global_load = global_load.replace(src=(buf, src_st.permute(tuple(perm)).to_uop()))
       ctx[1].add(global_load)
-      local_store = UOp.store(local_buffer, store_st.to_uop(), global_load)
+      local_store = UOp.store(local_buffer, store_st.permute(tuple(perm)).to_uop(), global_load)
       return UOp(Ops.LOAD, global_load.dtype, (local_buffer, load_st.to_uop(), local_store))
 
     return graph_rewrite(ast, PatternMatcher([(UPat(Ops.LOAD, name="global_load"), transform_load)]), ctx=(self, set()))
