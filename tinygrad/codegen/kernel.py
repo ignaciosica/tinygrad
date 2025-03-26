@@ -396,7 +396,7 @@ class Kernel:
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
     elif opt.op is OptOps.UPCAST:                     # yellow
-      return self
+      # return self
       check(axis < self.first_reduce, "upcast is for non-reduce")
       check(not (self.tensor_core and self.global_dims <= axis < self.global_dims+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
       check((self.opts is not None and self.opts.device == "DSP") or amt <= 16, "don't upcast more than 16")
@@ -664,20 +664,35 @@ class Kernel:
       wd, fr, tcd = ctx[0].global_dims, ctx[0].first_reduce, ctx[0].first_upcast
       local_shape = tuple(1 if st == 0 or i < wd or (i >= fr and i < tcd) else src_st.shape[i] for i,st in enumerate(src_st.real_strides()))
       load_st = store_st = ShapeTracker.from_shape(local_shape)
-      print(local_shape)
+      print("local_shape", local_shape)
+      (ctx[0].colored_shape())
       print(ctx[0].applied_opts)
-      if buf.arg == 1:
-        # perm = (0,2,1)
-        perm = (0,1,2,5,4,3)
-        src_st = src_st.permute(perm)
-        store_st = store_st.permute(perm)
-      else:
-        # perm = (1,2,0)
-        perm = (0,1,5,3,4,2)
-        src_st = src_st.permute(perm)
-        store_st = store_st.permute(perm)
-    # u0, l0, l0
-    # [Opt(op=OptOps.UNROLL, axis=0, arg=0), Opt(op=OptOps.LOCAL, axis=0, arg=8), Opt(op=OptOps.LOCAL, axis=0, arg=8)]
+      perm = list(range(len(ctx[0].full_shape)))
+      print("perm", perm, ctx[0].first_reduce)
+      print(ctx[0].upcasted_axis(buf.arg))
+      for i in range(len(perm)):
+        if i < ctx[0].global_dims: continue
+        if i < ctx[0].first_reduce and local_shape[i] == 1:
+          for ii,s in enumerate(local_shape[ctx[0].first_reduce:ctx[0].first_upcast]):
+            if s != 1:
+              print(f"permute {i} for {ii + ctx[0].first_reduce}")
+              temp = perm[i]
+              perm[i] = perm[ii+ctx[0].first_reduce]
+              perm[ii+ctx[0].first_reduce] = temp
+      # if buf.arg == 1:
+      #   # perm = (0,2,1)
+      #   perm = (0,1,2,5,4,3)
+      perm = tuple(perm)
+      print(perm)
+      src_st = src_st.permute(perm)
+      store_st = store_st.permute(perm)
+      # else:
+      #   # perm = (1,2,0)
+      #   perm = (0,1,5,3,4,2)
+      # src_st = src_st.permute(perm)
+      # store_st = store_st.permute(perm)
+    # u0, l0, l1
+    # [Opt(op=OptOps.UNROLL, axis=0, arg=8), Opt(op=OptOps.LOCAL, axis=0, arg=8), Opt(op=OptOps.LOCAL, axis=1, arg=8)]
       local_buffer = UOp(Ops.DEFINE_LOCAL, global_load.dtype.ptr(size=store_st.real_size(), local=True), (), f"temp{buf.arg}")
       global_load = global_load.replace(src=(buf, src_st.to_uop()))
       ctx[1].add(global_load)
