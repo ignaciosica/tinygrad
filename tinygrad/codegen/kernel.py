@@ -673,12 +673,14 @@ class Kernel:
       for i in range(len(perm)):
         if i < ctx[0].global_dims: continue
         if i < ctx[0].first_reduce and local_shape[i] == 1:
-          for ii,s in enumerate(local_shape[ctx[0].first_reduce:ctx[0].first_upcast]):
-            if s != 1:
-              print(f"permute {i} for {ii + ctx[0].first_reduce}")
+          for ii,s in enumerate(local_shape[ctx[0].first_reduce+1:]):
+            print(ctx[0].upcasted_axis(buf.arg)[ii][2])
+            if ctx[0].upcasted_axis(buf.arg)[ii][2]:
+              print(f"permute {i} for {ii + ctx[0].first_reduce+1}")
               temp = perm[i]
-              perm[i] = perm[ii+ctx[0].first_reduce]
-              perm[ii+ctx[0].first_reduce] = temp
+              perm[i] = perm[ii + ctx[0].first_reduce+1]
+              perm[ii + ctx[0].first_reduce+1] = temp
+              print(perm)
       # if buf.arg == 1:
       #   # perm = (0,2,1)
       #   perm = (0,1,2,5,4,3)
