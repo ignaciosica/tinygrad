@@ -690,7 +690,7 @@ class Kernel:
 
     if (OptOps.UNROLL not in [opt.op for opt in self.applied_opts] or OptOps.LOCAL not in [opt.op for opt in self.applied_opts]):
       if OptOps.TC not in [opt.op for opt in self.applied_opts]:
-        print("There should be local and unroll for lds")
+        print("There should be local and unroll for lds or Tensor Core")
         return ast
 
     if not all_same([opt.arg for opt in self.applied_opts if opt.op in (OptOps.UNROLL, OptOps.LOCAL)]):
