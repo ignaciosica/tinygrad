@@ -561,12 +561,27 @@ class Kernel:
 
     return graph_rewrite(fixup_ast(self.ast), view_left)
 
+  # dont cheat!! you don't I think you don't need any information from kernel other than local dims
   def apply_tc(self, ast) -> UOp:
-    def transform(ctx:tuple[Kernel, list[TensorCore], set[UOp]], op:UOp):
-      k, tcs, applied = ctx
+    def transform(ctx:tuple[int, int, list[TensorCore], set[UOp]], op:UOp):
+      local_dims, upcast_dims, tcs, applied = ctx
+      first_reduce = op.arg[0]
+      global_dims = first_reduce - local_dims
+
+      reduce_st = unwrap(op.st)
+      print(reduce_st)
+
+      first_upcast = len(reduce_st.shape) - upcast_dims
+
+      gd, fu = global_dims, first_upcast
+
+      # we want the first to be reduce
+
       if len(applied): return None
 
-      gd, fu = k.global_dims, k.first_upcast
+      exit()
+
+      # gd, fu = k.global_dims, k.first_upcast
       def get_upcast_axes(tc:TensorCore, buf): # upcast along non-zero dimensions of (tc_reduce + tc_upcast)
         upcast_axes = int(math.log2(tc.elements_per_thread[buf]))
         return tuple((fu + len(tc.get_reduce_axes()) + len(tc.get_upcast_axes()) - (i+1), 2) for i in range(upcast_axes))
@@ -577,17 +592,26 @@ class Kernel:
           + [gd + x + (offset if x >= len(local_perm) else 0) for x in upcast_perm] + list(range(fu + len(upcast_perm), len(shape)))
         return ShapeTracker.from_shape(shape).permute(tuple(permaxis))
 
-      for tc in tcs:
-        # first check local lenght is correct and sized 2
-        if k.local_dims < len(tc.get_local_axes()) or any(sz != 2 for sz in k.output_shape[gd:gd+len(tc.get_local_axes())]): continue
-        # if k.upcasted_axis() < len(tc.get_local_axes()): continue
+      def _apply_tc(tc):
+        # first check local length is correct and sized 2
+        if k.local_dims < len(tc.get_local_axes()) or any(sz != 2 for sz in k.output_shape[gd:gd+len(tc.get_local_axes())]): return None
 
+        # check if dtypes match
         has_cast = op.src[0].op is Ops.CAST
         mul_op = op.src[0].src[0] if has_cast else op.src[0]
-        if op.dtype != tc.dtype_out or mul_op.dtype != tc.dtype_in: continue
+        if op.dtype != tc.dtype_out or mul_op.dtype != tc.dtype_in: return None
 
         srcs = list((op.src[0] if op.src[0].op is not Ops.CAST else op.src[0].src[0]).src)
         for i, (src, swizzle) in enumerate(zip(srcs, tc.swizzle)):
+          # check reduce first (it will double check for both)
+          for upcasted_shape, _, reduce in k.upcasted_axis(i + 1)[:len(tc.get_reduce_axes())]:
+            if upcasted_shape != 2 or not reduce: return None
+          # if k.upcasted_axis(i + 1)[:len(tc.get_reduce_axes())]
+          print(k.upcasted_axis(i + 1))
+
+          print(tc.get_reduce_axes(), tc.get_upcast_axes())
+          # exit()
+          # check upcasted axis for 0 are correct
           # check if shape is correctly, if not, continue
           # first check if locals match
 
@@ -602,7 +626,7 @@ class Kernel:
 
         tc_reduce_axes = tuple(fu + ax for ax, _ in tc.get_reduce_axes())
         tc_upcast_axes = (get_upcast_axes(tc,0), get_upcast_axes(tc,1), get_upcast_axes(tc,2))
-        wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, k.opts.device, tc.threads, tc_upcast_axes, tc_reduce_axes)
+        wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, "METAL", tc.threads, tc_upcast_axes, tc_reduce_axes)
         wmma = UOp(Ops.WMMA, dtype=tc.dtype_out.vec(tc.elements_per_thread[2]), src=(
           UOp(Ops.CONTRACT, dtype=srcs[0].dtype.vec(tc.elements_per_thread[0]), src=(srcs[0],), arg=tc_upcast_axes[0]),
           UOp(Ops.CONTRACT, dtype=srcs[1].dtype.vec(tc.elements_per_thread[1]), src=(srcs[1],), arg=tc_upcast_axes[1]),
@@ -613,10 +637,14 @@ class Kernel:
         applied.add(op)
 
         return op.replace(src=(tc_uop,), arg=(Ops.ADD, new_axes)) if new_axes else tc_uop
+
+      for tc in tcs:
+        ret = _apply_tc(tc)
+        if ret is not None: return ret
       return None
 
     return graph_rewrite(ast, view_left + PatternMatcher([(UPat(Ops.REDUCE_AXIS, name="op"), transform)]),
-                         ctx=(self, self.opts.tensor_cores, set()))
+                         ctx=(self.local_dims, self.upcasted, self.opts.tensor_cores, set()))
 
   # **** this is the lowerer ****
 
