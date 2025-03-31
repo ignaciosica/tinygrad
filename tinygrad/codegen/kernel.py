@@ -256,27 +256,37 @@ class Kernel:
         try:
           try:
 
-            # pad last reduce & unroll last reduce (offset len(full_shape) - global_dims), not sure if this is always true
+            # pad and unroll last reduce (offset len(full_shape) - global_dims)
+            # maybe you dont care what ops are performed, only if strides are non 0 for each buffer on each op
+
+            # tc_reduce_axis = len(full_shape) # last reduce axis
 
             for axis, dim in enumerate(tc.dims): # pad the tensor core axes
               if axis == 2: axis = self.first_reduce
-              if dim > self.full_shape[axis]: return self # avoid excessive padding
+              # if dim > self.full_shape[axis]: return self # avoid excessive padding
               if self.full_shape[axis] % dim == 0: continue # dim needs no pad
               self.apply_opt((pad_opt := Opt(OptOps.PADTO, axis, dim)), append_opt=False) # PADTO might fail
               applied_tc_opts.append(pad_opt)
           except KernelOptError: pass
           for opt in tc.opts: # tensor core -- unroll the reduce dim (K), upcast and local the inner and outer dims (N, M)
-            self.apply_opt((rlu_opt := Opt({"u":OptOps.UPCAST, "l":OptOps.LOCAL,"r":OptOps.UNROLL}[opt[0]], int(opt[1]), 2)), append_opt=False)
+            # r should unroll axis + offset
+            # if opt[0] == "r": self.apply_opt((rlu_opt := Opt(OptOps.UNROLL, int(opt[1]), 2)), append_opt=False)
+            if opt[0] == "r": self.apply_opt((rlu_opt := Opt(OptOps.UNROLL, int(0), 2)), append_opt=False)
+
+            # u/l [1] should u/l first dimension of non 0 stride for src[0]
+            # u/l [0] should u/l first dimension of non 0 stride for src[1]
+            # this should also be taken into account for pad
+            else: self.apply_opt((rlu_opt := Opt({"u":OptOps.UPCAST, "l":OptOps.LOCAL}[opt[0]], int(opt[1]), 2)), append_opt=False)
             applied_tc_opts.append(rlu_opt)
 
           self.applied_opts.extend(applied_tc_opts)
 
           # hand-coded TC opts
-          # for dim in [1,0]:
-          #   if dim < self.global_dims:
-          #     szs = [sz for sz in [5,4,3,2] if self.full_shape[dim] % sz == 0]
-          #     if szs: self.apply_opt(Opt(OptOps.UPCAST, dim, szs[0]))
-          # if self.global_dims and self.full_shape[0] % 2: self.apply_opt(Opt(OptOps.LOCAL, 1, 2))
+          for dim in [1,0]:
+            if dim < self.global_dims:
+              szs = [sz for sz in [5,4,3,2] if self.full_shape[dim] % sz == 0]
+              if szs: self.apply_opt(Opt(OptOps.UPCAST, dim, szs[0]))
+          if self.global_dims and self.full_shape[1] % 2 ==0 and self.full_shape[1] // 2 > 1: self.apply_opt(Opt(OptOps.LOCAL, 1, 2))
 
           return self
         except KernelOptError: continue
@@ -552,18 +562,12 @@ class Kernel:
     return graph_rewrite(fixup_ast(self.ast), view_left)
 
   def apply_tc(self, ast) -> UOp:
-    def transform(ctx:tuple[Kernel, list[TensorCore], list[str], set[UOp]], op:UOp):
-      k, tcs, opts, applied = ctx
-      pluggable_tcs = [tc for tc in tcs if tc.opts == opts[:len(tc.opts)]]
-      has_cast = op.src[0].op is Ops.CAST
-      mul_op = op.src[0].src[0] if has_cast else op.src[0]
-      pluggable_tcs = [tc for tc in pluggable_tcs if op.dtype == tc.dtype_out and mul_op.dtype == tc.dtype_in]
-      if len(applied) or len(pluggable_tcs) == 0: return None
-      applied.add(op)
-      tc = pluggable_tcs[0]
+    def transform(ctx:tuple[Kernel, list[TensorCore], set[UOp]], op:UOp):
+      k, tcs, applied = ctx
+      if len(applied): return None
 
       gd, fu = k.global_dims, k.first_upcast
-      def get_upcast_axes(buf): # upcast along non-zero dimensions of (tc_reduce + tc_upcast)
+      def get_upcast_axes(tc:TensorCore, buf): # upcast along non-zero dimensions of (tc_reduce + tc_upcast)
         upcast_axes = int(math.log2(tc.elements_per_thread[buf]))
         return tuple((fu + len(tc.get_reduce_axes()) + len(tc.get_upcast_axes()) - (i+1), 2) for i in range(upcast_axes))
       def get_tc_swizzle_st(shape, local_perm, upcast_perm):
@@ -572,32 +576,47 @@ class Kernel:
           + [gd + x + (offset if x >= len(local_perm) else 0) for x in local_perm]  + list(range(gd + len(local_perm), fu)) \
           + [gd + x + (offset if x >= len(local_perm) else 0) for x in upcast_perm] + list(range(fu + len(upcast_perm), len(shape)))
         return ShapeTracker.from_shape(shape).permute(tuple(permaxis))
-      srcs = list((op.src[0] if op.src[0].op is not Ops.CAST else op.src[0].src[0]).src)
-      for i, (src, swizzle) in enumerate(zip(srcs, tc.swizzle)):
-        src_st = unwrap((src if src.op is Ops.LOAD else src.src[0]).st)
-        if swizzle: srcs[i] = src.view(get_tc_swizzle_st(src_st.shape, *swizzle))
 
-      tc_reduce_axes = tuple(fu + ax for ax, _ in tc.get_reduce_axes())
-      tc_upcast_axes = (get_upcast_axes(0), get_upcast_axes(1), get_upcast_axes(2))
-      wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, k.opts.device, tc.threads, tc_upcast_axes, tc_reduce_axes)
-      wmma = UOp(Ops.WMMA, dtype=tc.dtype_out.vec(tc.elements_per_thread[2]), src=(
-        UOp(Ops.CONTRACT, dtype=srcs[0].dtype.vec(tc.elements_per_thread[0]), src=(srcs[0],), arg=tc_upcast_axes[0]),
-        UOp(Ops.CONTRACT, dtype=srcs[1].dtype.vec(tc.elements_per_thread[1]), src=(srcs[1],), arg=tc_upcast_axes[1]),
-        UOp.const(tc.dtype_out.vec(tc.elements_per_thread[2]), 0.0)), arg=wmma_arg)
-      tc_uop = UOp(Ops.UNROLL, tc.dtype_out, (wmma,), arg=tc_upcast_axes[2])
-      new_axes = op.arg[1][:-len(tc_reduce_axes)]
+      for tc in tcs:
+        # first check local lenght is correct and sized 2
+        if k.local_dims < len(tc.get_local_axes()) or any(sz != 2 for sz in k.output_shape[gd:gd+len(tc.get_local_axes())]): continue
+        # if k.upcasted_axis() < len(tc.get_local_axes()): continue
 
-      return op.replace(src=(tc_uop,), arg=(Ops.ADD, new_axes)) if new_axes else tc_uop
+        has_cast = op.src[0].op is Ops.CAST
+        mul_op = op.src[0].src[0] if has_cast else op.src[0]
+        if op.dtype != tc.dtype_out or mul_op.dtype != tc.dtype_in: continue
 
-    opts = []
-    for opt in self.applied_opts:
-      if opt.op in (OptOps.GROUP, OptOps.GROUPTOP): return ast
-      if opt.op is OptOps.UNROLL: opts.append("r0")
-      if opt.op is OptOps.UPCAST: opts.append(f"u{opt.axis}")
-      if opt.op is OptOps.LOCAL: opts.append(f"l{opt.axis}")
+        srcs = list((op.src[0] if op.src[0].op is not Ops.CAST else op.src[0].src[0]).src)
+        for i, (src, swizzle) in enumerate(zip(srcs, tc.swizzle)):
+          # check if shape is correctly, if not, continue
+          # first check if locals match
+
+          src_st = unwrap((src if src.op is Ops.LOAD else src.src[0]).st)
+
+          # (0, 8, 16, 0, 32, 1, 2, 4, 0)
+          # (2, 0, 0, 4, 0, 8, 16, 32, 1)
+
+          print(src_st.real_strides())
+
+          if swizzle: srcs[i] = src.view(get_tc_swizzle_st(src_st.shape, *swizzle))
+
+        tc_reduce_axes = tuple(fu + ax for ax, _ in tc.get_reduce_axes())
+        tc_upcast_axes = (get_upcast_axes(tc,0), get_upcast_axes(tc,1), get_upcast_axes(tc,2))
+        wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, k.opts.device, tc.threads, tc_upcast_axes, tc_reduce_axes)
+        wmma = UOp(Ops.WMMA, dtype=tc.dtype_out.vec(tc.elements_per_thread[2]), src=(
+          UOp(Ops.CONTRACT, dtype=srcs[0].dtype.vec(tc.elements_per_thread[0]), src=(srcs[0],), arg=tc_upcast_axes[0]),
+          UOp(Ops.CONTRACT, dtype=srcs[1].dtype.vec(tc.elements_per_thread[1]), src=(srcs[1],), arg=tc_upcast_axes[1]),
+          UOp.const(tc.dtype_out.vec(tc.elements_per_thread[2]), 0.0)), arg=wmma_arg)
+        tc_uop = UOp(Ops.UNROLL, tc.dtype_out, (wmma,), arg=tc_upcast_axes[2])
+        new_axes = op.arg[1][:-len(tc_reduce_axes)]
+
+        applied.add(op)
+
+        return op.replace(src=(tc_uop,), arg=(Ops.ADD, new_axes)) if new_axes else tc_uop
+      return None
 
     return graph_rewrite(ast, view_left + PatternMatcher([(UPat(Ops.REDUCE_AXIS, name="op"), transform)]),
-                         ctx=(self, self.opts.tensor_cores, tuple(opts), set()))
+                         ctx=(self, self.opts.tensor_cores, set()))
 
   # **** this is the lowerer ****
 
