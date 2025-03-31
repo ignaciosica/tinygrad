@@ -565,22 +565,16 @@ class Kernel:
   def apply_tc(self, ast) -> UOp:
     def transform(ctx:tuple[int, int, list[TensorCore], set[UOp]], op:UOp):
       local_dims, upcast_dims, tcs, applied = ctx
+      if len(applied): return None
+      reduce_st = unwrap(op.st)
       first_reduce = op.arg[0]
       global_dims = first_reduce - local_dims
-
-      reduce_st = unwrap(op.st)
-      print(reduce_st)
-
       first_upcast = len(reduce_st.shape) - upcast_dims
-
       gd, fu = global_dims, first_upcast
-
-      # we want the first to be reduce
-
-      if len(applied): return None
-
-      exit()
-
+      print(reduce_st)
+      print(op.full_shape)
+      print(op.axis_arg)
+      # exit()
       # gd, fu = k.global_dims, k.first_upcast
       def get_upcast_axes(tc:TensorCore, buf): # upcast along non-zero dimensions of (tc_reduce + tc_upcast)
         upcast_axes = int(math.log2(tc.elements_per_thread[buf]))
@@ -592,9 +586,24 @@ class Kernel:
           + [gd + x + (offset if x >= len(local_perm) else 0) for x in upcast_perm] + list(range(fu + len(upcast_perm), len(shape)))
         return ShapeTracker.from_shape(shape).permute(tuple(permaxis))
 
-      def _apply_tc(tc):
+      def _apply_tc(tc: TensorCore):
+        # check if the reduce dims are correct
+        tc_required_reduce_axes = len(tc.get_reduce_axes())
+        if tc_required_reduce_axes > len(op.axis_arg): print("not enough reduce axis"); return None # not enough reduce axis
+        if any(op.full_shape[axis] != 2 for axis in op.axis_arg[-tc_required_reduce_axes:]): print("reduce axis are the wrong size"); return None # reduce axis are the wrong size
+
+        # check if local dims match
+        tc_required_local_axes = len(tc.get_local_axes())
+        if tc_required_local_axes > local_dims: print("not enough local axis"); return None # not enough local axis
+        if any(sz != 2 for sz in op.full_shape[gd:gd+tc_required_local_axes]): print("local axis are the wroong size"); return None # local axis are the wroong size
+
+        tc_required_upcast_axes = len(tc.get_upcast_axes())
+        if tc_required_upcast_axes > upcast_dims - tc_required_reduce_axes: print("not enough upcast axis"); return None # not enough upcast axis
+        if any(sz != 2 for sz in op.full_shape[first_upcast + tc_required_reduce_axes:][:tc_required_upcast_axes]): print("upcast axis are the wrong size"); return None # upcast axis are the wrong size
+
+        # check if local/upcast order match
+
         # first check local length is correct and sized 2
-        if k.local_dims < len(tc.get_local_axes()) or any(sz != 2 for sz in k.output_shape[gd:gd+len(tc.get_local_axes())]): return None
 
         # check if dtypes match
         has_cast = op.src[0].op is Ops.CAST
@@ -604,10 +613,10 @@ class Kernel:
         srcs = list((op.src[0] if op.src[0].op is not Ops.CAST else op.src[0].src[0]).src)
         for i, (src, swizzle) in enumerate(zip(srcs, tc.swizzle)):
           # check reduce first (it will double check for both)
-          for upcasted_shape, _, reduce in k.upcasted_axis(i + 1)[:len(tc.get_reduce_axes())]:
-            if upcasted_shape != 2 or not reduce: return None
+          # for upcasted_shape, _, reduce in k.upcasted_axis(i + 1)[:len(tc.get_reduce_axes())]:
+            # if upcasted_shape != 2 or not reduce: return None
           # if k.upcasted_axis(i + 1)[:len(tc.get_reduce_axes())]
-          print(k.upcasted_axis(i + 1))
+          # print(k.upcasted_axis(i + 1))
 
           print(tc.get_reduce_axes(), tc.get_upcast_axes())
           # exit()
@@ -639,8 +648,7 @@ class Kernel:
         return op.replace(src=(tc_uop,), arg=(Ops.ADD, new_axes)) if new_axes else tc_uop
 
       for tc in tcs:
-        ret = _apply_tc(tc)
-        if ret is not None: return ret
+        if (wmma := _apply_tc(tc)): return wmma
       return None
 
     return graph_rewrite(ast, view_left + PatternMatcher([(UPat(Ops.REDUCE_AXIS, name="op"), transform)]),
