@@ -15,16 +15,7 @@ logkerns, logkerns_level = open(getenv("LOGKERNS", ""), "a") if getenv("LOGKERNS
 def get_kernel(renderer:Renderer, ast:UOp) -> Kernel:
   k = Kernel(ast, opts=renderer).required_optimizations()
   if not NOOPT:
-    opts:list[Opt] = [
-        Opt(OptOps.LOCAL, 1, 2),
-        Opt(OptOps.LOCAL, 0, 2),
-        Opt(OptOps.UNROLL, 0, 2),
-        Opt(OptOps.UPCAST, 1, 4),
-        # Opt(OptOps.UPCAST, 1, 4),
-        Opt(OptOps.LDS, 1, None),
-        Opt(OptOps.LDS, 2, None),
-    ]
-    if not k.apply_tensor_cores(getenv("TC", 1), extra_opts=opts): k.hand_coded_optimizations()
+    if not k.apply_tensor_cores(getenv("TC", 1)): k.hand_coded_optimizations()
     if BEAM >= 1:
       from tinygrad.engine.search import beam_search, bufs_from_lin
       kb = Kernel(ast, opts=renderer).required_optimizations()

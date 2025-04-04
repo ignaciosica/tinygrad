@@ -665,29 +665,13 @@ class Kernel:
       ctx[1].add(buf.arg)
       if (k := ctx[0]).lds[buf.arg]:
         global_st: ShapeTracker = global_access.src[1].arg
-        gd, fr, fu = k.global_dims, k.first_reduce, k.first_upcast
-        shape=[]
-        for i, st in enumerate(global_st.real_strides(True)):
-          if i < gd: shape.append(1)
-          elif st == 0: shape.append(1)
-          elif i < fr: shape.append(cast(int, global_st.shape[i]))
-          elif i < fu: shape.append(1)
-          elif st != 0: shape.append(cast(int, global_st.shape[i]))
-          else: shape.append(1)
+        gd, fr, fu, shape = k.global_dims, k.first_reduce, k.first_upcast, []
+        for i, st in enumerate(global_st.real_strides(True)): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i > fu) else 1)
 
         store_st = load_st = ShapeTracker.from_shape(tuple(shape))
+        if DEBUG>=4: print(f"\n{buf.arg=}\n {store_st=}\n  {load_st=}\n{global_st=}\n")
 
-        if buf.arg == 1:
-          perm = (0,1,5,3,4,2,6,14,8,9,10,11,12,13,7,15)
-          store_st = store_st.permute(perm)
-          global_st = global_st.permute(perm)
-        if buf.arg == 2:
-          perm = (0,1,5,3,4,2,6,7,14,9,10,11,12,13,8,15)
-          store_st = store_st.permute(perm)
-          global_st = global_st.permute(perm)
-
-        print(f"\n{buf.arg=}\n {store_st=}\n  {load_st=}\n{global_st=}\n")
-        local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), buf.arg)
+        local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
         if global_access.op == Ops.LOAD:
           global_access = global_access.replace(src=(global_access.src[0], global_st.to_uop()))
           local_store = UOp.store(local_buffer, store_st.to_uop(), global_access)
