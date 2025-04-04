@@ -6,7 +6,7 @@ from tinygrad.helpers import DEVECTORIZE, time_to_str, VALIDATE_WITH_CPU
 from tinygrad.ops import Ops, PatternMatcher, UOp, UPat, Variable, sym_infer
 from tinygrad.device import Device, Buffer
 from tinygrad.renderer import Renderer, ProgramSpec, Estimates
-from tinygrad.codegen.kernel import Kernel, Opt, OptOps
+from tinygrad.codegen.kernel import Kernel
 from tinygrad.engine.schedule import ScheduleItem
 
 # **************** Program Creation ****************
