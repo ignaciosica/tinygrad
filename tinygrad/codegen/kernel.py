@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
 
 from tinygrad.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, track_rewrites, view_left, print_uops
-from tinygrad.ops import PatternMatcher
+from tinygrad.ops import PatternMatcher, UPat
 from tinygrad.spec import type_verify, shape_spec
 from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec, Opt, OptOps
@@ -78,6 +78,7 @@ class Kernel:
     self.tensor_core_opts: Optional[TensorCoreOptions] = None
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
+    self.lds: list[bool] = [False] * len(self.bufs)
 
     # group simplifies
     self.simplify_ones()
@@ -94,8 +95,8 @@ class Kernel:
     ret.sts = self.sts[:len(ret.bufs)+len(ret.reduceops)*2] # NOTE: must redo the local buffers with TC in beam
 
     # parameters for optimizations
-    ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals = \
-      self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals
+    ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals, ret.lds = \
+      self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals, self.lds
     ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
 
     return ret
@@ -353,7 +354,7 @@ class Kernel:
       return
 
     axis = self.real_axis(opt)
-    check(axis < len(self.full_shape), "invalid axis")
+    if opt.op != OptOps.LDS: check(axis < len(self.full_shape), "invalid axis")
 
     if opt.op is OptOps.SWAP: amt = cast(int, opt.arg)  # arg is an axis in the SWAPs
     elif opt.arg is not None:
@@ -424,6 +425,9 @@ class Kernel:
           self.sts[i] = st.pad(((0,0),) * axis + ((0,ru),) + ((0,0),) * (len(st.shape)-axis-1))
           padded = True
       check(padded, "nothing was padded")
+    elif opt.op is OptOps.LDS:
+      check(0 <= axis < len(self.bufs), f"invalid buffer {axis}")
+      self.lds = self.lds[:axis] + [True] + self.lds[axis+1:]
 
     if append_opt: self.applied_opts.append(opt)
     if self.simplify_ones() and self.tensor_core_opts:
@@ -655,6 +659,39 @@ class Kernel:
 
     return graph_rewrite(fixup_ast(self.ast), view_left)
 
+  def apply_lds(self, ast) -> UOp:
+    def transform(ctx:tuple[Kernel, set[UOp]], global_access:UOp):
+      if (buf:=global_access.src[0]).arg in ctx[1] or global_access.src[0].op is not Ops.DEFINE_GLOBAL: return None
+      ctx[1].add(buf.arg)
+      if (k := ctx[0]).lds[buf.arg]:
+        global_st: ShapeTracker = global_access.src[1].arg
+        gd, fr, fu = k.global_dims, k.first_reduce, k.first_upcast
+        shape=[]
+        for i, st in enumerate(global_st.real_strides(True)):
+          if i < gd: shape.append(1)
+          elif st == 0: shape.append(1)
+          elif i < fr: shape.append(cast(int, global_st.shape[i]))
+          elif i < fu: shape.append(1)
+
+        for j,st in enumerate(global_st.real_strides(True)[fu:]):
+          if k.upcasted_axis(buf.arg)[j][2]: shape.append(1)
+          elif st != 0: shape.append(cast(int, global_st.shape[j+fu]))
+          else: shape.append(1)
+        store_st = load_st = ShapeTracker.from_shape(tuple(shape))
+        print(f"\n{buf.arg=}\n {store_st=}\n  {load_st=}\n{global_st=}\n")
+        local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), buf.arg)
+        if global_access.op == Ops.LOAD:
+          global_access = global_access.replace(src=(global_access.src[0], global_st.to_uop()))
+          local_store = UOp.store(local_buffer, store_st.to_uop(), global_access)
+          return UOp(Ops.LOAD, global_access.dtype, (local_buffer, load_st.to_uop(), local_store))
+        if global_access.op == Ops.STORE:
+          local_store = UOp.store(local_buffer, store_st.to_uop(), global_access.src[2])
+          local_load = UOp(Ops.LOAD, local_buffer.dtype.base, (local_buffer, load_st.to_uop(), local_store))
+          return global_access.replace(src=(global_access.src[0], global_access.src[1], local_load))
+      return None
+
+    return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), transform)]), ctx=(self, set()))
+
   # **** this is the lowerer ****
 
   @track_rewrites()
@@ -663,6 +700,7 @@ class Kernel:
     if getenv("VIZ"): graph_rewrite(self.ast, PatternMatcher([]), name="View Base AST")
 
     modified_ast = self.get_optimized_ast(name_override)
+    modified_ast = self.apply_lds(modified_ast)
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
 
     if DEBUG >= 3:
