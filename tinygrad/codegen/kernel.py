@@ -672,12 +672,20 @@ class Kernel:
           elif st == 0: shape.append(1)
           elif i < fr: shape.append(cast(int, global_st.shape[i]))
           elif i < fu: shape.append(1)
-
-        for j,st in enumerate(global_st.real_strides(True)[fu:]):
-          if k.upcasted_axis(buf.arg)[j][2]: shape.append(1)
-          elif st != 0: shape.append(cast(int, global_st.shape[j+fu]))
+          elif st != 0: shape.append(cast(int, global_st.shape[i]))
           else: shape.append(1)
+
         store_st = load_st = ShapeTracker.from_shape(tuple(shape))
+
+        if buf.arg == 1:
+          perm = (0,1,5,3,4,2,6,7)
+          store_st = store_st.permute(perm)
+          global_st = global_st.permute(perm)
+        if buf.arg == 2:
+          perm = (0,1,2,5,4,3,6,7)
+          store_st = store_st.permute(perm)
+          global_st = global_st.permute(perm)
+
         print(f"\n{buf.arg=}\n {store_st=}\n  {load_st=}\n{global_st=}\n")
         local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), buf.arg)
         if global_access.op == Ops.LOAD:
