@@ -79,6 +79,7 @@ class Kernel:
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
     self.lds: list[bool] = [False] * len(self.bufs)
+    self.smem_usage:int = 0
 
     # group simplifies
     self.simplify_ones()
@@ -95,8 +96,8 @@ class Kernel:
     ret.sts = self.sts[:len(ret.bufs)+len(ret.reduceops)*2] # NOTE: must redo the local buffers with TC in beam
 
     # parameters for optimizations
-    ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals, ret.lds = \
-      self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals, self.lds
+    ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals, ret.lds, ret.smem_usage = \
+      self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals, self.lds, self.smem_usage
     ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
 
     return ret
@@ -372,6 +373,8 @@ class Kernel:
       smem_sz = amt*acc_sz*upcast_sz*local_sz
       check(smem_sz <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {smem_sz}, max {self.opts.shared_max}")
 
+    if opt.op != OptOps.LDS: check(all(op.op != OptOps.LDS for op in self.applied_opts), "cant reshape after LDS")
+
     if opt.op is OptOps.LOCAL:    # cyan
       # NOTE: LLVM/CPU can use locals too, but they are treated the same as globals (still helpful for L1 cache)
       # it's disabled for now since it makes BEAM slow for little gain
@@ -427,7 +430,11 @@ class Kernel:
       check(padded, "nothing was padded")
     elif opt.op is OptOps.LDS:
       check(0 <= axis < len(self.bufs), f"invalid buffer {axis}")
-      self.lds = self.lds[:axis] + [True] + self.lds[axis+1:]
+      self.lds[axis] = True
+      if axis == 0: self.smem_usage += prod(cast(int, op.arg) for op in self.applied_opts if op.op in (OptOps.LOCAL, OptOps.UPCAST))
+      else: self.smem_usage += prod(cast(int, op.arg) for op in self.applied_opts if (op.op in (OptOps.LOCAL, OptOps.UPCAST) and op.axis == axis) or \
+                                                                                      op.op == OptOps.UNROLL)
+      check(self.smem_usage <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {self.smem_usage}, max {self.opts.shared_max}")
 
     if append_opt: self.applied_opts.append(opt)
     if self.simplify_ones() and self.tensor_core_opts:
@@ -618,7 +625,7 @@ class Kernel:
 
             if self.use_tensor_cores == 3:  # for TC=3, emulate the warp addressing with locals
               local_shape = tuple(1 if st == 0 or i < wd or (i >= self.first_reduce and i < tcd) else src_st.shape[i] \
-                                  for i,st in enumerate(src_st.real_strides()))
+                                  for i,st in enumerate(src_st.real_strides(True)))
               st = store_st = ShapeTracker.from_shape(local_shape)
               local_buffer = UOp(Ops.DEFINE_LOCAL, tc.dtype_in.ptr(size=st.real_size(), local=True), (), f"temp{i}")
               if swizzle: store_st = get_tc_swizzle_st(store_st.shape, *swizzle)
@@ -672,6 +679,8 @@ class Kernel:
         store_st = load_st = ShapeTracker.from_shape(tuple(shape))
         if DEBUG>=4: print(f"\n{buf.arg=}\n {store_st=}\n  {load_st=}\n{global_st=}\n")
 
+        print(k.smem_usage)
+
         local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
         if global_access.op == Ops.LOAD:
           global_access = global_access.replace(src=(global_access.src[0], global_st.to_uop()))
@@ -680,7 +689,7 @@ class Kernel:
         if global_access.op == Ops.STORE:
           local_store = UOp.store(local_buffer, store_st.to_uop(), global_access.src[2])
           local_load = UOp(Ops.LOAD, local_buffer.dtype.base, (local_buffer, load_st.to_uop(), local_store))
-          return global_access.replace(src=(global_access.src[0], global_access.src[1], local_load))
+          return global_access.replace(src=(global_access.src[0], global_st.to_uop(), local_load))
       return None
 
     return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), transform)]), ctx=(self, set()))
