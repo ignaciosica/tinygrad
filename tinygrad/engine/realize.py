@@ -6,7 +6,7 @@ from tinygrad.helpers import DEVECTORIZE, time_to_str, VALIDATE_WITH_CPU
 from tinygrad.ops import Ops, PatternMatcher, UOp, UPat, Variable, sym_infer
 from tinygrad.device import Device, Buffer
 from tinygrad.renderer import Renderer, ProgramSpec, Estimates
-from tinygrad.codegen.kernel import Kernel
+from tinygrad.codegen.kernel import Kernel, Opt, OptOps
 from tinygrad.engine.schedule import ScheduleItem
 
 # **************** Program Creation ****************
@@ -15,7 +15,16 @@ logkerns, logkerns_level = open(getenv("LOGKERNS", ""), "a") if getenv("LOGKERNS
 def get_kernel(renderer:Renderer, ast:UOp) -> Kernel:
   k = Kernel(ast, opts=renderer).required_optimizations()
   if not NOOPT:
-    if not k.apply_tensor_cores(getenv("TC", 1)): k.hand_coded_optimizations()
+    opts:list[Opt] = [
+        Opt(OptOps.LOCAL, 1, 2),
+        Opt(OptOps.LOCAL, 0, 2),
+        Opt(OptOps.UNROLL, 0, 2),
+        Opt(OptOps.UPCAST, 1, 4),
+        # Opt(OptOps.UPCAST, 1, 4),
+        Opt(OptOps.LDS, 1, None),
+        Opt(OptOps.LDS, 2, None),
+    ]
+    if not k.apply_tensor_cores(getenv("TC", 1), extra_opts=opts): k.hand_coded_optimizations()
     if BEAM >= 1:
       from tinygrad.engine.search import beam_search, bufs_from_lin
       kb = Kernel(ast, opts=renderer).required_optimizations()
@@ -181,4 +190,3 @@ def run_schedule(schedule:list[ScheduleItem], var_vals:Optional[dict[Variable, i
       np.testing.assert_allclose(nb[0].numpy(), si.bufs[0].numpy(), rtol=1e-3, atol=1e-3)
     else:
       ei.run(var_vals, do_update_stats=do_update_stats)
-

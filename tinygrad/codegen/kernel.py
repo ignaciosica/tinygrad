@@ -678,11 +678,11 @@ class Kernel:
         store_st = load_st = ShapeTracker.from_shape(tuple(shape))
 
         if buf.arg == 1:
-          perm = (0,1,5,3,4,2,6,7)
+          perm = (0,1,5,3,4,2,6,14,8,9,10,11,12,13,7,15)
           store_st = store_st.permute(perm)
           global_st = global_st.permute(perm)
         if buf.arg == 2:
-          perm = (0,1,2,5,4,3,6,7)
+          perm = (0,1,5,3,4,2,6,7,14,9,10,11,12,13,8,15)
           store_st = store_st.permute(perm)
           global_st = global_st.permute(perm)
 
