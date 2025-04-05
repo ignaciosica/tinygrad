@@ -449,6 +449,7 @@ class Kernel:
       check((szx:=self.sts[buf_index].shape[x]) == (szy:=self.sts[buf_index].shape[y]), f"both dimensions should have the same size {szx=} != {szy=}")
       check((stx:=self.sts[buf_index].real_strides(True)[x]) == 0, f"local dim should have stride 0 {stx=}")
       check((osz:=self.output_shape[y]) == 1, f"y axis shhould be a reduce dim {osz=}")
+      check(opt.arg not in self.lds_swap[axis], f"already applied swap {opt.arg} for buf {axis}")
       self.lds_swap[axis].append((x, y))
       print(f"applied lds_swap{opt}")
 
