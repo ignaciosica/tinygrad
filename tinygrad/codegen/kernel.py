@@ -362,6 +362,7 @@ class Kernel:
       check(axis < len(self.full_shape), "invalid axis")
 
     if opt.op is OptOps.SWAP: amt = cast(int, opt.arg)  # arg is an axis in the SWAPs
+    if opt.op is OptOps.LDS_SWAP: amt = cast(tuple, opt.arg)  # arg is an axis in the SWAPs
     elif opt.arg is not None:
       check(isinstance(opt.arg, int), "arg should be int")
       amt = arg if (arg:=cast(int, opt.arg)) != 0 else self.full_shape[axis]
@@ -441,12 +442,12 @@ class Kernel:
       self.lds[axis] = True
     elif opt.op is OptOps.LDS_SWAP:
       check(self.lds[axis], f"cant swap lds as buf has no lds {axis}")
-      x, y = cast(tuple, opt.arg)
+      x, y = amt
       check(x < y, f"invalid lds swap {x} >= {y}")
       check(self.global_dims <= x < self.first_reduce, f"invalid x in lds swap {x}")
       check(self.first_upcast <= y, f"invalid y in lds swap {y}")
       buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
-      check(self.sts[buf_index].shape[x] == self.sts[buf_index].shape[y], "both dimensions should have the same size")
+      check((szx:=self.sts[buf_index].shape[x]) == (szy:=self.sts[buf_index].shape[y]), f"both dimensions should have the same size {szx} != {szy}")
       self.lds_swap[axis].append((x, y))
 
     if append_opt: self.applied_opts.append(opt)
