@@ -433,7 +433,8 @@ class Kernel:
     elif opt.op is OptOps.LDS:
       check(0 <= axis < len(self.bufs), f"invalid buffer {axis}")
       check(not self.lds[axis], f"already applied lds on buffer {axis}")
-      check(OptOps.PADTO not in [op.op for op in self.applied_opts], "cant apply lds with padto")
+      ops = [op.op for op in self.applied_opts]
+      check(OptOps.PADTO not in ops and OptOps.GROUPTOP not in ops, "cant apply lds with padto/grouptop")
       buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
       self.smem_usage += prod(sz for i,(sz,st) in enumerate(zip(self.sts[buf_index].shape,self.sts[buf_index].real_strides(True)))
                               if st != 0 and ((self.global_dims <= i < self.first_reduce) or self.first_upcast <= i))
