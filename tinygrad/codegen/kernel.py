@@ -429,7 +429,6 @@ class Kernel:
           padded = True
       check(padded, "nothing was padded")
     elif opt.op is OptOps.LDS:
-      # check smem_usage from buffer shapes
       check(0 <= axis < len(self.bufs), f"invalid buffer {axis}")
       check(not self.lds[axis], f"already applied lds on buffer {axis}")
       check(OptOps.PADTO not in [op.op for op in self.applied_opts], "cant apply lds with padto")
