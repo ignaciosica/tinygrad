@@ -674,7 +674,7 @@ class Kernel:
       if (k := ctx[0]).lds[buf.arg]:
         global_st: ShapeTracker = global_access.src[1].arg
         gd, fr, fu, shape = k.global_dims, k.first_reduce, k.first_upcast, []
-        for i, st in enumerate(global_st.real_strides(True)): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i > fu) else 1)
+        for i, st in enumerate(global_st.real_strides(True)): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i >= fu) else 1)
 
         store_st = load_st = ShapeTracker.from_shape(tuple(shape))
         if DEBUG>=4: print(f"\n{buf.arg=}\n {store_st=}\n  {load_st=}\n{global_st=}\n")
