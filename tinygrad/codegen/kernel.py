@@ -97,7 +97,7 @@ class Kernel:
 
     # parameters for optimizations
     ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals, ret.lds, ret.smem_usage = \
-      self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals, self.lds, self.smem_usage
+      self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals, self.lds[:], self.smem_usage
     ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
 
     return ret
@@ -283,11 +283,11 @@ class Kernel:
 
         # attempt to pad the tensor axes that require it
         try:
-          for axis, dim in tc_opts.axis_pads: self.apply_opt(Opt(OptOps.PADTO, axis, dim), append_opt=False) # PADTO might fail
+          for axis, dim in tc_opts.axis_pads: self.apply_opt(Opt(OptOps.PADTO, axis, dim), append_opt=True) # PADTO might fail
         except KernelOptError: continue
         # tensor core -- unroll the reduce dim (K), upcast and local the inner and outer dims (N, M)
-        for dim, amt in tc.get_reduce_axes(): self.apply_opt(Opt(OptOps.UNROLL, tc_opts.axes[2]-self.first_reduce, amt), append_opt=False)
-        for opt in tc.opts: self.apply_opt(Opt({"u":OptOps.UPCAST, "l":OptOps.LOCAL}[opt[0]], tc_opts.axes[int(opt[1])], 2), append_opt=False)
+        for dim, amt in tc.get_reduce_axes(): self.apply_opt(Opt(OptOps.UNROLL, tc_opts.axes[2]-self.first_reduce, amt), append_opt=True)
+        for opt in tc.opts: self.apply_opt(Opt({"u":OptOps.UPCAST, "l":OptOps.LOCAL}[opt[0]], tc_opts.axes[int(opt[1])], 2), append_opt=True)
         self.tensor_core = tc
         self.use_tensor_cores = use_tensor_cores  # TC=2 will do the shape ops without the WMMA
         return True
@@ -355,7 +355,9 @@ class Kernel:
       return
 
     axis = self.real_axis(opt)
-    if opt.op != OptOps.LDS: check(axis < len(self.full_shape), "invalid axis")
+    if opt.op != OptOps.LDS:
+      check(not any(self.lds), f"cant reshape after LDS {self.applied_opts=} {opt=}")
+      check(axis < len(self.full_shape), "invalid axis")
 
     if opt.op is OptOps.SWAP: amt = cast(int, opt.arg)  # arg is an axis in the SWAPs
     elif opt.arg is not None:
@@ -372,8 +374,6 @@ class Kernel:
       local_sz = prod(self.full_shape[self.first_reduce-self.local_dims:self.first_reduce+self.group_for_reduces])
       smem_sz = amt*acc_sz*upcast_sz*local_sz
       check(smem_sz <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {smem_sz}, max {self.opts.shared_max}")
-
-    if opt.op != OptOps.LDS: check(all(op.op != OptOps.LDS for op in self.applied_opts), "cant reshape after LDS")
 
     if opt.op is OptOps.LOCAL:    # cyan
       # NOTE: LLVM/CPU can use locals too, but they are treated the same as globals (still helpful for L1 cache)
@@ -429,12 +429,16 @@ class Kernel:
           padded = True
       check(padded, "nothing was padded")
     elif opt.op is OptOps.LDS:
+      # check smem_usage from buffer shapes
       check(0 <= axis < len(self.bufs), f"invalid buffer {axis}")
-      self.lds[axis] = True
-      if axis == 0: self.smem_usage += prod(cast(int, op.arg) for op in self.applied_opts if op.op in (OptOps.LOCAL, OptOps.UPCAST))
+      check(not self.lds[axis], f"already applied lds on buffer {axis}")
+      check(all(op.op not in (OptOps.PADTO, OptOps.SWAP) for op in self.applied_opts), "cant apply lds with padto or swap")
+      if axis == 0: self.smem_usage += prod(sz for sz in self.output_shape[self.global_dims:])
+      # if axis == 0: self.smem_usage += prod(cast(int, op.arg) for op in self.applied_opts if op.op in (OptOps.LOCAL, OptOps.UPCAST))
       else: self.smem_usage += prod(cast(int, op.arg) for op in self.applied_opts if (op.op in (OptOps.LOCAL, OptOps.UPCAST) and op.axis == axis) or \
                                                                                       op.op == OptOps.UNROLL)
       check(self.smem_usage <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {self.smem_usage}, max {self.opts.shared_max}")
+      self.lds[axis] = True
 
     if append_opt: self.applied_opts.append(opt)
     if self.simplify_ones() and self.tensor_core_opts:
@@ -677,9 +681,7 @@ class Kernel:
         for i, st in enumerate(global_st.real_strides(True)): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i >= fu) else 1)
 
         store_st = load_st = ShapeTracker.from_shape(tuple(shape))
-        if DEBUG>=4: print(f"\n{buf.arg=}\n {store_st=}\n  {load_st=}\n{global_st=}\n")
-
-        print(k.smem_usage)
+        if DEBUG>=4: print(f"\n{buf.arg=} [{k.smem_usage}]\n {store_st=}\n  {load_st=}\n{global_st=}\n")
 
         local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
         if global_access.op == Ops.LOAD:
