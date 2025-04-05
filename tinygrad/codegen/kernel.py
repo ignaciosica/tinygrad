@@ -444,9 +444,9 @@ class Kernel:
       check(self.lds[axis], f"cant swap lds as buf has no lds {axis}")
       x, y = amt
       check(x < y, f"invalid lds swap {x} >= {y}")
-      check(self.global_dims <= x < self.first_reduce, f"invalid x in lds swap {x}")
-      check(self.first_upcast <= y, f"invalid y in lds swap {y}")
       buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
+      check(self.global_dims <= x < self.first_reduce, f"invalid x in lds swap {x}")
+      check(self.first_upcast <= y < len(self.sts[buf_index].shape), f"invalid y in lds swap {y}")
       check((szx:=self.sts[buf_index].shape[x]) == (szy:=self.sts[buf_index].shape[y]), f"both dimensions should have the same size {szx} != {szy}")
       self.lds_swap[axis].append((x, y))
 
