@@ -80,7 +80,7 @@ class Kernel:
     self.dont_use_locals: bool = False
     self.lds: list[bool] = [False] * len(self.bufs)
     self.smem_usage:int = 0
-    self.lds_swap: dict[int,list[(int,int)]] = {key: [] for key in range(len(self.bufs))}
+    self.lds_swap: dict[int,list[tuple]] = {key: [] for key in range(len(self.bufs))}
 
     # group simplifies
     self.simplify_ones()
@@ -441,11 +441,13 @@ class Kernel:
       self.lds[axis] = True
     elif opt.op is OptOps.LDS_SWAP:
       check(self.lds[axis], f"cant swap lds as buf has no lds {axis}")
-      check(self.global_dims <= (x:=cast(int, opt.arg[0])) < self.first_reduce, f"invalid x in lds swap {cast(int, opt.arg[0])}")
-      check(self.first_upcast <= (y:=cast(int, opt.arg[1])), f"invalid y in lds swap {cast(int, opt.arg[1])}")
+      x, y = cast(tuple, opt.arg)
+      check(x < y, f"invalid lds swap {x} >= {y}")
+      check(self.global_dims <= x < self.first_reduce, f"invalid x in lds swap {x}")
+      check(self.first_upcast <= y, f"invalid y in lds swap {y}")
       buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
       check(self.sts[buf_index].shape[x] == self.sts[buf_index].shape[y], "both dimensions should have the same size")
-      self.apply_lds_swap[axis].append(opt.arg)
+      self.lds_swap[axis].append((x, y))
 
     if append_opt: self.applied_opts.append(opt)
     if self.simplify_ones() and self.tensor_core_opts:
