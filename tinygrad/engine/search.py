@@ -22,6 +22,8 @@ actions += [Opt(op=OptOps.LOCAL, axis=0, arg=32), Opt(op=OptOps.LOCAL, axis=6, a
 actions += [Opt(op=OptOps.TC, axis=0, arg=(-1, 0))]
 actions += [Opt(op=OptOps.TC, axis=axis, arg=(-1, getenv("TC_OPT", 2))) for axis in range(9)] # covers resnet kernels (3 global * 3 reduce)
 actions += [Opt(op=OptOps.SWAP, axis=axis_0, arg=axis_1) for axis_0 in range(5) for axis_1 in range(axis_0+1, 5)]
+actions += [Opt(op=OptOps.LDS, axis=buf, arg=None) for buf in [0,1,2]]
+actions += [Opt(op=OptOps.LDS_SWAP, axis=buf, arg=(x,y)) for buf in [1,2] for x in range(13) for y in range(x+1, 14) if x < y]
 if getenv("NOLOCALS"): actions += [Opt(op=OptOps.NOLOCALS)]
 
 def _get_test_global_size(global_size, max_global_size, var_vals):
@@ -114,7 +116,7 @@ def get_kernel_actions(lin:Kernel, include_0=True) -> dict[int, Kernel]:
         kernel_actions[i:i+1] = [Opt(op=OptOps.TC, axis=action.axis, arg=(tc_select, tc_arg[1])) for tc_select,_ in enumerate(lin.opts.tensor_cores)]
 
   for i,a in enumerate(kernel_actions):
-    if a.axis is not None and a.op is not OptOps.TC:
+    if a.axis is not None and a.op not in (OptOps.TC, OptOps.LDS_SWAP):
       if ((ax:=lin.real_axis(a)) >= lin.shape_len) or (lin.full_shape[ax] == a.arg and Opt(a.op, ax, 0) in kernel_actions): continue
     lin2 = lin.copy()
     try:
