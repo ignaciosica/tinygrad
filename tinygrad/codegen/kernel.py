@@ -362,8 +362,7 @@ class Kernel:
       check(axis < len(self.full_shape), "invalid axis")
 
     if opt.op is OptOps.SWAP: amt = cast(int, opt.arg)  # arg is an axis in the SWAPs
-    if opt.op is OptOps.LDS_SWAP: amt = cast(tuple, opt.arg)  # arg is an axis in the SWAPs
-    elif opt.arg is not None:
+    elif opt.arg is not None or opt.op is not OptOps.LDS_SWAP:
       check(isinstance(opt.arg, int), "arg should be int")
       amt = arg if (arg:=cast(int, opt.arg)) != 0 else self.full_shape[axis]
       check(isinstance(amt, int) and amt != 1, f"shift/padto of {amt=}, 1 or symbolic amount is meaningless")
@@ -442,12 +441,14 @@ class Kernel:
       self.lds[axis] = True
     elif opt.op is OptOps.LDS_SWAP:
       check(self.lds[axis], f"cant swap lds as buf has no lds {axis}")
-      x, y = amt
+      x, y = cast(tuple, opt.arg)
       check(x < y, f"invalid lds swap {x} >= {y}")
       buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
-      check(self.global_dims <= x < self.first_reduce, f"invalid x in lds swap {x}")
-      check(self.first_upcast <= y < len(self.sts[buf_index].shape), f"invalid y in lds swap {y}")
-      check((szx:=self.sts[buf_index].shape[x]) == (szy:=self.sts[buf_index].shape[y]), f"both dimensions should have the same size {szx} != {szy}")
+      check(self.global_dims <= x < self.first_reduce, f"invalid x in lds swap {x=}")
+      check(self.first_upcast <= y < len(self.sts[buf_index].shape), f"invalid y in lds swap {y=}")
+      check((szx:=self.sts[buf_index].shape[x]) == (szy:=self.sts[buf_index].shape[y]), f"both dimensions should have the same size {szx=} != {szy=}")
+      check((stx:=self.sts[buf_index].real_strides(True)[x]) == 0, f"local dim should have stride 0 {stx=}")
+      check((osz:=self.output_shape[x]) == 1, f"y axis shhould be a reduce dim {osz=}")
       self.lds_swap[axis].append((x, y))
 
     if append_opt: self.applied_opts.append(opt)

@@ -12,20 +12,22 @@ from tinygrad.tensor import Tensor
 from tinygrad.engine.realize import CompiledRunner
 from tinygrad.renderer import ProgramSpec
 
-actions = [Opt(op=OptOps.UPCAST, axis=axis, arg=amt) for amt in [0,2,3,4,5,7] for axis in range(6)]
-actions += [Opt(op=OptOps.UNROLL, axis=axis, arg=amt) for amt in [0,4,7] for axis in range(5)]
-actions += [Opt(op=OptOps.LOCAL, axis=axis, arg=amt) for amt in [2,3,4,8,13,16,29] for axis in range(6)]
-actions += [Opt(op=OptOps.GROUPTOP, axis=axis, arg=amt) for amt in [13,16,28,29,32,49,64,256] for axis in range(3)]
-actions += [Opt(op=OptOps.GROUP, axis=axis, arg=amt) for amt in [0,4,8,16] for axis in range(3)]
-if getenv("BEAM_PADTO", 1): actions += [Opt(op=OptOps.PADTO, axis=axis, arg=amt) for amt in [32] for axis in range(7)]
-actions += [Opt(op=OptOps.LOCAL, axis=0, arg=32), Opt(op=OptOps.LOCAL, axis=6, arg=2)]
+# actions = [Opt(op=OptOps.UPCAST, axis=axis, arg=amt) for amt in [0,2,3,4,5,7] for axis in range(6)]
+# actions += [Opt(op=OptOps.UNROLL, axis=axis, arg=amt) for amt in [0,4,7] for axis in range(5)]
+actions = [Opt(op=OptOps.UPCAST, axis=axis, arg=amt) for amt in [4,8,16] for axis in range(5)]
+# actions += [Opt(op=OptOps.LOCAL, axis=axis, arg=amt) for amt in [2,3,4,8,13,16,29] for axis in range(6)]
+# actions += [Opt(op=OptOps.GROUPTOP, axis=axis, arg=amt) for amt in [13,16,28,29,32,49,64,256] for axis in range(3)]
+# actions += [Opt(op=OptOps.GROUP, axis=axis, arg=amt) for amt in [0,4,8,16] for axis in range(3)]
+# if getenv("BEAM_PADTO", 1): actions += [Opt(op=OptOps.PADTO, axis=axis, arg=amt) for amt in [32] for axis in range(7)]
+# actions += [Opt(op=OptOps.LOCAL, axis=0, arg=32), Opt(op=OptOps.LOCAL, axis=6, arg=2)]
+actions += [Opt(op=OptOps.LOCAL, axis=axis, arg=amt) for amt in [8,16,32] for axis in range(2)]
 actions += [Opt(op=OptOps.UNROLL, axis=axis, arg=amt) for amt in [8,16,32] for axis in range(2)]
-actions += [Opt(op=OptOps.TC, axis=0, arg=(-1, 0))]
-actions += [Opt(op=OptOps.TC, axis=axis, arg=(-1, getenv("TC_OPT", 2))) for axis in range(9)] # covers resnet kernels (3 global * 3 reduce)
+# actions += [Opt(op=OptOps.TC, axis=0, arg=(-1, 0))]
+# actions += [Opt(op=OptOps.TC, axis=axis, arg=(-1, getenv("TC_OPT", 2))) for axis in range(9)] # covers resnet kernels (3 global * 3 reduce)
 actions += [Opt(op=OptOps.SWAP, axis=axis_0, arg=axis_1) for axis_0 in range(5) for axis_1 in range(axis_0+1, 5)]
 actions += [Opt(op=OptOps.LDS, axis=buf, arg=None) for buf in [0,1,2]]
 actions += [Opt(op=OptOps.LDS_SWAP, axis=buf, arg=(x,y)) for buf in [0,1,2] for x in range(11) for y in range(12) if x < y]
-if getenv("NOLOCALS"): actions += [Opt(op=OptOps.NOLOCALS)]
+# if getenv("NOLOCALS"): actions += [Opt(op=OptOps.NOLOCALS)]
 
 def _get_test_global_size(global_size, max_global_size, var_vals):
   test_global_size, factor = [sym_infer(sz, var_vals) for sz in global_size], 1
