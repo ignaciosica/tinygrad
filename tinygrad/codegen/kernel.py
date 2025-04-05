@@ -440,10 +440,10 @@ class Kernel:
       check(self.smem_usage <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {self.smem_usage}, max {self.opts.shared_max}")
       self.lds[axis] = True
     elif opt.op is OptOps.LDS_SWAP:
-      check(self.lds[axis], f"cant swap lds as buf has no lds {axis}")
+      check(0 < axis < len(self.bufs) and self.lds[axis], f"cant swap lds as buf has no lds {axis}")
       x, y = cast(tuple, opt.arg)
       check(x < y, f"invalid lds swap {x} >= {y}")
-      buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
+      buf_index = 1 if axis == 2 else 2
       check(self.global_dims <= x < self.first_reduce, f"invalid x in lds swap {x=}")
       check(self.first_upcast <= y < len(self.sts[buf_index].shape), f"invalid y in lds swap {y=}")
       check((szx:=self.sts[buf_index].shape[x]) == (szy:=self.sts[buf_index].shape[y]), f"both dimensions should have the same size {szx=} != {szy=}")
