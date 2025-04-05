@@ -450,6 +450,7 @@ class Kernel:
       check((stx:=self.sts[buf_index].real_strides(True)[x]) == 0, f"local dim should have stride 0 {stx=}")
       check((osz:=self.output_shape[y]) == 1, f"y axis shhould be a reduce dim {osz=}")
       self.lds_swap[axis].append((x, y))
+      print(f"applied lds_swap{opt}")
 
     if append_opt: self.applied_opts.append(opt)
     if self.simplify_ones() and self.tensor_core_opts:
