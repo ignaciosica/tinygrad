@@ -171,7 +171,8 @@ class TestLDS(unittest.TestCase):
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
   def test_lds_full(self):
     opts = [Opt(OptOps.LOCAL, 0, 2),
-            Opt(OptOps.UPCAST, 1, 2)]
+            Opt(OptOps.UPCAST, 1, 2),
+            Opt(OptOps.SWAP, 0, 1)]
     helper_lds_matmul(opts=opts, expected_bufs=[(0,4),(1,2),(2,2)])
 
     opts = [Opt(OptOps.LOCAL, 0, 2),
