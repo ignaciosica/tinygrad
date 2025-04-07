@@ -79,7 +79,7 @@ class Kernel:
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
     self.lds: list[bool] = [False] * len(self.bufs)
-    self.smem_usage:int = 0
+    self.smem_usage: int = 0
 
     # group simplifies
     self.simplify_ones()
@@ -356,7 +356,7 @@ class Kernel:
       return
 
     axis = self.real_axis(opt)
-    if opt.op is not OptOps.LDS:
+    if opt.op != OptOps.LDS:
       check(not any(self.lds), f"cant reshape after LDS {self.applied_opts=} {opt=}")
       check(axis < len(self.full_shape), "invalid axis")
 
