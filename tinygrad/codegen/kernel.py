@@ -357,7 +357,7 @@ class Kernel:
 
     axis = self.real_axis(opt)
     if opt.op is not OptOps.LDS:
-      if opt.op != OptOps.SWAP: check(not any(self.lds), f"cant reshape after LDS {self.applied_opts=} {opt=}")
+      if opt.op != OptOps.SWAP: check(not any(self.lds), f"can't reshape after LDS {self.applied_opts=} {opt=}")
       check(axis < len(self.full_shape), "invalid axis")
 
     if opt.op is OptOps.SWAP: amt = cast(int, opt.arg)  # arg is an axis in the SWAPs
