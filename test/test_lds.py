@@ -33,6 +33,9 @@ def helper_lds_allclose(opts:list[Opt], expected_bufs, N=16, M=16, K=16, dtype_i
   if dtype_in == dtypes.half: atol, rtol = 1e-2, 1e-2
   np.testing.assert_allclose(bufs[0].numpy().reshape((M,N)), a.numpy() @ b.numpy(), atol=atol, rtol=rtol)
 
+  assert k.smem_usage == sum([sz for _, sz in expected_bufs]), f"{k.smem_usage=} != {sum([sz for _, sz in expected_bufs])=}"
+  assert k.smem_usage <= k.opts.shared_max, f"{k.smem_usage} > {k.opts.shared_max}"
+
   local_buffers = [uop for uop in k.uops if uop.op is Ops.DEFINE_LOCAL]
   assert len(local_buffers) == len(expected_bufs), f"Expected exactly {len(expected_bufs)} local buffers, got {len(local_buffers)}"
   for i,(buf, sz) in enumerate(expected_bufs):
@@ -66,8 +69,8 @@ class TestLDS(unittest.TestCase):
     # output
     helper_lds_allclose(opts=[Opt(OptOps.LDS, 0, None)], expected_bufs=[(0,1)], append_lds_opts=False)
     # input
-    helper_lds_allclose(opts=[Opt(OptOps.LDS, 1, None)], expected_bufs=[(1,1)], append_lds_opts=False)
-    helper_lds_allclose(opts=[Opt(OptOps.LDS, 2, None)], expected_bufs=[(2,1)], append_lds_opts=False)
+    helper_lds_allclose(opts=[Opt(OptOps.LOCAL, 0, 4), Opt(OptOps.LDS, 1, None)], expected_bufs=[(1,4)], append_lds_opts=False)
+    helper_lds_allclose(opts=[Opt(OptOps.UNROLL, 0, 4),Opt(OptOps.LDS, 2, None)], expected_bufs=[(2,4)], append_lds_opts=False)
     # multi
     helper_lds_allclose(opts=[Opt(OptOps.LDS, 0, None), Opt(OptOps.LDS, 1, None)], expected_bufs=[(0,1),(1,1)], append_lds_opts=False)
     helper_lds_allclose(opts=[], expected_bufs=[(0,1),(1,1),(2,1)])
