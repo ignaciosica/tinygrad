@@ -195,6 +195,7 @@ class TestLDSOps(unittest.TestCase):
       a = Tensor.rand((sz:=4096), sz).realize()
       b = Tensor.rand(sz, 1).realize()
     opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.LOCAL, 1, 8), Opt(OptOps.LOCAL, 0, 4)]
+    # b is broadcasted so local buffer shape only depends on locals/upcasts to dim 0
     helper_lds_allclose(a + b, opts, a.numpy() + b.numpy(), (sz,sz), [(0,128),(1,128),(2,16)], rtol=1e-4, atol=1e-4)
 
 if __name__ == '__main__':
