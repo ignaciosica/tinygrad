@@ -53,7 +53,7 @@ def helper_lds_matmul(opts:list[Opt], expected_bufs, N=16, M=16, K=16, dtype_in=
     expected_dtype = (acc_dtype if buf == 0 else dtype_in).ptr(sz, local=True)
     assert local_buffers[i].dtype == expected_dtype, f"Expected buffer dtype {expected_dtype}, got {local_buffers[i].dtype} for {opts=}"
 
-@unittest.skipUnless(Device[Device.DEFAULT].renderer.has_shared, "test requires shared")
+@unittest.skipUnless(Device[Device.DEFAULT].renderer.has_shared, "tests require shared")
 class TestLDS(unittest.TestCase):
   def test_lds_args(self):
     realized_ast, _ = helper_realized_ast(Tensor.rand(4, 4) @ Tensor.rand(4, 4))
@@ -72,6 +72,7 @@ class TestLDS(unittest.TestCase):
       with self.assertRaises(KernelOptError):
         k.apply_opt(opt)
 
+  @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
   def test_lds_basic(self):
     # output
     helper_lds_matmul(opts=[Opt(OptOps.LDS, 0, None)], expected_bufs=[(0,1)], append_lds_opts=False)
@@ -176,6 +177,8 @@ class TestLDS(unittest.TestCase):
             Opt(OptOps.UPCAST, 0, 2)]
     helper_lds_matmul(opts=opts, expected_bufs=[(0,8),(1,4),(2,8)])
 
+@unittest.skipUnless(Device[Device.DEFAULT].renderer.has_shared, "tests require shared")
+@unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "tests require local")
 class TestLDSOps(unittest.TestCase):
   def test_lds_transpose(self):
     with Context(DEBUG=0): a = Tensor.rand((sz:=4096), sz).realize()
