@@ -434,7 +434,9 @@ class Kernel:
       check(not self.lds[axis], f"already applied lds on buffer {axis}")
       ops = [op.op for op in self.applied_opts]
       check(OptOps.PADTO not in ops and OptOps.GROUPTOP not in ops, "cant apply lds with padto/grouptop")
-      buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
+      # TODO: remove buf_index hack
+      if len(self.bufs) == 3: buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
+      else: buf_index = axis
       self.smem_usage += prod(sz for i,(sz,st) in enumerate(zip(self.sts[buf_index].shape,self.sts[buf_index].real_strides(True)))
                               if st != 0 and ((self.global_dims <= i < self.first_reduce) or self.first_upcast <= i))
       check(self.smem_usage <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {self.smem_usage}, max {self.opts.shared_max}")
