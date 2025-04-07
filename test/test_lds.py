@@ -1,5 +1,6 @@
 from typing import Union
 import numpy as np
+import torch
 import unittest
 from dataclasses import replace
 
@@ -197,6 +198,19 @@ class TestLDSOps(unittest.TestCase):
     opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.LOCAL, 1, 8), Opt(OptOps.LOCAL, 0, 4)]
     # b is broadcasted so local buffer shape only depends on locals/upcasts to dim 0
     helper_lds_allclose(a + b, opts, a.numpy() + b.numpy(), (sz,sz), [(0,128),(1,128),(2,16)], rtol=1e-4, atol=1e-4)
+
+  def test_lds_conv2d(self):
+    BS = 16
+    CIN, COUT, HW = 64, 64, 64
+    K = 3
+    with Context(DEBUG=0):
+      a = Tensor.rand(BS, CIN, HW, HW).realize()
+      b = Tensor.rand(COUT, CIN, K, K).realize()
+
+    ta, tb = torch.from_numpy(a.numpy()).to("cpu"), torch.from_numpy(b.numpy()).to("cpu")
+    tc = torch.nn.functional.conv2d(ta, tb).numpy()
+
+    helper_lds_allclose(a.conv2d(b), [], tc, (16, 64, 62, 62), [(0,1),(1,1),(2,1)], rtol=1e-4, atol=1e-4)
 
 if __name__ == '__main__':
   unittest.main()
