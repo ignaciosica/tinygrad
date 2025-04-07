@@ -43,7 +43,7 @@ def helper_lds_allclose(r:Tensor, opts:list[Opt], desired:np.ndarray, output_sha
     # TODO: check all access to the global buffer are proxied through the local buffer
   return k
 
-def helper_lds_matmul(opts:list[Opt], expected_bufs, N=16, M=16, K=16, dtype_in=dtypes.float, acc_dtype=dtypes.float, append_lds_opts=True):
+def helper_lds_matmul(opts:list[Opt], expected_bufs, N=32, M=64, K=16, dtype_in=dtypes.float, acc_dtype=dtypes.float, append_lds_opts=True):
   with Context(DEBUG=0): a, b = Tensor.rand(M, K, dtype=dtype_in).realize(), Tensor.rand(K, N, dtype=dtype_in).realize()
   atol, rtol = 1e-4, 1e-4
   if dtype_in == dtypes.half: atol, rtol = 1e-2, 1e-2
@@ -123,9 +123,9 @@ class TestLDS(unittest.TestCase):
                              Opt(OptOps.LOCAL, 0, 2)]
     helper_lds_matmul(opts=multi_axis_local_opts, expected_bufs=[(0,8),(1,2),(2,4)])
 
-    full_local_opts = [Opt(OptOps.LOCAL, 0, 16),
+    full_local_opts = [Opt(OptOps.LOCAL, 0, 64),
                        Opt(OptOps.LOCAL, 0, 16)]
-    helper_lds_matmul(opts=full_local_opts, expected_bufs=[(0,256),(1,16),(2,16)])
+    helper_lds_matmul(opts=full_local_opts, expected_bufs=[(0,1024),(1,64),(2,16)])
 
   def test_lds_upcast(self):
     # if only upcasts are applied, local buffer size for output should be prod(upcast)
@@ -141,9 +141,10 @@ class TestLDS(unittest.TestCase):
                               Opt(OptOps.UPCAST, 0, 2)]
     helper_lds_matmul(opts=multi_axis_upcast_opts, expected_bufs=[(0,8),(1,2),(2,4)])
 
-    full_upcast_opts = [Opt(OptOps.UPCAST, 0, 16),
+    full_upcast_opts = [Opt(OptOps.UPCAST, 0, 8),
+                        Opt(OptOps.UPCAST, 0, 8),
                         Opt(OptOps.UPCAST, 0, 16)]
-    helper_lds_matmul(opts=full_upcast_opts, expected_bufs=[(0,256),(1,16),(2,16)])
+    helper_lds_matmul(opts=full_upcast_opts, expected_bufs=[(0,1024),(1,64),(2,16)])
 
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   def test_lds_tc(self):
@@ -181,17 +182,17 @@ class TestLDS(unittest.TestCase):
             Opt(OptOps.LOCAL, 1, 8)]
     helper_lds_matmul(opts=opts, expected_bufs=[(0,64),(1,8),(2,8)])
 
-    opts = [Opt(OptOps.LOCAL, 0, 16),
+    opts = [Opt(OptOps.LOCAL, 0, 64),
             Opt(OptOps.UPCAST, 1, 2)]
-    helper_lds_matmul(opts=opts, expected_bufs=[(0,16),(1,16),(2,1)]) # upcasting local dim
+    helper_lds_matmul(opts=opts, expected_bufs=[(0,64),(1,64),(2,1)]) # upcasting local dim
 
-    opts = [Opt(OptOps.LOCAL, 0, 16),
+    opts = [Opt(OptOps.LOCAL, 0, 64),
             Opt(OptOps.UPCAST, 0, 16)]
-    helper_lds_matmul(opts=opts, expected_bufs=[(0,256),(1,16),(2,16)])
+    helper_lds_matmul(opts=opts, expected_bufs=[(0,1024),(1,64),(2,16)])
 
     opts = [Opt(OptOps.LOCAL, 1, 16),
-            Opt(OptOps.UPCAST, 1, 16)]
-    helper_lds_matmul(opts=opts, expected_bufs=[(0,16),(1,1),(2,16)])
+            Opt(OptOps.UPCAST, 1, 2)]
+    helper_lds_matmul(opts=opts, expected_bufs=[(0,32),(1,1),(2,32)])
 
     opts = [Opt(OptOps.LOCAL, 1, 4),
             Opt(OptOps.UNROLL, 0, 2),
