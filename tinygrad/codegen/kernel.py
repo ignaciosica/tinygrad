@@ -675,7 +675,7 @@ class Kernel:
 
   def apply_lds(self, ast) -> UOp:
     def transform(ctx:tuple[Kernel, set[UOp]], global_access:UOp):
-      if (buf:=global_access.src[0]).op is not Ops.DEFINE_GLOBAL or buf.arg in ctx[1] or not (k := ctx[0]).lds[buf.arg]: return None
+      if (buf := global_access.src[0]).op is not Ops.DEFINE_GLOBAL or buf.arg in ctx[1] or not (k := ctx[0]).lds[buf.arg]: return None
       ctx[1].add(buf.arg)
       global_st: ShapeTracker = global_access.src[1].arg
       gd, fr, fu, shape = k.global_dims, k.first_reduce, k.first_upcast, []
