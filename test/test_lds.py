@@ -152,21 +152,21 @@ class TestLDS(unittest.TestCase):
       sz = 64
 
       opts = [Opt(OptOps.TC, 0, (i, 0))]
-      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N),(1,K*N),(2,M*K)], N=N, M=M, K=K, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
+      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N),(1,M*K),(2,K*N)], N=N, M=M, K=K, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
 
       opts = [Opt(OptOps.TC, 0, (i, 0)),
               Opt(OptOps.LOCAL, 0, 2),
               Opt(OptOps.UPCAST, 1, 2)]
-      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N*4),(1,K*N*2),(2,M*K*2)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
+      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N*4),(1,M*K*2),(2,K*N*2)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
 
       opts = [Opt(OptOps.TC, 0, (i, 0)),
               Opt(OptOps.UNROLL, 0, 2)]
-      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N),(1,K*N*2),(2,M*K*2)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
+      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N),(1,M*K*2),(2,K*N*2)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
 
       opts = [Opt(OptOps.TC, 0, (i, 0)),
               Opt(OptOps.UNROLL, 0, 2),
               Opt(OptOps.UPCAST, 1, 2)]
-      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N*2),(1,K*N*2),(2,M*K*4)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
+      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N*2),(1,M*K*2),(2,K*N*4)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
 
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
   def test_lds_full(self):
