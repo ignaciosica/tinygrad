@@ -356,7 +356,7 @@ class Kernel:
       return
 
     axis = self.real_axis(opt)
-    if opt.op != OptOps.LDS:
+    if opt.op is not OptOps.LDS:
       check(not any(self.lds), f"cant reshape after LDS {self.applied_opts=} {opt=}")
       check(axis < len(self.full_shape), "invalid axis")
 
