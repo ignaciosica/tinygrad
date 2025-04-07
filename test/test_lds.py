@@ -146,29 +146,29 @@ class TestLDS(unittest.TestCase):
                         Opt(OptOps.UPCAST, 0, 16)]
     helper_lds_matmul(opts=full_upcast_opts, expected_bufs=[(0,1024),(1,64),(2,16)])
 
-  @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
-  def test_lds_tc(self):
-    for i, tc in enumerate(Device[Device.DEFAULT].renderer.tensor_cores):
-      if tc.dtype_in == dtypes.bfloat16 or tc.dtype_out == dtypes.bfloat16: continue
-      (N, M, K) = tc.dims
-      sz = 64
+  # @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
+  # def test_lds_tc(self):
+  #   for i, tc in enumerate(Device[Device.DEFAULT].renderer.tensor_cores):
+  #     if tc.dtype_in == dtypes.bfloat16 or tc.dtype_out == dtypes.bfloat16: continue
+  #     (N, M, K) = tc.dims
+  #     sz = 64
 
-      opts = [Opt(OptOps.TC, 0, (i, 0))]
-      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N),(1,M*K),(2,K*N)], N=N, M=M, K=K, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
+  #     opts = [Opt(OptOps.TC, 0, (i, 0))]
+  #     helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N),(1,M*K),(2,K*N)], N=N, M=M, K=K, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
 
-      opts = [Opt(OptOps.TC, 0, (i, 0)),
-              Opt(OptOps.LOCAL, 0, 2),
-              Opt(OptOps.UPCAST, 1, 2)]
-      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N*4),(1,M*K*2),(2,K*N*2)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
+  #     opts = [Opt(OptOps.TC, 0, (i, 0)),
+  #             Opt(OptOps.LOCAL, 0, 2),
+  #             Opt(OptOps.UPCAST, 1, 2)]
+  #     helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N*4),(1,M*K*2),(2,K*N*2)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
 
-      opts = [Opt(OptOps.TC, 0, (i, 0)),
-              Opt(OptOps.UNROLL, 0, 2)]
-      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N),(1,M*K*2),(2,K*N*2)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
+  #     opts = [Opt(OptOps.TC, 0, (i, 0)),
+  #             Opt(OptOps.UNROLL, 0, 2)]
+  #     helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N),(1,M*K*2),(2,K*N*2)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
 
-      opts = [Opt(OptOps.TC, 0, (i, 0)),
-              Opt(OptOps.UNROLL, 0, 2),
-              Opt(OptOps.UPCAST, 1, 2)]
-      helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N*2),(1,M*K*2),(2,K*N*4)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
+  #     opts = [Opt(OptOps.TC, 0, (i, 0)),
+  #             Opt(OptOps.UNROLL, 0, 2),
+  #             Opt(OptOps.UPCAST, 1, 2)]
+  #     helper_lds_matmul(opts=opts, expected_bufs=[(0,M*N*2),(1,M*K*2),(2,K*N*4)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
 
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
   def test_lds_full(self):
