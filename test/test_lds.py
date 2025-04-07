@@ -214,5 +214,24 @@ class TestLDSOps(unittest.TestCase):
 
     helper_lds_allclose(a.conv2d(b), opts, tc, (16, 64, 62, 62), [(0,64),(1,16),(2,4)], rtol=1e-4, atol=1e-4)
 
+  def test_lds_conv2d_variant(self):
+    BS = 16
+    CIN, COUT, HW = 64, 64, 64
+    K = 3
+    with Context(DEBUG=0):
+      a = Tensor.rand(BS, CIN, HW, HW).realize()
+      b = Tensor.rand(COUT, CIN, K, K).realize()
+
+    ta, tb = torch.from_numpy(a.numpy()).to("cpu"), torch.from_numpy(b.numpy()).to("cpu")
+    tc = torch.nn.functional.conv2d(ta, tb).numpy()
+
+    opts = [Opt(OptOps.UPCAST, 0, 4),
+            Opt(OptOps.LOCAL, 0, 2),
+            Opt(OptOps.LOCAL, 1, 4),
+            Opt(OptOps.LDS, 0, None),
+            Opt(OptOps.LDS, 2, None)]
+
+    helper_lds_allclose(a.conv2d(b), opts, tc, (16, 64, 62, 62), [(0,32),(2,4)], rtol=1e-4, atol=1e-4, append_lds_opts=False)
+
 if __name__ == '__main__':
   unittest.main()
