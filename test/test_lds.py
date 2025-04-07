@@ -210,7 +210,9 @@ class TestLDSOps(unittest.TestCase):
     ta, tb = torch.from_numpy(a.numpy()).to("cpu"), torch.from_numpy(b.numpy()).to("cpu")
     tc = torch.nn.functional.conv2d(ta, tb).numpy()
 
-    helper_lds_allclose(a.conv2d(b), [], tc, (16, 64, 62, 62), [(0,1),(1,1),(2,1)], rtol=1e-4, atol=1e-4)
+    opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.UPCAST, 2, 2), Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.LOCAL, 1, 4)]
+
+    helper_lds_allclose(a.conv2d(b), opts, tc, (16, 64, 62, 62), [(0,64),(1,16),(2,4)], rtol=1e-4, atol=1e-4)
 
 if __name__ == '__main__':
   unittest.main()
