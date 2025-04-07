@@ -673,7 +673,6 @@ class Kernel:
     del fixup_ast
     return graph_rewrite(fixed_ast, view_left)
 
-
   def apply_lds(self, ast) -> UOp:
     def transform(ctx:tuple[Kernel, set[UOp]], global_access:UOp):
       if (buf:=global_access.src[0]).arg in ctx[1] or global_access.src[0].op is not Ops.DEFINE_GLOBAL: return None
@@ -698,7 +697,6 @@ class Kernel:
       return None
 
     return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), transform)]), ctx=(self, set()))
-
 
   # **** this is the lowerer ****
 
