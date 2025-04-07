@@ -675,26 +675,24 @@ class Kernel:
 
   def apply_lds(self, ast) -> UOp:
     def transform(ctx:tuple[Kernel, set[UOp]], global_access:UOp):
-      if (buf:=global_access.src[0]).arg in ctx[1] or global_access.src[0].op is not Ops.DEFINE_GLOBAL: return None
+      if (buf:=global_access.src[0]).op is not Ops.DEFINE_GLOBAL or buf.arg in ctx[1] or not (k := ctx[0]).lds[buf.arg]: return None
       ctx[1].add(buf.arg)
-      if (k := ctx[0]).lds[buf.arg]:
-        global_st: ShapeTracker = global_access.src[1].arg
-        gd, fr, fu, shape = k.global_dims, k.first_reduce, k.first_upcast, []
-        for i, st in enumerate(global_st.real_strides(True)): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i >= fu) else 1)
+      global_st: ShapeTracker = global_access.src[1].arg
+      gd, fr, fu, shape = k.global_dims, k.first_reduce, k.first_upcast, []
+      for i, st in enumerate(global_st.real_strides(True)): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i >= fu) else 1)
 
-        store_st = load_st = ShapeTracker.from_shape(tuple(shape))
-        if DEBUG>=4: print(f"\n{buf.arg=} [{k.smem_usage}]\n {store_st=}\n  {load_st=}\n{global_st=}\n")
+      store_st = load_st = ShapeTracker.from_shape(tuple(shape))
+      if DEBUG>=4: print(f"\n{buf.arg=} [{k.smem_usage}]\n {store_st=}\n  {load_st=}\n{global_st=}\n")
 
-        local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
-        if global_access.op == Ops.LOAD:
-          global_access = global_access.replace(src=(global_access.src[0], global_st.to_uop()))
-          local_store = UOp.store(local_buffer, store_st.to_uop(), global_access)
-          return UOp(Ops.LOAD, global_access.dtype, (local_buffer, load_st.to_uop(), local_store))
-        if global_access.op == Ops.STORE:
-          local_store = UOp.store(local_buffer, store_st.to_uop(), global_access.src[2])
-          local_load = UOp(Ops.LOAD, local_buffer.dtype.base, (local_buffer, load_st.to_uop(), local_store))
-          return global_access.replace(src=(global_access.src[0], global_st.to_uop(), local_load))
-      return None
+      local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
+      if global_access.op == Ops.LOAD:
+        global_access = global_access.replace(src=(global_access.src[0], global_st.to_uop()))
+        local_store = UOp.store(local_buffer, store_st.to_uop(), global_access)
+        return UOp(Ops.LOAD, global_access.dtype, (local_buffer, load_st.to_uop(), local_store))
+      if global_access.op == Ops.STORE:
+        local_store = UOp.store(local_buffer, store_st.to_uop(), global_access.src[2])
+        local_load = UOp(Ops.LOAD, local_buffer.dtype.base, (local_buffer, load_st.to_uop(), local_store))
+        return global_access.replace(src=(global_access.src[0], global_st.to_uop(), local_load))
 
     return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), transform)]), ctx=(self, set()))
 
