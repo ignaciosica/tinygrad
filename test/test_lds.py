@@ -73,6 +73,24 @@ class TestLDS(unittest.TestCase):
       with self.assertRaises(KernelOptError):
         k.apply_opt(opt)
 
+  def test_invalid_lds(self):
+    realized_ast, _ = helper_realized_ast(Tensor.rand(4, 4) @ Tensor.rand(4, 4))
+    invalid_opts = [
+      [Opt(OptOps.PADTO, 1, 7), Opt(OptOps.LDS, 2, None)],
+      [Opt(OptOps.LDS, 2, None), Opt(OptOps.PADTO, 1, 7)],
+      [Opt(OptOps.LDS, 2, None), Opt(OptOps.UPCAST, 2, 2)],
+      [Opt(OptOps.LDS, 0, None), Opt(OptOps.LOCAL, 2, 2)],
+      [Opt(OptOps.LDS, 0, None), Opt(OptOps.UNROLL, 0, 2)],
+      [Opt(OptOps.GROUPTOP, 0, 2), Opt(OptOps.LDS, 0, None)],
+      [Opt(OptOps.LDS, 0, None), Opt(OptOps.GROUPTOP, 0, 2)],
+      [Opt(OptOps.GROUP, 0, 2), Opt(OptOps.LDS, 0, None)],
+      [Opt(OptOps.LDS, 0, None), Opt(OptOps.GROUP, 0, 2)],
+    ]
+    for opts in invalid_opts:
+      k = Kernel(realized_ast)
+      with self.assertRaises(KernelOptError):
+        for opt in opts: k.apply_opt(opt)
+
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
   def test_lds_basic(self):
     # output

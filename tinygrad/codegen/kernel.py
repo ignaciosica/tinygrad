@@ -357,7 +357,7 @@ class Kernel:
 
     axis = self.real_axis(opt)
     if opt.op is not OptOps.LDS:
-      check(not any(self.lds), f"cant reshape after LDS {self.applied_opts=} {opt=}")
+      if opt.op != OptOps.SWAP: check(not any(self.lds), f"cant reshape after LDS {self.applied_opts=} {opt=}")
       check(axis < len(self.full_shape), "invalid axis")
 
     if opt.op is OptOps.SWAP: amt = cast(int, opt.arg)  # arg is an axis in the SWAPs
@@ -430,10 +430,8 @@ class Kernel:
           padded = True
       check(padded, "nothing was padded")
     elif opt.op is OptOps.LDS:
-      check(0 <= axis < len(self.bufs), f"invalid buffer {axis}")
-      check(not self.lds[axis], f"already applied lds on buffer {axis}")
-      ops = [op.op for op in self.applied_opts]
-      check(OptOps.PADTO not in ops and OptOps.GROUPTOP not in ops, "cant apply lds with padto/grouptop")
+      check(0 <= axis < len(self.bufs) and not self.lds[axis], f"invalid lds {axis=}")
+      check(OptOps.PADTO not in [op.op for op in self.applied_opts] and self.group_for_reduces == 0, "can't apply lds with padto/group/grouptop")
       # TODO: remove buf_index hack
       if len(self.bufs) == 3: buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
       else: buf_index = axis
