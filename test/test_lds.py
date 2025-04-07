@@ -54,7 +54,7 @@ def helper_lds_matmul(opts:list[Opt], expected_bufs, N=16, M=16, K=16, dtype_in=
     expected_dtype = (acc_dtype if buf == 0 else dtype_in).ptr(sz, local=True)
     assert local_buffers[i].dtype == expected_dtype, f"Expected buffer dtype {expected_dtype}, got {local_buffers[i].dtype} for {opts=}"
 
-@unittest.skipIf(Device.DEFAULT == "PTX", "shared memory is broken in PTX")
+@unittest.skipIf(Device.DEFAULT == "PTX", "shared memory is broken in PTX") # TODO: fix, TC=3 is also broken
 @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_shared, "tests require shared")
 class TestLDS(unittest.TestCase):
   def test_lds_args(self):
