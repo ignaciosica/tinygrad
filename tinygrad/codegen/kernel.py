@@ -704,9 +704,7 @@ class Kernel:
     if getenv("VIZ"): graph_rewrite(self.ast, PatternMatcher([]), name="View Base AST")
 
     modified_ast = self.get_optimized_ast(name_override)
-    assert modified_ast.arg.dont_use_locals == self.dont_use_locals
     modified_ast = self.apply_lds(modified_ast)
-    assert modified_ast.arg.dont_use_locals == self.dont_use_locals
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
 
     if DEBUG >= 3:
