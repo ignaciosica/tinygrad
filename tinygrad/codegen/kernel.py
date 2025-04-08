@@ -684,13 +684,13 @@ class Kernel:
       #   perm = (0,1,2,6,4,5,3)
       #   store_st = store_st.permute(perm)
       #   global_st = global_st.permute(perm)
-      if buf.arg == 2:
-        perm = (0,1,2,3,4,7,6,5)
-        # store_st = store_st.permute(perm)
-        global_st = global_st.permute(perm)
-        perm = (0,1,2,3,4,7,6,5)
-        # store_st = store_st.permute(perm)
-        load_st = load_st.permute(perm)
+      # if buf.arg == 2:
+      #   perm = (0,1,2,3,4,7,6,5)
+      #   # store_st = store_st.permute(perm)
+      #   global_st = global_st.permute(perm)
+      #   perm = (0,1,2,3,4,7,6,5)
+      #   # store_st = store_st.permute(perm)
+      #   load_st = load_st.permute(perm)
       if DEBUG>=4: print(f"\n{buf.arg=} [{k.smem_usage}]\n {store_st=}\n  {load_st=}\n{global_st=}\n")
 
       local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")

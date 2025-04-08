@@ -107,8 +107,8 @@ class CStyleLanguage(Renderer):
     tmp = "const sampler_t smp = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;\n" if any(isinstance(dtype, ImageDType) for _,(dtype,_) in bufs) else ""  # noqa: E501
     buftypes = [(name, self.render_dtype(dtype, mutable)+self.buffer_suffix if isinstance(dtype, (ImageDType, PtrDType)) else
                 self.arg_int_prefix if dtype == dtypes.int else None) for name,(dtype,mutable) in bufs]
-    # if "    __pipeline_commit(); __pipeline_wait_prior(0);" in kernel:
-      # kernel.remove("    __pipeline_commit(); __pipeline_wait_prior(0);")
+    # if "    bar0.arrive_and_wait();" in kernel:
+      # kernel.remove("    bar0.arrive_and_wait();")
     prg = ''.join([f"{self.kernel_prefix}void {self.get_kernel_modifier(uops)}{function_name}(",] +
     [', '.join([f'{t} {name}' for name,t in buftypes] + self.extra_args)] +
     [") {\n" + tmp] + ['\n'.join(kernel), "\n}"])
@@ -135,9 +135,20 @@ class CStyleLanguage(Renderer):
     name = "test"
     for u in uops:
       if u.op is Ops.BARRIER and len(u.src) > 0:
-        r[u] = f"bar{c['bar']}"
-        kernel.append(f"  __shared__ cuda::barrier<cuda::thread_scope_block> {r[u]}; init(&{r[u]}, 1);")
-        c['bar'] += 1
+        r[u] = f"bar0"
+        kernel.append(f"  __shared__ cuda::barrier<cuda::thread_scope_block> {r[u]}; init(&{r[u]}, 16);")
+  #       r[u] = "bar"
+  #       kernel.append(f"""
+  #   using barrier = cuda::barrier<cuda::thread_scope_block>;
+  # __shared__  barrier bar;
+  # auto block = cooperative_groups::this_thread_block();
+
+  # if (block.thread_rank() == 0) {{
+  #     init(&bar, block.size()); // Initialize the barrier with expected arrival count
+  # }}
+  # block.sync();
+  # """)
+        break
     for u in uops:
       if u.op is Ops.NAME:
         name = u.arg
@@ -156,10 +167,10 @@ class CStyleLanguage(Renderer):
       prefix = None
       if u.op is Ops.SPECIAL:
         r[u] = u.arg[0]
-      else:
+      elif u.op:
         prefix = {Ops.RANGE: "ridx", Ops.WMMA: "wmma", Ops.DEFINE_LOCAL: "temp", Ops.CONST: "const",
                   Ops.CAST: "cast", Ops.BITCAST: "cast", Ops.GEP: "gep", Ops.VECTORIZE: "cast", Ops.NOOP: "precast",
-                  Ops.INDEX: "bidx", Ops.DEFINE_ACC: "acc", Ops.LOAD: "val"}.get(u.op, "alu")
+                  Ops.INDEX: "bidx", Ops.DEFINE_ACC: "acc", Ops.LOAD: "val", Ops.BARRIER: "bar"}.get(u.op, "alu")
         r[u] = f"{prefix}{c[prefix]}"
 
       l = cast(str, self.string_rewrite.rewrite(u, ctx=self))
@@ -175,7 +186,7 @@ class CStyleLanguage(Renderer):
         else:
           l = f"{self.render_dtype(u.dtype)} {r[u]} = {l}" + (";" if u.op is not Ops.SPECIAL else "")
         kernel.append("  "*depth + l)
-        if prefix: c[prefix] += 1  # if it was used, increment
+        if prefix and u.op is not Ops.BARRIER: c[prefix] += 1  # if it was used, increment
       if u.op in {Ops.IF, Ops.RANGE}: depth += 1
     del self.r
 
@@ -367,14 +378,24 @@ class CUDARenderer(CStyleLanguage):
   dst_shared = UPat(Ops.INDEX, src=(UPat(Ops.DEFINE_LOCAL), UPat()), name="dest")
   src_global = UPat(Ops.INDEX, src=(UPat(Ops.DEFINE_GLOBAL), UPat()), name="src")  
   pre_matcher = PatternMatcher([
+    # (dst_shared.cast().named("cast").store(src_global.cast().load()),
+    #   lambda dest, src, cast: UOp(Ops.CUSTOM, src=(dest, src), arg=f"__pipeline_memcpy_async({{0}}, {{1}}, {cast.dtype.itemsize});")
+    #   if cast.dtype.itemsize in [4,8,16] else None),
+    # (dst_shared.store(src_global.load()),
+    #   lambda dest, src: UOp(Ops.CUSTOM, src=(dest, src), arg=f"__pipeline_memcpy_async({{0}}, {{1}}, {src.dtype.itemsize}); __pipeline_commit();")
+    #   if src.dtype.itemsize in [4,8,16] else None),
     (dst_shared.cast().named("cast").store(src_global.cast().load()),
-      lambda dest, src, cast: UOp(Ops.CUSTOM, src=(dest, src), arg=f"__pipeline_memcpy_async({{0}}, {{1}}, {cast.dtype.itemsize});")
+      lambda dest, src, cast: UOp(Ops.CUSTOM, src=(dest, src), arg=f"cuda::memcpy_async({{0}}, {{1}}, 4, bar0);")
       if cast.dtype.itemsize in [4,8,16] else None),
+    # (dst_shared.store(src_global.load()),
+    #   lambda dest, src: UOp(Ops.CUSTOM, src=(dest, src), arg=f"cuda::memcpy_async({{0}}, {{1}}, {src.dtype.itemsize}, bar0);")
+    #   if src.dtype.itemsize in [4,8,16] else None),
     (dst_shared.store(src_global.load()),
-      lambda dest, src: UOp(Ops.CUSTOM, src=(dest, src), arg=f"__pipeline_memcpy_async({{0}}, {{1}}, {src.dtype.itemsize}); __pipeline_commit();")
+      lambda dest, src: UOp(Ops.CUSTOM, src=(dest, src), arg=f"cuda::memcpy_async({{0}}, {{1}}, 1, bar0);")
       if src.dtype.itemsize in [4,8,16] else None),
   ])
-  string_rewrite = PatternMatcher([(UPat(Ops.BARRIER, src=UPat(Ops.CUSTOM)), lambda ctx: f"__pipeline_commit(); __pipeline_wait_prior(0);")]) + base_rewrite
+  # # string_rewrite = PatternMatcher([(UPat(Ops.BARRIER, src=UPat(Ops.CUSTOM)), lambda ctx: f"__pipeline_commit(); __pipeline_wait_prior(0);")]) + base_rewrite
+  string_rewrite = PatternMatcher([(UPat(Ops.BARRIER, src=UPat(Ops.CUSTOM), name="bar"), lambda ctx, bar: f"{ctx[bar]}.arrive_and_wait();")]) + base_rewrite
 
   def render_vector_prefix(self, dt:DType) -> str:
     vec, scal = self.render_dtype(dt), self.render_dtype(dt.scalar()),
@@ -383,7 +404,7 @@ class CUDARenderer(CStyleLanguage):
 
   def render_kernel(self, function_name, kernel, bufs, uops, prefix=None):
     # TODO: why is dtypes.bfloat16.name == "__bf16"? would be easier not override dtypes.name
-    prefix = ["#define INFINITY (__int_as_float(0x7f800000))","#define NAN (__int_as_float(0x7fffffff))", "#include <cuda_pipeline.h>", "#include <cuda/barrier>"]
+    prefix = ["#define INFINITY (__int_as_float(0x7f800000))","#define NAN (__int_as_float(0x7fffffff))", "#include <cuda/barrier>", "#include <cooperative_groups.h>"]
 
     used_dtypes = uops_to_dtypes(uops)
     if any(dt.scalar() == dtypes.half for dt in used_dtypes): prefix.append("#include <cuda_fp16.h>")
