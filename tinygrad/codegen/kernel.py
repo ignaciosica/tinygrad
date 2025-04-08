@@ -403,7 +403,7 @@ class Kernel:
     elif opt.op is OptOps.UPCAST:                     # yellow
       check(axis < self.first_reduce, "upcast is for non-reduce")
       check(not (self.tensor_core and self.global_dims <= axis < self.global_dims+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
-      check((self.opts is not None and self.opts.device == "DSP") or amt <= 16, "don't upcast more than 16")
+      check((self.opts is not None and self.opts.device == "DSP") or amt <= 32, "don't upcast more than 32")
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
     elif opt.op is OptOps.NOLOCALS:
@@ -680,6 +680,17 @@ class Kernel:
       for i, st in enumerate(global_st.real_strides(True)): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i >= fu) else 1)
 
       store_st = load_st = ShapeTracker.from_shape(tuple(shape))
+      # if buf.arg == 1:
+      #   perm = (0,1,2,6,4,5,3)
+      #   store_st = store_st.permute(perm)
+      #   global_st = global_st.permute(perm)
+      if buf.arg == 2:
+        perm = (0,1,2,3,4,7,6,5)
+        # store_st = store_st.permute(perm)
+        global_st = global_st.permute(perm)
+        perm = (0,1,2,3,4,7,6,5)
+        # store_st = store_st.permute(perm)
+        load_st = load_st.permute(perm)
       if DEBUG>=4: print(f"\n{buf.arg=} [{k.smem_usage}]\n {store_st=}\n  {load_st=}\n{global_st=}\n")
 
       local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")

@@ -107,6 +107,8 @@ class CStyleLanguage(Renderer):
     tmp = "const sampler_t smp = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;\n" if any(isinstance(dtype, ImageDType) for _,(dtype,_) in bufs) else ""  # noqa: E501
     buftypes = [(name, self.render_dtype(dtype, mutable)+self.buffer_suffix if isinstance(dtype, (ImageDType, PtrDType)) else
                 self.arg_int_prefix if dtype == dtypes.int else None) for name,(dtype,mutable) in bufs]
+    # if "    __pipeline_commit(); __pipeline_wait_prior(0);" in kernel:
+      # kernel.remove("    __pipeline_commit(); __pipeline_wait_prior(0);")
     prg = ''.join([f"{self.kernel_prefix}void {self.get_kernel_modifier(uops)}{function_name}(",] +
     [', '.join([f'{t} {name}' for name,t in buftypes] + self.extra_args)] +
     [") {\n" + tmp] + ['\n'.join(kernel), "\n}"])
@@ -131,6 +133,11 @@ class CStyleLanguage(Renderer):
     depth = 1
     c: defaultdict[str, int] = defaultdict(int)
     name = "test"
+    for u in uops:
+      if u.op is Ops.BARRIER and len(u.src) > 0:
+        r[u] = f"bar{c['bar']}"
+        kernel.append(f"  __shared__ cuda::barrier<cuda::thread_scope_block> {r[u]}; init(&{r[u]}, 1);")
+        c['bar'] += 1
     for u in uops:
       if u.op is Ops.NAME:
         name = u.arg
@@ -357,6 +364,18 @@ class CUDARenderer(CStyleLanguage):
     Ops.RECIP: lambda x,dtype: f"hrcp({x})" if dtype in (dtypes.half, dtypes.bfloat16) else f"(1/{x})" }
   type_map = {dtypes.bfloat16: "nv_bfloat16"}
 
+  dst_shared = UPat(Ops.INDEX, src=(UPat(Ops.DEFINE_LOCAL), UPat()), name="dest")
+  src_global = UPat(Ops.INDEX, src=(UPat(Ops.DEFINE_GLOBAL), UPat()), name="src")  
+  pre_matcher = PatternMatcher([
+    (dst_shared.cast().named("cast").store(src_global.cast().load()),
+      lambda dest, src, cast: UOp(Ops.CUSTOM, src=(dest, src), arg=f"__pipeline_memcpy_async({{0}}, {{1}}, {cast.dtype.itemsize});")
+      if cast.dtype.itemsize in [4,8,16] else None),
+    (dst_shared.store(src_global.load()),
+      lambda dest, src: UOp(Ops.CUSTOM, src=(dest, src), arg=f"__pipeline_memcpy_async({{0}}, {{1}}, {src.dtype.itemsize}); __pipeline_commit();")
+      if src.dtype.itemsize in [4,8,16] else None),
+  ])
+  string_rewrite = PatternMatcher([(UPat(Ops.BARRIER, src=UPat(Ops.CUSTOM)), lambda ctx: f"__pipeline_commit(); __pipeline_wait_prior(0);")]) + base_rewrite
+
   def render_vector_prefix(self, dt:DType) -> str:
     vec, scal = self.render_dtype(dt), self.render_dtype(dt.scalar()),
     elems, header = ', '.join(_nms[:dt.count]), ', '.join([f"{scal} {x}" for x in _nms[:dt.count]])
@@ -364,7 +383,7 @@ class CUDARenderer(CStyleLanguage):
 
   def render_kernel(self, function_name, kernel, bufs, uops, prefix=None):
     # TODO: why is dtypes.bfloat16.name == "__bf16"? would be easier not override dtypes.name
-    prefix = ["#define INFINITY (__int_as_float(0x7f800000))","#define NAN (__int_as_float(0x7fffffff))"]
+    prefix = ["#define INFINITY (__int_as_float(0x7f800000))","#define NAN (__int_as_float(0x7fffffff))", "#include <cuda_pipeline.h>", "#include <cuda/barrier>"]
 
     used_dtypes = uops_to_dtypes(uops)
     if any(dt.scalar() == dtypes.half for dt in used_dtypes): prefix.append("#include <cuda_fp16.h>")
