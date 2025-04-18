@@ -220,7 +220,7 @@ class TestLDSOps(unittest.TestCase):
     helper_lds_allclose(a + b, opts, a.numpy() + b.numpy(), (sz,sz), [(0,128),(1,128),(2,16)], rtol=1e-4, atol=1e-4)
 
   def test_lds_conv2d(self):
-    BS = 16
+    BS = 8
     CIN, COUT, HW = 32, 32, 32
     K = 3
     with Context(DEBUG=0):
@@ -230,12 +230,12 @@ class TestLDSOps(unittest.TestCase):
     ta, tb = torch.from_numpy(a.numpy()).to("cpu"), torch.from_numpy(b.numpy()).to("cpu")
     tc = torch.nn.functional.conv2d(ta, tb).numpy()
 
-    opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.UPCAST, 2, 2), Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.LOCAL, 1, 4)]
+    opts = [Opt(OptOps.UPCAST, 0, 2), Opt(OptOps.UPCAST, 2, 2), Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.LOCAL, 1, 4)]
 
-    helper_lds_allclose(a.conv2d(b), opts, tc, (16, 32, 30, 30), [(0,64),(1,16),(2,4)], rtol=1e-4, atol=1e-4)
+    helper_lds_allclose(a.conv2d(b), opts, tc, (8, 32, 30, 30), [(0,32),(1,8),(2,4)], rtol=1e-4, atol=1e-4)
 
   def test_lds_conv2d_variant(self):
-    BS = 16
+    BS = 8
     CIN, COUT, HW = 32, 32, 32
     K = 3
     with Context(DEBUG=0):
@@ -245,13 +245,13 @@ class TestLDSOps(unittest.TestCase):
     ta, tb = torch.from_numpy(a.numpy()).to("cpu"), torch.from_numpy(b.numpy()).to("cpu")
     tc = torch.nn.functional.conv2d(ta, tb).numpy()
 
-    opts = [Opt(OptOps.UPCAST, 0, 4),
+    opts = [Opt(OptOps.UPCAST, 0, 2),
             Opt(OptOps.LOCAL, 0, 2),
             Opt(OptOps.LOCAL, 1, 4),
             Opt(OptOps.LDS, 0, None),
             Opt(OptOps.LDS, 2, None)]
 
-    helper_lds_allclose(a.conv2d(b), opts, tc, (16, 32, 30, 30), [(0,32),(2,4)], rtol=1e-4, atol=1e-4, append_lds_opts=False)
+    helper_lds_allclose(a.conv2d(b), opts, tc, (8, 32, 30, 30), [(0,16),(2,4)], rtol=1e-4, atol=1e-4, append_lds_opts=False)
 
 if __name__ == '__main__':
   unittest.main()
