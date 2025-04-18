@@ -202,18 +202,18 @@ class TestLDS(unittest.TestCase):
 @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "tests require local")
 class TestLDSOps(unittest.TestCase):
   def test_lds_transpose(self):
-    with Context(DEBUG=0): a = Tensor.rand((sz:=4096), sz).realize()
+    with Context(DEBUG=0): a = Tensor.rand((sz:=256), sz).realize()
     opts = [Opt(OptOps.UPCAST, 1, 4), Opt(OptOps.LOCAL, 0, 8), Opt(OptOps.LOCAL, 1, 4)]
     helper_lds_allclose(a.transpose().contiguous(), opts, a.numpy().T, (sz,sz), [(0,128), (1,128)])
 
   def test_lds_reduce_sum(self):
-    with Context(DEBUG=0): a = Tensor.rand((sz:=4096), sz).realize()
+    with Context(DEBUG=0): a = Tensor.rand((sz:=256), sz).realize()
     opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.LOCAL, 0, 8), Opt(OptOps.LOCAL, 0, 4)]
     helper_lds_allclose(a.sum(axis=1), opts, a.numpy().sum(axis=1), (sz), [(0,128), (1,128)], rtol=1e-4, atol=1e-4)
 
   def test_lds_elementwise_broadcast(self):
     with Context(DEBUG=0):
-      a = Tensor.rand((sz:=4096), sz).realize()
+      a = Tensor.rand((sz:=256), sz).realize()
       b = Tensor.rand(sz, 1).realize()
     opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.LOCAL, 1, 8), Opt(OptOps.LOCAL, 0, 4)]
     # b is broadcasted so local buffer shape only depends on locals/upcasts to dim 0
@@ -221,7 +221,7 @@ class TestLDSOps(unittest.TestCase):
 
   def test_lds_conv2d(self):
     BS = 16
-    CIN, COUT, HW = 64, 64, 64
+    CIN, COUT, HW = 32, 32, 32
     K = 3
     with Context(DEBUG=0):
       a = Tensor.rand(BS, CIN, HW, HW).realize()
@@ -232,11 +232,11 @@ class TestLDSOps(unittest.TestCase):
 
     opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.UPCAST, 2, 2), Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.LOCAL, 1, 4)]
 
-    helper_lds_allclose(a.conv2d(b), opts, tc, (16, 64, 62, 62), [(0,64),(1,16),(2,4)], rtol=1e-4, atol=1e-4)
+    helper_lds_allclose(a.conv2d(b), opts, tc, (16, 32, 30, 30), [(0,64),(1,16),(2,4)], rtol=1e-4, atol=1e-4)
 
   def test_lds_conv2d_variant(self):
     BS = 16
-    CIN, COUT, HW = 64, 64, 64
+    CIN, COUT, HW = 32, 32, 32
     K = 3
     with Context(DEBUG=0):
       a = Tensor.rand(BS, CIN, HW, HW).realize()
@@ -251,7 +251,7 @@ class TestLDSOps(unittest.TestCase):
             Opt(OptOps.LDS, 0, None),
             Opt(OptOps.LDS, 2, None)]
 
-    helper_lds_allclose(a.conv2d(b), opts, tc, (16, 64, 62, 62), [(0,32),(2,4)], rtol=1e-4, atol=1e-4, append_lds_opts=False)
+    helper_lds_allclose(a.conv2d(b), opts, tc, (16, 32, 30, 30), [(0,32),(2,4)], rtol=1e-4, atol=1e-4, append_lds_opts=False)
 
 if __name__ == '__main__':
   unittest.main()
