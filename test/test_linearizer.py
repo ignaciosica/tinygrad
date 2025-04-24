@@ -1086,7 +1086,7 @@ class TestLinearizer(unittest.TestCase):
       else:
         assert "__WMMA_" in prg.src
 
-  @unittest.skipIf(Device.DEFAULT in ("AMD", "AMD_LLVM") or (Device.DEFAULT == "PYTHON" and getenv("EMULATE_AMD")), "broken for AMD")
+  @unittest.skipIf(Device.DEFAULT == "AMD" or (Device.DEFAULT == "PYTHON" and getenv("EMULATE_AMD")), "broken for AMD")
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   def test_tensor_cores_padded(self):
     for tc in Device[Device.DEFAULT].renderer.tensor_cores:
@@ -1095,7 +1095,7 @@ class TestLinearizer(unittest.TestCase):
 
   # AMD compiler bug: AMD miscompiles non-zero padded tc kernels with -O3, producing wrong results, nans or hang (see #9606)
   # Internal bug: zero-stride dimensions combined with a mask may produce wrong index/valid for pad == 1 on AMD
-  @unittest.skipUnless(Device.DEFAULT in ("AMD", "AMD_LLVM") or (Device.DEFAULT == "PYTHON" and getenv("EMULATE_AMD")), "test for AMD's tc")
+  @unittest.skipUnless(Device.DEFAULT == "AMD" or (Device.DEFAULT == "PYTHON" and getenv("EMULATE_AMD")), "test for AMD's tc")
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   @unittest.expectedFailure
   @unittest.skip("skipping until helper_tc_allclose is fixed and properly triggers tc with pad (#9606)")
