@@ -202,6 +202,11 @@ class PythonRenderer(Renderer):
     if getenv("EMULATE_INTEL"): self.device, self.suffix, self.tensor_cores = "INTEL", "INTEL", IntelRenderer.tensor_cores
     if getenv("EMULATE_AMX"): self.device, self.tensor_cores = "CPU", ClangRenderer.tensor_cores
 
+  def is_dtype_supported(self, dtype:DType):
+    if dtype is dtypes.bfloat16 or dtype in dtypes.fp8s: return False
+    if dtype is dtypes.half: return sys.version_info >= (3, 12) # supports half memoryview in 3.12+ https://github.com/python/cpython/issues/90751
+    return True
+
   def render(self, uops:list[UOp]) -> str:
     lops = [(u.op, u.dtype, [uops.index(v) for v in u.src], u.arg) for u in uops]
     return base64.b64encode(pickle.dumps(lops)).decode()
