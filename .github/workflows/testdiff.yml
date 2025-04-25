@@ -1,0 +1,85 @@
+name: Test-Suite Difference
+on:
+  pull_request_target:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  checkbranch:
+    name: Check PR Branch status
+    runs-on: ubuntu-latest
+    outputs:
+      uptodate: ${{ steps.brstat.outputs.ok }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - id: brstat
+        shell: bash
+        run: |
+          git remote add upstream https://github.com/tinygrad/tinygrad
+          git fetch upstream master
+          if [[ $(git rev-list --left-right --count upstream/master...HEAD | awk '{print $1}') -gt 0 ]]; then
+            echo "ok=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "ok=true"  >>"$GITHUB_OUTPUT"
+          fi
+
+  testsdiff:
+    name: Pytest Suite Diff
+    needs: checkbranch
+    if: needs.checkbranch.outputs.uptodate == 'true'
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+      - name: Checkout master code
+        uses: actions/checkout@v4
+        with:
+          path: base
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install minimal deps
+        run: |
+          pip install "pytest>=7.4" pytest-json-report tabulate
+      - name: Compute test diff
+        id: diff
+        run: |
+          BASE="$GITHUB_WORKSPACE/base"
+          PR="$GITHUB_WORKSPACE/pr"
+          python tests_diff.py "$BASE" "$PR" >> "$GITHUB_ENV"
+      - name: Comment test diff
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ignore_empty: true
+          recreate: true
+          message: ${{ env.TEST_DIFF }}
+
+  behindmsg:
+    name: PR behind master notice
+    needs: checkbranch
+    if: needs.checkbranch.outputs.uptodate == 'false'
+    permissions:
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          recreate: true
+          message: |
+            This branch is behind **tinygrad/master** – test-diff bot skipped.
