@@ -434,11 +434,11 @@ class Kernel:
       check(padded, "nothing was padded")
     elif opt.op is OptOps.LDS:
       check(0 <= axis < len(self.bufs) and not self.lds[axis], f"invalid lds {axis=}")
-      check(OptOps.PADTO not in [op.op for op in self.applied_opts] and self.group_for_reduces == 0, "can't apply lds with padto/group/grouptop")
-      # TODO: remove buf_index hack
-      if len(self.bufs) == 3: buf_index = axis if axis == 0 else (1 if axis == 2 else 2)
-      else: buf_index = axis
-      self.smem_usage += prod(sz for i,(sz,st) in enumerate(zip(self.sts[buf_index].shape,self.sts[buf_index].real_strides(True)))
+      check(self.group_for_reduces == 0, "can't apply lds with group/grouptop")
+      # TODO: remove buf_st hack
+      buf_st = self.sts[axis if axis == 0 else (1 if axis == 2 else 2)] if len(self.bufs) == 3 else self.sts[axis]
+      check(all(not buf_st.axis_is_masked(i) for i in range(len(buf_st.shape))), "can't apply lds with masked axis")
+      self.smem_usage += prod(sz for i,(sz,st) in enumerate(zip(buf_st.shape,buf_st.real_strides(True)))
                               if st != 0 and ((self.global_dims <= i < self.first_reduce) or self.first_upcast <= i))
       check(self.smem_usage <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {self.smem_usage}, max {self.opts.shared_max}")
       self.lds[axis] = True
