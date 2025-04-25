@@ -10,7 +10,7 @@ from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec, Opt, OptOps
 from tinygrad.dtype import ImageDType
 from tinygrad.helpers import all_same, colored, ansilen, dedup, getenv, prod, round_up, all_int, to_function_name, diskcache_put, unwrap, ContextVar
-from tinygrad.helpers import DEBUG, TC_SELECT, TC_OPT, AMX, CAPTURE_PROCESS_REPLAY
+from tinygrad.helpers import DEBUG, TC_SELECT, TC_OPT, TC_MODE, AMX, CAPTURE_PROCESS_REPLAY
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import strides_for_shape
 from tinygrad.codegen.linearize import linearize_uop
@@ -77,7 +77,7 @@ class Kernel:
     self.local_dims: int = 0
     self.tensor_core: Optional[TensorCore] = None
     self.tensor_core_opts: Optional[TensorCoreOptions] = None
-    self.use_tensor_cores: int = 0
+    self.tc_mode: int = 0
     self.dont_use_locals: bool = False
 
     # group simplifies
@@ -97,7 +97,7 @@ class Kernel:
     # parameters for optimizations
     ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals = \
       self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals
-    ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
+    ret.tensor_core, ret.tensor_core_opts, ret.tc_mode = self.tensor_core, self.tensor_core_opts, self.tc_mode
 
     return ret
 
@@ -270,8 +270,8 @@ class Kernel:
     if DEBUG >= 3: print("TENSOR CORES", axis_buf0, axis_buf1, tc)
     return TensorCoreOptions(axes=(s0, s1, s2), axes_exist=(True, True), axis_pads=axis_pads)
 
-  def _apply_tc_opt(self, use_tensor_cores:int, axis:int, tc_select:int, opt_level:int) -> bool:
-    if use_tensor_cores and self.reduceop is not None and self.reduceop.arg[0] is Ops.ADD:
+  def _apply_tc_opt(self, tc_mode:int, axis:int, tc_select:int, opt_level:int) -> bool:
+    if tc_mode and self.reduceop is not None and self.reduceop.arg[0] is Ops.ADD:
       tensor_cores = self.opts.tensor_cores if tc_select == -1 else [self.opts.tensor_cores[tc_select]]
       for tc in tensor_cores:
         tensor_core_opts = [self._create_tc_opts(reduceop, tc, axis, opt_level) for reduceop in self.reduceops]
@@ -288,17 +288,17 @@ class Kernel:
         for dim, amt in tc.get_reduce_axes(): self.apply_opt(Opt(OptOps.UNROLL, tc_opts.axes[2]-self.first_reduce, amt), append_opt=False)
         for opt in tc.opts: self.apply_opt(Opt({"u":OptOps.UPCAST, "l":OptOps.LOCAL}[opt[0]], tc_opts.axes[int(opt[1])], 2), append_opt=False)
         self.tensor_core = tc
-        self.use_tensor_cores = use_tensor_cores  # TC=2 will do the shape ops without the WMMA
+        self.tc_mode = tc_mode  # TC_MODE=2 will do the shape ops without the WMMA
         return True
     return False
 
-  def apply_tensor_cores(self, use_tensor_cores=1, extra_opts:Optional[list[Opt]]=None, axis:int=0, tc_select:Optional[int]=None,
+  def apply_tensor_cores(self, tc_mode:Optional[int]=None, extra_opts:Optional[list[Opt]]=None, axis:int=0, tc_select:Optional[int]=None,
                          tc_opt:Optional[int]=None) -> bool:
     """ Attempts to apply a tensor core optimization to the kernel. If one exists and applies properly, return true, otherwise return false.
     Tensor cores are optimized instructions that matrix multiply-accumulate across a wave of threads: D(M, N) = A(M, K) * B(K, N) + C(M, N).
 
     Keyword arguments:
-    use_tensor_cores -- controls how tensor cores are applied (default 1)
+    tc_mode -- controls how tensor cores are applied (default 1)
       0: will disable any tensor core matching
       1: enable tensor cores
       2: apply tensor core shape but don't use UOp.WMMA
@@ -314,9 +314,10 @@ class Kernel:
     """
     if tc_select is None: tc_select = TC_SELECT.value
     if tc_opt is None: tc_opt = TC_OPT.value
+    if tc_mode is None: tc_mode = TC_MODE.value
     if not self.opts.tensor_cores: return False
     try: # check TC first and apply hand-coded opts if successful
-      self.apply_opt(Opt(OptOps.TC, axis, (tc_select, tc_opt, use_tensor_cores)))
+      self.apply_opt(Opt(OptOps.TC, axis, (tc_select, tc_opt, tc_mode)))
 
       if (tc_opts:=self.tensor_core_opts) is not None:
         if extra_opts is not None: self.apply_opts(extra_opts)
@@ -349,8 +350,8 @@ class Kernel:
       check(opt.arg is not None and isinstance(opt.arg, tuple) and len(opt.arg) == 3, "tensor core opts must have valid arg")
       check(-1 <= (tc_select:=cast(tuple, opt.arg)[0]) < len(self.opts.tensor_cores), "tensor core opts must have valid tc_select")
       check(0 <= (tc_opt:=cast(tuple, opt.arg)[1]) <= 2, "tensor core opts must have valid tc_opt")
-      check(0 < (use_tensor_cores:=cast(tuple, opt.arg)[2]) <= 3, "use_tensor_cores value is not valid")
-      check(self._apply_tc_opt(use_tensor_cores, cast(int, opt.axis), tc_select, tc_opt), "no tensor core available")
+      check(0 < (tc_mode:=cast(tuple, opt.arg)[2]) <= 3, "tensor core opts must have valid tc_mode")
+      check(self._apply_tc_opt(tc_mode, cast(int, opt.axis), tc_select, tc_opt), "no tensor core available")
       self.applied_opts.append(opt)
       return
 
@@ -470,7 +471,7 @@ class Kernel:
         axes = reduced_axes(self.first_reduce + self.group_for_reduces, self.shape_len)
         grouped_axes = reduced_axes(self.first_reduce, self.first_reduce + self.group_for_reduces)
 
-        if (tc := self.tensor_core) and (self.use_tensor_cores == 1 or self.use_tensor_cores == 3):
+        if (tc := self.tensor_core) and (self.tc_mode == 1 or self.tc_mode == 3):
           wd, tcd = self.global_dims, self.first_upcast
           def get_upcast_axes(buf): # upcast along non-zero dimensions of (tc_reduce + tc_upcast)
             upcast_axes = int(math.log2(tc.elements_per_thread[buf]))
@@ -487,7 +488,7 @@ class Kernel:
             src_st = (src if src.op is Ops.LOAD else src.src[0]).st_arg
             if swizzle: srcs[i] = src.view(get_tc_swizzle_st(src_st.shape, *swizzle))
 
-            if self.use_tensor_cores == 3:  # for TC=3, emulate the warp addressing with locals
+            if self.tc_mode == 3:  # for TC_MODE=3, emulate the warp addressing with locals
               local_shape = tuple(1 if st == 0 or i < wd or (i >= self.first_reduce and i < tcd) else src_st.shape[i] \
                                   for i,st in enumerate(src_st.real_strides()))
               st = store_st = ShapeTracker.from_shape(local_shape)
@@ -497,7 +498,7 @@ class Kernel:
               srcs[i] = UOp(Ops.LOAD, tc.dtype_in, (local_buffer, st.to_uop(), local_store))
 
           tc_reduce_axes = tuple(tcd + ax for ax, _ in tc.get_reduce_axes())
-          if self.use_tensor_cores == 1: # real WMMA, use CONTRACT/UNROLL to get the vectorization right
+          if self.tc_mode == 1: # real WMMA, use CONTRACT/UNROLL to get the vectorization right
             tc_upcast_axes = (get_upcast_axes(0), get_upcast_axes(1), get_upcast_axes(2))
             wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, self.opts.device, tc.threads, tc_upcast_axes, tc_reduce_axes)
             wmma = UOp(Ops.WMMA, dtype=tc.dtype_out.vec(tc.elements_per_thread[2]), src=(
@@ -506,7 +507,7 @@ class Kernel:
               UOp.const(tc.dtype_out.vec(tc.elements_per_thread[2]), 0.0)), arg=wmma_arg)
             tc_uop = UOp(Ops.UNROLL, tc.dtype_out, (wmma,), arg=tc_upcast_axes[2])
 
-          else: # for TC=3 MUL/SUM instead of WMMA
+          else: # for TC_MODE=3 MUL/SUM instead of WMMA
             tc_uop = UOp(Ops.REDUCE_AXIS, tc.dtype_out, ((srcs[0] * srcs[1]).cast(tc.dtype_out),), (Ops.ADD, tc_reduce_axes))
 
           return ret.replace(src=(tc_uop,), arg=(Ops.ADD, new_axes)) if (new_axes := tuple(i for i in axes if i not in tc_reduce_axes)) else tc_uop

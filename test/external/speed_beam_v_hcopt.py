@@ -20,7 +20,7 @@ if __name__ == "__main__":
 
     k = new_lin()
 
-    if not (used_tensor_cores:=k.apply_tensor_cores(getenv("TC", 1))): k.apply_opts(hand_coded_optimizations(k))
+    if not (used_tensor_cores:=k.apply_tensor_cores(getenv("TC_MODE", 1))): k.apply_opts(hand_coded_optimizations(k))
 
     assert BEAM > 0
 
