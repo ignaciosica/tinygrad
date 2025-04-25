@@ -1997,7 +1997,7 @@ class TestKernelOpts(unittest.TestCase):
     for x in invalid_opts:
       k = Kernel(realized_ast)
       with self.assertRaises(AssertionError):
-        assert k.apply_tensor_cores(use_tensor_cores=1, extra_opts=x), "no valid tensor core" # for METAL in runners
+        assert k.apply_tensor_cores(tc_mode=1, extra_opts=x), "no valid tensor core" # for METAL in runners
 
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   def test_buf_index_not_found_tensor_core(self):
