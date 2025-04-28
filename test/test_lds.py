@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Union, cast
 import numpy as np
 import torch
 import unittest
@@ -10,7 +10,7 @@ from tinygrad.device import Device, Buffer
 from tinygrad.tensor import Tensor
 from tinygrad.engine.realize import run_schedule, CompiledRunner
 from tinygrad.helpers import Context
-from tinygrad.dtype import dtypes
+from tinygrad.dtype import dtypes, PtrDType
 
 def helper_realized_ast(r:Union[Tensor, list[Tensor]]) -> tuple[UOp, list[Buffer]]:
   if isinstance(r, Tensor): r = [r]
@@ -20,7 +20,7 @@ def helper_realized_ast(r:Union[Tensor, list[Tensor]]) -> tuple[UOp, list[Buffer
   bufs = [Buffer((x).device, x.size, x.dtype).allocate() if i < len(s[-1].ast.src) else x for i,x in enumerate(s[-1].bufs)]
   return s[-1].ast, bufs
 
-def helper_lds_allclose(r:Tensor, opts:list[Opt], desired:np.ndarray, output_shape:tuple[int], expected_bufs:list[tuple[int, int]],
+def helper_lds_allclose(r:Tensor, opts:list[Opt], desired:np.ndarray, output_shape:tuple[int, ...], expected_bufs:list[tuple[int, int]],
                         rtol:float=1e-7, atol:float=0, append_lds_opts=True) -> Kernel:
   realized_ast, bufs = helper_realized_ast(r)
   k = Kernel(realized_ast)
@@ -39,7 +39,7 @@ def helper_lds_allclose(r:Tensor, opts:list[Opt], desired:np.ndarray, output_sha
   assert len(local_buffers) == len(expected_bufs), f"Expected exactly {len(expected_bufs)} local buffers, got {len(local_buffers)}"
   for i,(buf, sz) in enumerate(expected_bufs):
     assert local_buffers[i].arg == f"lds{buf}", f"Expected buffer argument index lds{buf}, got {local_buffers[i].arg}"
-    assert local_buffers[i].dtype.size == sz, f"Expected buffer sz {sz}, got {local_buffers[i].dtype.size=} for {opts=}"
+    assert cast(PtrDType,local_buffers[i].dtype).size == sz, f"Expected buffer sz {sz}, got {cast(PtrDType,local_buffers[i].dtype).size=} for {opts=}"
     # TODO: check all access to the global buffer are proxied through the local buffer
   return k
 
@@ -209,7 +209,7 @@ class TestLDSOps(unittest.TestCase):
   def test_lds_reduce_sum(self):
     with Context(DEBUG=0): a = Tensor.rand((sz:=256), sz).realize()
     opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.LOCAL, 0, 8), Opt(OptOps.LOCAL, 0, 4)]
-    helper_lds_allclose(a.sum(axis=1), opts, a.numpy().sum(axis=1), (sz), [(0,128), (1,128)], rtol=1e-4, atol=1e-4)
+    helper_lds_allclose(a.sum(axis=1), opts, a.numpy().sum(axis=1), (sz,), [(0,128), (1,128)], rtol=1e-4, atol=1e-4)
 
   def test_lds_elementwise_broadcast(self):
     with Context(DEBUG=0):
