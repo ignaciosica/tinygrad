@@ -228,7 +228,7 @@ class TestLDSOps(unittest.TestCase):
       b = Tensor.rand(COUT, CIN, K, K).realize()
 
     ta, tb = torch.from_numpy(a.numpy()).to("cpu"), torch.from_numpy(b.numpy()).to("cpu")
-    tc = torch.nn.functional.conv2d(ta, tb).numpy()
+    tc = torch.conv2d(ta, tb).numpy()
 
     opts = [Opt(OptOps.UPCAST, 0, 2), Opt(OptOps.UPCAST, 2, 2), Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.LOCAL, 1, 4)]
 
@@ -243,7 +243,7 @@ class TestLDSOps(unittest.TestCase):
       b = Tensor.rand(COUT, CIN, K, K).realize()
 
     ta, tb = torch.from_numpy(a.numpy()).to("cpu"), torch.from_numpy(b.numpy()).to("cpu")
-    tc = torch.nn.functional.conv2d(ta, tb).numpy()
+    tc = torch.conv2d(ta, tb).numpy()
 
     opts = [Opt(OptOps.UPCAST, 0, 2),
             Opt(OptOps.LOCAL, 0, 2),
