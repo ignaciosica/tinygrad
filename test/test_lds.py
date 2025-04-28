@@ -123,8 +123,8 @@ class TestLDS(unittest.TestCase):
     helper_lds_matmul(opts=multi_axis_local_opts, expected_bufs=[(0,8),(1,2),(2,4)])
 
     full_local_opts = [Opt(OptOps.LOCAL, 0, 64),
-                       Opt(OptOps.LOCAL, 0, 16)]
-    helper_lds_matmul(opts=full_local_opts, expected_bufs=[(0,1024),(1,64),(2,16)])
+                       Opt(OptOps.LOCAL, 0, 4)]
+    helper_lds_matmul(N=4, opts=full_local_opts, expected_bufs=[(0,256),(1,64),(2,4)])
 
   def test_lds_upcast(self):
     # if only upcasts are applied, local buffer size for output should be prod(upcast)
