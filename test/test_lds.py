@@ -20,11 +20,13 @@ def helper_realized_ast(r:Union[Tensor, list[Tensor]]) -> tuple[UOp, list[Buffer
   bufs = [Buffer((x).device, x.size, x.dtype).allocate() if i < len(s[-1].ast.src) else x for i,x in enumerate(s[-1].bufs)]
   return s[-1].ast, bufs
 
-def helper_lds_allclose(r:Tensor, opts:list[Opt], desired:np.ndarray, expected_bufs:list[tuple[int, int]],
+def helper_lds_allclose(r:Tensor, desired:np.ndarray, opts:list[Opt]|None=None, expected_bufs:list[tuple[int, int]]|None=None,
                         rtol:float=1e-7, atol:float=0, append_lds_opts=True) -> Kernel:
   realized_ast, bufs = helper_realized_ast(r)
-  k = Kernel(realized_ast)
+  if opts is None: opts = []
+  if expected_bufs is None: expected_bufs = [(i, 1) for i in range(len(bufs))]
   if append_lds_opts: opts += [Opt(OptOps.LDS, i, None) for i in range(len(bufs))]
+  k = Kernel(realized_ast)
   for opt in opts:
     k.apply_opt(opt)
   prg = k.to_program()
@@ -47,7 +49,7 @@ def helper_lds_matmul(opts:list[Opt], expected_bufs, N=32, M=64, K=16, dtype_in=
   with Context(DEBUG=0): a, b = Tensor.rand(M, K, dtype=dtype_in).realize(), Tensor.rand(K, N, dtype=dtype_in).realize()
   atol, rtol = 1e-4, 1e-4
   if dtype_in == dtypes.half: atol, rtol = 1e-2, 1e-2
-  k = helper_lds_allclose(a.matmul(b, dtype=acc_dtype), opts, a.numpy() @ b.numpy(), expected_bufs, rtol, atol, append_lds_opts)
+  k = helper_lds_allclose(a.matmul(b, dtype=acc_dtype), a.numpy() @ b.numpy(), opts, expected_bufs, rtol, atol, append_lds_opts)
 
   local_buffers = [uop for uop in k.uops if uop.op is Ops.DEFINE_LOCAL]
   for i,(buf, sz) in enumerate(expected_bufs):
@@ -204,12 +206,12 @@ class TestLDSOps(unittest.TestCase):
   def test_lds_transpose(self):
     with Context(DEBUG=0): a = Tensor.rand((sz:=256), sz).realize()
     opts = [Opt(OptOps.UPCAST, 1, 4), Opt(OptOps.LOCAL, 0, 8), Opt(OptOps.LOCAL, 1, 4)]
-    helper_lds_allclose(a.transpose().contiguous(), opts, a.numpy().T, [(0,128), (1,128)])
+    helper_lds_allclose(a.transpose().contiguous(), a.numpy().T, opts, [(0,128), (1,128)])
 
   def test_lds_reduce_sum(self):
     with Context(DEBUG=0): a = Tensor.rand((sz:=256), sz).realize()
     opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.LOCAL, 0, 8), Opt(OptOps.LOCAL, 0, 4)]
-    helper_lds_allclose(a.sum(axis=1), opts, a.numpy().sum(axis=1), [(0,128), (1,128)], rtol=1e-4, atol=1e-4)
+    helper_lds_allclose(a.sum(axis=1), a.numpy().sum(axis=1), opts, [(0,128), (1,128)], rtol=1e-4, atol=1e-4)
 
   def test_lds_elementwise_broadcast(self):
     with Context(DEBUG=0):
@@ -217,7 +219,7 @@ class TestLDSOps(unittest.TestCase):
       b = Tensor.rand(sz, 1).realize()
     opts = [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.LOCAL, 1, 8), Opt(OptOps.LOCAL, 0, 4)]
     # b is broadcasted so local buffer shape only depends on locals/upcasts to dim 0
-    helper_lds_allclose(a + b, opts, a.numpy() + b.numpy(), [(0,128),(1,128),(2,16)], rtol=1e-4, atol=1e-4)
+    helper_lds_allclose(a + b, a.numpy() + b.numpy(), opts, [(0,128),(1,128),(2,16)], rtol=1e-4, atol=1e-4)
 
   def test_lds_conv2d(self):
     BS = 8
@@ -232,7 +234,7 @@ class TestLDSOps(unittest.TestCase):
 
     opts = [Opt(OptOps.UPCAST, 0, 2), Opt(OptOps.UPCAST, 2, 2), Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.LOCAL, 1, 4)]
 
-    helper_lds_allclose(a.conv2d(b), opts, tc, [(0,32),(1,8),(2,4)], rtol=1e-4, atol=1e-4)
+    helper_lds_allclose(a.conv2d(b), tc, opts, [(0,32),(1,8),(2,4)], rtol=1e-4, atol=1e-4)
 
   def test_lds_conv2d_variant(self):
     BS = 8
@@ -251,7 +253,7 @@ class TestLDSOps(unittest.TestCase):
             Opt(OptOps.LDS, 0, None),
             Opt(OptOps.LDS, 2, None)]
 
-    helper_lds_allclose(a.conv2d(b), opts, tc, [(0,16),(2,4)], rtol=1e-4, atol=1e-4, append_lds_opts=False)
+    helper_lds_allclose(a.conv2d(b), tc, opts, [(0,16),(2,4)], rtol=1e-4, atol=1e-4, append_lds_opts=False)
 
 if __name__ == '__main__':
   unittest.main()
