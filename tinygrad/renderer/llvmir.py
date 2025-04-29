@@ -4,7 +4,7 @@ from tinygrad.renderer import Renderer
 from tinygrad.renderer.cstyle import ClangRenderer, AMDRenderer
 from tinygrad.ops import UOp, PatternMatcher, UPat, Ops, GroupOp
 from tinygrad.dtype import dtypes, DType, PtrDType, truncate
-from tinygrad.helpers import prod, AMX
+from tinygrad.helpers import prod, AMX, CI
 
 def ldt(dt:DType):
   if dt.vcount > 1: return f"<{dt.vcount} x {ldt(dt.scalar())}>"
@@ -139,6 +139,11 @@ class LLVMRenderer(Renderer):
     (UPat(Ops.CAST, name="x", src=UPat.var("y", dtypes.bfloat16)),lambda x,y: y.cast(dtypes.float).cast(x.dtype) if x.dtype!=dtypes.float else None),
     (UPat(Ops.CAST, dtypes.bfloat16, UPat.var("x")),lambda x: x.cast(dtypes.float).cast(dtypes.bfloat16) if x.dtype!=dtypes.float else None),
   ])
+
+  def is_dtype_supported(self, dtype:DType):
+    if dtype in dtypes.fp8s: return False
+    if dtype is dtypes.half: return not CI # it segfaults because it can't link to the casting function
+    return super().is_dtype_supported(dtype)
 
   def render(self, uops: list[UOp]) -> str:
     r: dict[UOp, str] = {}

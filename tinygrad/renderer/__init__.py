@@ -145,5 +145,6 @@ class Renderer:
   extra_matcher: Optional[PatternMatcher] = None
   code_for_op: dict[Ops, Callable] = {}
 
+  def is_dtype_supported(self, dtype:DType): raise NotImplementedError("needs a renderer")
   def __reduce__(self): return self.__class__, ()
   def render(self, uops:list[UOp]) -> str: raise NotImplementedError("needs a renderer")
