@@ -261,8 +261,9 @@ class TestLDSOps(unittest.TestCase):
     helper_lds_allclose(a.conv2d(b), tc, opts, [(0,16),(2,4)], rtol=1e-4, atol=1e-4, append_lds_opts=False)
 
   def test_various_ops(self):
+    with Context(DEBUG=0): a, b = Tensor.rand(4, 4).realize(), Tensor.rand(4, 4).realize()
+
     # basic arithmetic & broadcasting
-    a, b = Tensor.rand(4, 4).realize(), Tensor.rand(4, 4).realize()
     helper_lds_allclose(a + b, a.numpy() + b.numpy())
     helper_lds_allclose(a - b, a.numpy() - b.numpy())
     helper_lds_allclose(a * b, a.numpy() * b.numpy())
