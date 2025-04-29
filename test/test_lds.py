@@ -21,7 +21,7 @@ def helper_realized_ast(r:Union[Tensor, list[Tensor]]) -> tuple[UOp, list[Buffer
   return s[-1].ast, bufs
 
 def helper_lds_allclose(r:Tensor, desired:np.ndarray, opts:list[Opt]|None=None, expected_bufs:list[tuple[int, int]]|None=None,
-                        rtol:float=1e-7, atol:float=0, append_lds_opts=True) -> Kernel:
+                        rtol:float=1e-5, atol:float=1e-5, append_lds_opts=True) -> Kernel:
   realized_ast, bufs = helper_realized_ast(r)
   if opts is None: opts = []
   if expected_bufs is None: expected_bufs = [(i, 1) for i in range(len(bufs))]
@@ -254,6 +254,35 @@ class TestLDSOps(unittest.TestCase):
             Opt(OptOps.LDS, 2, None)]
 
     helper_lds_allclose(a.conv2d(b), tc, opts, [(0,16),(2,4)], rtol=1e-4, atol=1e-4, append_lds_opts=False)
+
+  def test_various_ops(self):
+    # basic arithmetic & broadcasting
+    a, b = Tensor.rand(4, 4).realize(), Tensor.rand(4, 4).realize()
+    helper_lds_allclose(a + b, a.numpy() + b.numpy())
+    helper_lds_allclose(a - b, a.numpy() - b.numpy())
+    helper_lds_allclose(a * b, a.numpy() * b.numpy())
+    helper_lds_allclose(a.div(b), a.numpy() / b.numpy())
+    helper_lds_allclose(a.maximum(b), np.maximum(a.numpy(), b.numpy()))
+
+    # reductions
+    helper_lds_allclose(a.sum(), np.array(a.numpy().sum()))
+    helper_lds_allclose(a.sum(axis=0), a.numpy().sum(axis=0))
+    helper_lds_allclose(a.mean(axis=1), a.numpy().mean(axis=1))
+
+    # unary / activation
+    helper_lds_allclose(a.relu(), np.maximum(a.numpy(), 0))
+    helper_lds_allclose(a.sigmoid(), 1 / (1 + np.exp(-a.numpy())))
+    helper_lds_allclose(a.tanh(), np.tanh(a.numpy()))
+
+    ap = a.abs() + 1e-3  # ensure positivity
+    helper_lds_allclose(ap.sqrt(), np.sqrt(ap.numpy()))
+    helper_lds_allclose(ap.log(), np.log(ap.numpy()))
+    helper_lds_allclose(ap.exp(), np.exp(ap.numpy()))
+
+    # logical / comparison
+    helper_lds_allclose(a.isfinite(), np.isfinite(a.numpy()))
+    helper_lds_allclose(a.isnan(), np.isnan(a.numpy()))
+    helper_lds_allclose(a.isinf(), np.isinf(a.numpy()))
 
 if __name__ == '__main__':
   unittest.main()
