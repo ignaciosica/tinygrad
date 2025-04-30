@@ -1,5 +1,5 @@
 from typing import cast, Optional, Callable
-import itertools, functools, random, math, time, multiprocessing, traceback, signal, atexit
+import itertools, functools, random, math, time, multiprocessing, traceback, signal, atexit, statistics
 from collections import defaultdict
 from dataclasses import replace
 from tinygrad.ops import UOp, Ops, Variable, sym_infer
@@ -52,6 +52,7 @@ def _time_program(p:ProgramSpec, lib:bytes, var_vals:dict[Variable, int], rawbuf
         with Context(DEBUG=0, BEAM=0, CAPTURING=0, TRACK_MATCH_STATS=0): Tensor.ones(1024,1024).contiguous().realize(do_update_stats=False)
     tms.append(cast(float, car(input_bufs, var_vals, wait=True))*factor)
     if early_stop is not None and early_stop < min(tms): break
+    if len(tms) > 1 and statistics.pstdev(tms) / statistics.mean(tms) <= 0.1: break
   return tms
 
 class TimeoutException(Exception): pass
