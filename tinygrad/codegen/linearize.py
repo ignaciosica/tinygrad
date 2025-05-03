@@ -241,6 +241,6 @@ def linearize_uop(sink:UOp, skip_check:bool=not __debug__) -> list[UOp]:
   lst = sorted(dedup(sink.src), key=lambda x: x.tuplize) + list(sink.arg.lst)
 
   # sanity checks (NOTE: these can cause things to be skipped in BEAM)
-  # if not skip_check: type_verify(lst)
+  if not skip_check: type_verify(lst)
 
   return lst
