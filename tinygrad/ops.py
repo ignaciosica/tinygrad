@@ -425,7 +425,6 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     return self if len(axis) == 0 else UOp(Ops.REDUCE_AXIS, self.dtype, (self,), (op, axis))
   def assign(self, x:UOp): return UOp(Ops.ASSIGN, self.dtype, (self,x))
   def barrier(self): return UOp(Ops.BARRIER, dtypes.void, (self,))
-  def commit(self): return UOp(Ops.COMMIT, dtypes.void, (self,))
   def reduce(self, *src:UOp, **kwargs): return UOp(Ops.REDUCE, self.dtype, src=(self,)+src, **kwargs)
   def contiguous(self): return self.alu(Ops.CONTIGUOUS)
   def contiguous_backward(self): return self.alu(Ops.CONTIGUOUS_BACKWARD)
@@ -782,7 +781,6 @@ class UPat(MathTrait):
   def assign(self, x:UPat, **kwargs): return UPat(Ops.ASSIGN, self.dtype, (self,x), **kwargs)
   def reduce(self, *src:UPat, **kwargs): return UPat(Ops.REDUCE, self.dtype, src=(self,)+src, **kwargs)
   def barrier(self): return UPat(Ops.BARRIER, dtypes.void, (self,))
-  def commit(self): return UPat(Ops.COMMIT, dtypes.void, (self,))
   def fuse(self): return self.alu(Ops.FUSE)
 
   def const_like(self, b:ConstLike): return UPat.const(self.dtype, cast(ConstType, b))
