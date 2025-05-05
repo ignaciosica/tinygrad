@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from tinygrad.codegen.kernel import Opt, OptOps, KernelOptError, Kernel
 from tinygrad.ops import UOp, Ops
-from tinygrad.device import Device, Buffer
+from tinygrad.device import Device, Buffer, is_dtype_supported
 from tinygrad.tensor import Tensor
 from tinygrad.engine.realize import run_schedule, CompiledRunner
 from tinygrad.helpers import Context
@@ -155,6 +155,7 @@ class TestLDS(unittest.TestCase):
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   def test_lds_tc(self):
     for i, tc in enumerate(Device[Device.DEFAULT].renderer.tensor_cores):
+      if not is_dtype_supported(tc.dtype_in) or not is_dtype_supported(tc.dtype_out): continue
       if tc.dtype_in == dtypes.bfloat16 or tc.dtype_out == dtypes.bfloat16: continue
       (N, M, K) = tc.dims
       sz = 64
