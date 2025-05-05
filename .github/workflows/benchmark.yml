@@ -77,9 +77,9 @@ jobs:
       run: METAL=1 M_START=6 M_STOP=10 M_STEP=1 N_START=6 N_STOP=10 N_STEP=1 K_START=6 K_STOP=24 K_STEP=1 TC_OPT=2 DEBUG=2 python3.11 ./extra/gemm/fuzz_matmul.py
     - name: Test LDS
       run: |
-        METAL=1 python -m pytest -rA test/test_lds.py
-        LLVM=1 python -m pytest -rA test/test_lds.py
-        CPU=1 python -m pytest -rA test/test_lds.py
+        METAL=1 python3.11 -m pytest -rA test/test_lds.py
+        LLVM=1 python3.11 -m pytest -rA test/test_lds.py
+        CPU=1 python3.11 -m pytest -rA test/test_lds.py
     - name: Run LLaMA
       run: |
         JIT=0 python3.11 examples/llama.py --gen 1 --prompt "Hello." --count 10 --temperature 0 --timing | tee llama_unjitted.txt
