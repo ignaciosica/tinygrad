@@ -152,6 +152,7 @@ class TestLDS(unittest.TestCase):
                         Opt(OptOps.UPCAST, 0, 16)]
     helper_lds_matmul(opts=full_upcast_opts, expected_bufs=[(0,1024),(1,64),(2,16)])
 
+  @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "tests require locals")
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   def test_lds_tc(self):
     for i, tc in enumerate(Device[Device.DEFAULT].renderer.tensor_cores):
@@ -206,7 +207,7 @@ class TestLDS(unittest.TestCase):
     helper_lds_matmul(opts=opts, expected_bufs=[(0,8),(1,4),(2,8)])
 
 @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_shared, "tests require shared")
-@unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "tests require local")
+@unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "tests require locals")
 class TestLDSOps(unittest.TestCase):
   def test_lds_transpose(self):
     with Context(DEBUG=0): a = Tensor.rand((sz:=256), sz).realize()
