@@ -156,7 +156,6 @@ class TestLDS(unittest.TestCase):
   def test_lds_tc(self):
     for i, tc in enumerate(Device[Device.DEFAULT].renderer.tensor_cores):
       if not is_dtype_supported(tc.dtype_in) or not is_dtype_supported(tc.dtype_out): continue
-      if tc.dtype_in == dtypes.bfloat16 or tc.dtype_out == dtypes.bfloat16: continue
       (N, M, K) = tc.dims
       sz = 64
 
