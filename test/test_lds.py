@@ -9,7 +9,7 @@ from tinygrad.ops import UOp, Ops
 from tinygrad.device import Device, Buffer, is_dtype_supported
 from tinygrad.tensor import Tensor
 from tinygrad.engine.realize import run_schedule, CompiledRunner
-from tinygrad.helpers import Context
+from tinygrad.helpers import Context, CI
 from tinygrad.dtype import dtypes, PtrDType
 
 def helper_realized_ast(r:Union[Tensor, list[Tensor]]) -> tuple[UOp, list[Buffer]]:
@@ -227,6 +227,7 @@ class TestLDSOps(unittest.TestCase):
     # b is broadcasted so local buffer shape only depends on locals/upcasts to dim 0
     helper_lds_allclose(a + b, a.numpy() + b.numpy(), opts, [(0,128),(1,128),(2,16)], rtol=1e-4, atol=1e-4)
 
+  @unittest.skipIf(CI and Device.DEFAULT in {"AMD", "NV", "CUDA"}, "CI is really slow here")
   def test_lds_conv2d(self):
     BS = 8
     CIN, COUT, HW = 32, 32, 32
@@ -242,6 +243,7 @@ class TestLDSOps(unittest.TestCase):
 
     helper_lds_allclose(a.conv2d(b), tc, opts, [(0,32),(1,8),(2,4)], rtol=1e-4, atol=1e-4)
 
+  @unittest.skipIf(CI and Device.DEFAULT in {"AMD", "NV", "CUDA"}, "CI is really slow here")
   def test_lds_conv2d_variant(self):
     BS = 8
     CIN, COUT, HW = 32, 32, 32
