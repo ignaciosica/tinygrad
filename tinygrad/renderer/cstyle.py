@@ -314,7 +314,9 @@ class MetalRenderer(CStyleLanguage):
   simdgroup_{self.render_dtype(arg[2])}8x8 mat_a, mat_b; simdgroup_{self.render_dtype(arg[3])}8x8 mat_c;
   mat_a.thread_elements()[0] = a[0]; mat_b.thread_elements()[0] = b[0]; mat_c.thread_elements()[0] = c[0];
   mat_a.thread_elements()[1] = a[1]; mat_b.thread_elements()[1] = b[1]; mat_c.thread_elements()[1] = c[1];
-  simdgroup_multiply_accumulate(mat_c, mat_a, mat_b, mat_c);\n  return {dtype_out}(mat_c.thread_elements()[0], mat_c.thread_elements()[1]);\n}}""")
+  simdgroup_barrier(mem_flags::mem_threadgroup);
+  simdgroup_multiply_accumulate(mat_c, mat_a, mat_b, mat_c);\n  simdgroup_barrier(mem_flags::mem_threadgroup);
+  return {dtype_out}(mat_c.thread_elements()[0], mat_c.thread_elements()[1]);\n}}""")
     return super().render_kernel(function_name, kernel, bufs, uops, prefix)
 
 _nms = "xyzwabcdefghijkl"
