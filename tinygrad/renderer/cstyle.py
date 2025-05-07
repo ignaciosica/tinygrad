@@ -367,9 +367,9 @@ class CUDARenderer(CStyleLanguage):
     (UPat(Ops.BARRIER, src=(UPat(Ops.CUSTOM)), name="bar"), lambda ctx, bar: UOp(Ops.COMMIT, dtypes.void, (*bar.src,)).barrier())
   ])
   string_rewrite = PatternMatcher([
-    (UPat(Ops.COMMIT, name="commit").barrier(), lambda ctx, commit: f"__pipeline_wait_prior({ctx.commits_offset-int(ctx[commit][6:])});"),
+    (UPat(Ops.COMMIT, name="c").barrier(), lambda ctx, c: f"__pipeline_wait_prior({ctx.commits_offset-int(ctx[c][6:])}); {ctx.barrier}"),
     (UPat(Ops.COMMIT), lambda ctx: "__pipeline_commit();")
-    ]) + base_rewrite
+  ]) + base_rewrite
 
   def render_vector_prefix(self, dt:DType) -> str:
     vec, scal = self.render_dtype(dt), self.render_dtype(dt.scalar()),
