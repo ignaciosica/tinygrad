@@ -77,6 +77,7 @@ jobs:
       run: METAL=1 M_START=6 M_STOP=10 M_STEP=1 N_START=6 N_STOP=10 N_STEP=1 K_START=6 K_STOP=24 K_STEP=1 TC_OPT=2 DEBUG=2 python3.11 ./extra/gemm/fuzz_matmul.py
     - name: Test LDS
       run: |
+        DEBUG=4 METAL=1 python3.11 -m pytest -rA test/test_lds.py::TestLDS::test_lds_tc test/test_lds.py::TestLDS::test_lds_tc_local
         METAL=1 python3.11 -m pytest -rA test/test_lds.py
         LLVM=1 python3.11 -m pytest -rA test/test_lds.py
         CPU=1 python3.11 -m pytest -rA test/test_lds.py
@@ -398,10 +399,10 @@ jobs:
       run: DEBUG=2 AMD=1 python -m pytest -rA test/test_tiny.py
     - name: Test HIP=1
       run: DEBUG=2 HIP=1 python -m pytest -rA test/test_tiny.py
+    # failing for AMD_LLVM due to llvm version < 18 (AMD=1 AMD_LLVM=1 python -m pytest -rA test/test_lds.py)
     - name: Test LDS
       run: |
         AMD=1 python -m pytest -rA test/test_lds.py
-        AMD=1 AMD_LLVM=1 python -m pytest -rA test/test_lds.py
         HIP=1 python -m pytest -rA test/test_lds.py
     # TODO: AMD compiler bug causes this to fail
     #- name: Fuzz Padded Tensor Core GEMM
