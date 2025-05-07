@@ -14,10 +14,9 @@ from tinygrad.helpers import all_same, colored, ansilen, dedup, getenv, prod, ro
 from tinygrad.helpers import DEBUG, TC_SELECT, TC_OPT, AMX, CAPTURE_PROCESS_REPLAY
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import strides_for_shape
-from tinygrad.codegen.linearize import linearize_uop
-from tinygrad.codegen.devectorizer import full_graph_rewrite
-from tinygrad.codegen.lowerer import rewrite_shapetracker_with_index, get_contraction
+from tinygrad.codegen.lowerer import get_contraction
 from tinygrad.engine.grouper import view_left
+from tinygrad.codegen import full_rewrite
 
 class KernelOptError(Exception): pass
 
@@ -435,7 +434,7 @@ class Kernel:
       # TODO: remove buf_st hack
       buf_st = self.sts[axis if axis == 0 else (1 if axis == 2 else 2)] if len(self.bufs) == 3 else self.sts[axis]
       check(all(not buf_st.axis_is_masked(i) for i in range(len(buf_st.shape))), "can't apply lds with masked axis")
-      self.smem_usage += prod(sz for i,(sz,st) in enumerate(zip(buf_st.shape,buf_st.real_strides(True)))
+      self.smem_usage += prod(sz for i,(sz,st) in enumerate(zip(buf_st.shape, buf_st.real_strides()))
                               if st != 0 and ((self.global_dims <= i < self.first_reduce) or self.first_upcast <= i))
       check(self.smem_usage <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {self.smem_usage}, max {self.opts.shared_max}")
       self.lds[axis] = True
@@ -543,7 +542,7 @@ class Kernel:
       return ret
     fixed_ast = fixup_ast(self.ast)
     del fixup_ast
-    return graph_rewrite(fixed_ast, view_left)
+    return graph_rewrite(fixed_ast, view_left, name="fixup optimized AST")
 
   def apply_lds(self, ast) -> UOp:
     def transform(ctx:tuple[Kernel, set[UOp]], global_access:UOp):
@@ -551,10 +550,8 @@ class Kernel:
       ctx[1].add(buf.arg)
       global_st: ShapeTracker = global_access.src[1].arg
       gd, fr, fu, shape = k.global_dims, k.first_reduce, k.first_upcast, []
-      for i, st in enumerate(global_st.real_strides(True)): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i >= fu) else 1)
-
+      for i, st in enumerate(global_st.real_strides()): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i >= fu) else 1)
       store_st = load_st = ShapeTracker.from_shape(tuple(shape))
-      if DEBUG>=4: print(f"\n{buf.arg=} [{k.smem_usage}]\n {store_st=}\n  {load_st=}\n{global_st=}\n")
 
       local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
       if global_access.op == Ops.LOAD:
@@ -593,7 +590,7 @@ class Kernel:
     #if __debug__: type_verify(list(modified_ast.toposort()), shape_spec)
 
     try:
-      self.uops:list[UOp] = linearize_uop(full_graph_rewrite(rewrite_shapetracker_with_index(modified_ast, self.opts), self.opts))
+      self.uops:list[UOp] = full_rewrite(modified_ast, self.opts)
     except RuntimeError:
       print("***** LINEARIZE FAILURE *****")
       print(f"ast = {self.ast}")
@@ -617,7 +614,7 @@ class Kernel:
 
     # group non-local bufs by the op type (LOAD or STORE) and the buffer arg. take the max access of that buffer in bytes
     # TODO: these max and min don't work on symbolic, and results are very wrong.
-    mem_bytes = sum(max(x.src[0].dtype.itemsize * x.st_arg.real_size() for x in group)
+    mem_bytes = sum(max(x.src[0].dtype.nbytes() for x in group)
       for _, group in itertools.groupby([x for x in self.ast.toposort() if x.op in GroupOp.Buffer and x.src[0].op is Ops.DEFINE_GLOBAL],
                         key=lambda x: (x.op, x.src[0].arg)))
     return ProgramSpec(self.name if not name_override else name_override, src, self.opts.device, self.ast, self.uops, self.applied_opts, mem_bytes,
