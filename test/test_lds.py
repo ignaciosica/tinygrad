@@ -23,10 +23,8 @@ def helper_lds_allclose(r:Tensor, desired:np.ndarray, opts:list[Opt]|None=None, 
 
   k = Kernel(realized_ast).apply_opts(opts)
   CompiledRunner(replace(k.to_program(), device=Device.DEFAULT)).exec(bufs)
-  try:
-    np.testing.assert_allclose(bufs[0].numpy().reshape(r.shape), desired, atol=atol, rtol=rtol)
-  except AssertionError as e:
-    print(e)
+
+  np.testing.assert_allclose(bufs[0].numpy().reshape(r.shape), desired, atol=atol, rtol=rtol)
   local_bufs = [uop for uop in k.uops if uop.op is Ops.DEFINE_LOCAL]
   global_bufs = [uop for uop in k.uops if uop.op is Ops.DEFINE_GLOBAL]
 
