@@ -13,7 +13,6 @@ on:
       - master
       - update_benchmark
       - update_benchmark_staging
-  pull_request:
   workflow_dispatch:
     inputs:
       run_process_replay:
