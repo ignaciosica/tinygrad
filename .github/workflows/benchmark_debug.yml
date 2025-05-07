@@ -1,7 +1,5 @@
 name: Benchmarks DEBUG
 env:
-  # TODO: this rescheduling makes gpt2, mixtral and llama unjitted slower
-  # TODO: very slow for llama 70B and resnet training 6 GPU
   CAPTURE_PROCESS_REPLAY: "1"
   ASSERT_PROCESS_REPLAY: "0"
   PYTHONPATH: .
@@ -9,10 +7,11 @@ env:
 
 on:
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  testmacbenchmark:
-    name: Mac Benchmark
+  testmacbenchmarkdebug:
+    name: Mac Benchmark Debug
     runs-on: [self-hosted, macOS]
     timeout-minutes: 20
     defaults:
