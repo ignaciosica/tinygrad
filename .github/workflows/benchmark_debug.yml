@@ -1,0 +1,34 @@
+name: Benchmarks DEBUG
+env:
+  # TODO: this rescheduling makes gpt2, mixtral and llama unjitted slower
+  # TODO: very slow for llama 70B and resnet training 6 GPU
+  CAPTURE_PROCESS_REPLAY: "1"
+  ASSERT_PROCESS_REPLAY: "0"
+  PYTHONPATH: .
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+on:
+  pull_request:
+
+jobs:
+  testmacbenchmark:
+    name: Mac Benchmark
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash -o pipefail {0}
+    if: github.repository_owner == 'tinygrad'
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+    - name: Test tensor cores
+      run: METAL=1 python3.11 test/test_linearizer.py TestLinearizer.test_tensor_cores TestLinearizer.test_tensor_cores_emulation TestLinearizer.test_tensor_cores_padded TestLinearizer.test_tensor_cores_padded_uops
+    - name: Test tensor cores DEBUG
+      run: DEBUG=4 METAL=1 python3.11 test/test_linearizer.py TestLinearizer.test_tensor_cores
+    - name: Test LDS
+      run: |
+        DEBUG=4 METAL=1 python3.11 -m pytest test/test_lds.py -k "not test_lds_tc" -rA -s
+        DEBUG=4 METAL=1 python3.11 -m pytest test/test_lds.py::TestLDS::test_lds_tc -rA -s
+        LLVM=1 python3.11 -m pytest -rA test/test_lds.py
+        CPU=1 python3.11 -m pytest -rA test/test_lds.py
