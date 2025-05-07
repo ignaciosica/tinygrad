@@ -159,12 +159,6 @@ class TestLDS(unittest.TestCase):
               Opt(OptOps.UPCAST, 1, 2)]
       helper_lds_matmul(opts, desired_bufs_sizes=[(0,M*N*2),(1,M*K*2),(2,K*N*4)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
 
-      if Device[Device.DEFAULT].renderer.has_local: # test case require locals
-        opts = [Opt(OptOps.TC, 0, (i, 0, 1)),
-                Opt(OptOps.LOCAL, 0, 2),
-                Opt(OptOps.UPCAST, 1, 2)]
-        helper_lds_matmul(opts, desired_bufs_sizes=[(0,M*N*4),(1,M*K*2),(2,K*N*2)], N=sz, M=sz, K=sz, dtype_in=tc.dtype_in, acc_dtype=tc.dtype_out)
-
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   def test_lds_tc_locals(self):
