@@ -161,7 +161,7 @@ class TestLDS(unittest.TestCase):
 
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
-  def test_lds_tc_locals(self):
+  def test_lds_tc_local(self):
     for i, tc in enumerate(Device[Device.DEFAULT].renderer.tensor_cores):
       if tc.dtype_in is dtypes.bfloat16 or tc.dtype_out is dtypes.bfloat16: continue
       (N, M, K) = tc.dims
