@@ -1,5 +1,5 @@
 from __future__ import annotations
-import itertools, functools, math
+import itertools, functools, math, copy
 from dataclasses import dataclass
 from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
@@ -77,6 +77,7 @@ class Kernel:
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
     self.lds: list[bool] = [False] * len(self.bufs)
+    self.lds_swap: dict[int,list[tuple]] = {key: [] for key in range(len(self.bufs))}
     self.smem_usage: int = 0
 
     # group simplifies
@@ -97,7 +98,7 @@ class Kernel:
     ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals = \
       self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals
     ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
-    ret.lds, ret.smem_usage = self.lds[:], self.smem_usage
+    ret.lds, ret.lds_swap, ret.smem_usage = self.lds[:], copy.deepcopy(self.lds_swap), self.smem_usage
 
     return ret
 
@@ -355,12 +356,12 @@ class Kernel:
       return
 
     axis = self.real_axis(opt)
-    if opt.op is not OptOps.LDS:
+    if opt.op not in (OptOps.LDS, OptOps.LDS_SWAP):
       if opt.op != OptOps.SWAP: check(not any(self.lds), f"can't reshape after LDS {self.applied_opts=} {opt=}")
       check(axis < len(self.full_shape), "invalid axis")
 
     if opt.op is OptOps.SWAP: amt = cast(int, opt.arg)  # arg is an axis in the SWAPs
-    elif opt.arg is not None:
+    elif opt.arg is not None and opt.op is not OptOps.LDS_SWAP:
       check(isinstance(opt.arg, int), "arg should be int")
       amt = arg if (arg:=cast(int, opt.arg)) != 0 else self.full_shape[axis]
       check(isinstance(amt, int) and amt != 1, f"shift/padto of {amt=}, 1 or symbolic amount is meaningless")
@@ -438,6 +439,14 @@ class Kernel:
                               if st != 0 and ((self.global_dims <= i < self.first_reduce) or self.first_upcast <= i))
       check(self.smem_usage <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {self.smem_usage}, max {self.opts.shared_max}")
       self.lds[axis] = True
+    elif opt.op is OptOps.LDS_SWAP:
+      check(0 < axis < len(self.bufs) and self.lds[axis] and opt.arg not in self.lds_swap[axis], f"invalid lds swap {axis} {opt.arg}")
+      buf_st = self.sts[axis if axis == 0 else (1 if axis == 2 else 2)] if len(self.bufs) == 3 else self.sts[axis]
+      check(self.global_dims <= (x := cast(tuple, opt.arg)[0]) < self.first_reduce, f"invalid x in lds swap {x=}")
+      check(self.first_upcast <= (y := cast(tuple, opt.arg)[1]) < len(buf_st.shape), f"invalid y in lds swap {y=}")
+      check((szx := buf_st.shape[x]) == (szy := buf_st.shape[y]), f"axis two swap should have the same size {szx=} != {szy=}")
+      check(buf_st.real_strides(True)[x] == 0 and self.output_shape[y] == 1, "x axis should have stride 0 and y axis should be a reduce dim")
+      self.lds_swap[axis].append((x, y))
 
     if append_opt: self.applied_opts.append(opt)
     if self.simplify_ones() and self.tensor_core_opts:
@@ -552,6 +561,8 @@ class Kernel:
       gd, fr, fu, shape = k.global_dims, k.first_reduce, k.first_upcast, []
       for i, st in enumerate(global_st.real_strides()): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i >= fu) else 1)
       store_st = load_st = ShapeTracker.from_shape(tuple(shape))
+
+      for (x,y) in k.lds_swap[buf.arg]: store_st, global_st = store_st.swapaxis(x, y), global_st.swapaxis(x, y)
 
       local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
       if global_access.op == Ops.LOAD:

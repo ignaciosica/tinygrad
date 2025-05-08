@@ -128,6 +128,11 @@ class ShapeTracker:
   def expand(self, new_shape: tuple[sint, ...]) -> ShapeTracker: return ShapeTracker(self.views[0:-1] + (self.views[-1].expand(new_shape), ))
   def permute(self, axis: tuple[int, ...]) -> ShapeTracker: return ShapeTracker(self.views[0:-1] + (self.views[-1].permute(axis), ))
   def flip(self, mul: tuple[int, ...]) -> ShapeTracker: return ShapeTracker(self.views[0:-1] + (self.views[-1].flip(mul), ))
+  def swapaxis(self, x: int, y: int) -> ShapeTracker: return self.permute(tuple(y if i == x else x if i == y else i for i in range(len(self.shape))))
+  # def swapaxis(self, axis0:int, axis1:int) -> ShapeTracker:
+  #   perm = list(range(len(self.shape)))
+  #   perm[axis0], perm[axis1] = perm[axis1], perm[axis0]
+  #   return self.permute(tuple(perm))
 
   def reshape(self, new_shape: tuple[sint, ...]) -> ShapeTracker:
     if getenv("MERGE_VIEW", 1) and (new_view := self.views[-1].reshape(new_shape)) is not None: return ShapeTracker(self.views[0:-1] + (new_view,))
