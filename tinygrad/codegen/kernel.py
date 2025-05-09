@@ -452,7 +452,8 @@ class Kernel:
       check(0 <= axis < len(self.bufs) and self.lds[axis] and opt.arg not in self.lds_layout[axis], f"invalid lds swap {axis} {opt.arg}")
       buf_st = self.sts[axis if axis == 0 else (1 if axis == 2 else 2)] if len(self.bufs) == 3 else self.sts[axis]
       check((x := cast(tuple, opt.arg)[0]) < (y := cast(tuple, opt.arg)[1]), f"invalid lds layout swap {x=} {y=}")
-      check(self.global_dims <= x and self.output_shape[x] != 1 and self.output_shape[y] != 1, "axes should not be a reduce dims")
+      check(y < len(buf_st.shape) and self.output_shape[y] != 1, f"{y=} axis should not be a reduce dims")
+      check(self.global_dims <= x and self.output_shape[x] != 1, f"{x=} axis should not be a reduce dims")
       self.lds_layout[axis].append((x, y))
 
     if append_opt: self.applied_opts.append(opt)

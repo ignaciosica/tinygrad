@@ -145,8 +145,10 @@ def get_kernel_actions(lin:Kernel, include_0=True) -> dict[int, Kernel]:
   return acted_lins
 
 def get_lds_actions(lin:Kernel, buf:int) -> list[Kernel]:
+  lds_actions = [Opt(op=OptOps.LDS_SWAP, axis=buf, arg=(x,y)) for x in range(13) for y in range(x+1, 14) if x < y]
+  lds_actions += [Opt(op=OptOps.LDS_LAYOUT, axis=buf, arg=(x,y)) for buf in [0,1,2] for x in range(13) for y in range(x+1, 14) if x < y]
   acted_lins = {}
-  for i,a in enumerate([Opt(op=OptOps.LDS_SWAP, axis=buf, arg=(x,y)) for x in range(13) for y in range(x+1, 14) if x < y]):
+  for i,a in enumerate(lds_actions):
     lin2 = lin.copy()
     try:
       lin2.apply_opt(a)
