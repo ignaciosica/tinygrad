@@ -129,6 +129,7 @@ def get_kernel_actions(lin:Kernel, include_0=True) -> dict[int, Kernel]:
       for s,c in zip(lin2.full_shape, lin2.colors()):
         if c in {"magenta", "yellow"}: up *= s
         elif c in {"cyan", "green", "white"}: lcl *= s
+      # TODO: revert if
       if up//tc_up > max_up or lcl > max_lcl:
         if getenv("BEAM_LOG_SURPASS_MAX"): print(f"too many upcast/local. {up//tc_up=}, {max_up=}, {lcl=}, {max_lcl=}")
         continue
@@ -136,10 +137,20 @@ def get_kernel_actions(lin:Kernel, include_0=True) -> dict[int, Kernel]:
     except KernelOptError: pass
   return acted_lins
 
-def expand_actions(kernels:list[Kernel], depth:int, step:int=0) -> list[(Kernel, int)]:
-  if depth < 1: return []
-  base = flatten([get_kernel_actions(k, include_0=False).values() for k in kernels])
-  return [(k, step+1) for k in base] + expand_actions(base if step > 0 else [k for k in base if k.applied_opts[-1].op is OptOps.LDS], depth-1, step+1)
+def get_lds_actions(lin:Kernel, buf:int) -> list[Kernel]:
+  acted_lins = {}
+  for i,a in enumerate([Opt(op=OptOps.LDS_SWAP, axis=buf, arg=(x,y)) for x in range(13) for y in range(x+1, 14) if x < y]):
+    lin2 = lin.copy()
+    try:
+      lin2.apply_opt(a)
+      acted_lins[i+1] = lin2
+    except KernelOptError: pass
+  return list(acted_lins.values())
+
+def expand_lds_actions(kernels:list[Kernel], buf:int, depth:int) -> list[Kernel]:
+  if depth == 0: return []
+  base = flatten([get_lds_actions(k, buf) for k in kernels])
+  return base + expand_lds_actions(base, buf, depth-1)
 
 beam_pool, BEAM_DEBUG = None, getenv("BEAM_DEBUG")
 def beam_search(lin:Kernel, rawbufs:list[Buffer], amt:int, allow_test_size=True, disable_cache=IGNORE_BEAM_CACHE.value) -> Kernel:
@@ -169,8 +180,11 @@ def beam_search(lin:Kernel, rawbufs:list[Buffer], amt:int, allow_test_size=True,
     exiting, st = False, time.perf_counter()
     dev = Device[lin.opts.device]
     while not exiting:
-      # acted_lins: list[Kernel] = flatten([get_kernel_actions(lin, include_0=False).values() for lin,_ in beam])
-      acted_lins, steps = map(list, zip(*expand_actions([k for k,_ in beam], getenv("BEAM_MAX_STEP", 1))))
+      acted_lins: list[Kernel] = flatten([get_kernel_actions(lin, include_0=False).values() for lin,_ in beam])
+      expanded_lins = []
+      for lin in acted_lins:
+        if (lds:=lin.applied_opts[-1]).op is OptOps.LDS: expanded_lins.extend(expand_lds_actions([lin], cast(int,lds.axis), getenv("BEAM_LDS_DEPTH", 1)))
+      acted_lins += expanded_lins
       timed_lins: list[tuple[Kernel, float]] = []
       _compile_fn = functools.partial(_try_compile_linearized_w_idx, compiler=dev.compiler)
       least_compute_ops = math.inf
@@ -186,7 +200,7 @@ def beam_search(lin:Kernel, rawbufs:list[Buffer], amt:int, allow_test_size=True,
                                  allow_test_size=allow_test_size, clear_l2=hasattr(dev, 'invalidate_caches'))
         except RuntimeError: continue # for runtime issues
         timed_lins.append((acted_lins[i], min(tms)))
-        if BEAM_DEBUG > 1: print(f"{time.perf_counter() - st:7.2f}s: {i:5d} {len(cast(list, p.uops)):5d} uops {time_to_str(compile_et, w=12)} compile/{time_to_str(timed_lins[-1][1], w=12)} run {len(timed_lins):4d}/{len(acted_lins):4d} ({len(tms)}/3) {timed_lins[-1][0].applied_opts[-steps[i]:]!s:30}  {timed_lins[-1][0].colored_shape()}") # noqa: E501
+        if BEAM_DEBUG > 1: print(f"{time.perf_counter() - st:7.2f}s:{i:5d}(i){len(cast(list, p.uops)):5d}(uops){time_to_str(compile_et, w=8)}(cmp){time_to_str(timed_lins[-1][1], w=8)}(run){len(timed_lins):4d}/{len(acted_lins):4d} ({len(tms)}/3) {timed_lins[-1][0].colored_shape(pad=60)} {timed_lins[-1][0].applied_opts}") # noqa: E501
         elif DEBUG >= 2: print(f"\r{time.perf_counter() - st:7.2f}s: {time_to_str(timed_lins[-1][1], w=12)}       {len(timed_lins):4d}/{len(acted_lins):4d}         {timed_lins[-1][0].colored_shape()}\033[K", end="")  # noqa: E501
 
       # done

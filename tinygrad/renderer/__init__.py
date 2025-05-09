@@ -19,7 +19,7 @@ class Opt:
   arg: Optional[int | tuple] = None
   # def __repr__(self): return f"Opt(op={self.op}, axis={self.axis}, arg={self.arg})"
   # def __repr__(self): return f"{self.op.name!s:8} {self.axis!s:1} {self.arg!s:7}"
-  def __repr__(self): return f"{self.op.name} {self.axis} {self.arg or '_'}"
+  def __repr__(self): return f"{self.op.name[:2]+self.op.name[-1]} {self.axis} {self.arg!s:4}"
 
 
 @dataclass(frozen=True)
