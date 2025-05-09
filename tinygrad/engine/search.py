@@ -12,20 +12,27 @@ from tinygrad.tensor import Tensor
 from tinygrad.engine.realize import CompiledRunner
 from tinygrad.renderer import ProgramSpec
 
-actions = [Opt(op=OptOps.UPCAST, axis=axis, arg=amt) for amt in [0,2,3,4,5,7] for axis in range(6)]
-actions += [Opt(op=OptOps.UNROLL, axis=axis, arg=amt) for amt in [0,2,4,7,8,16] for axis in range(5)]
-actions += [Opt(op=OptOps.LOCAL, axis=axis, arg=amt) for amt in [2,3,4,8,13,16,29] for axis in range(6)]
-actions += [Opt(op=OptOps.GROUPTOP, axis=axis, arg=amt) for amt in [13,16,28,29,32,49,64,256] for axis in range(3)]
-actions += [Opt(op=OptOps.GROUP, axis=axis, arg=amt) for amt in [0,4,8,16] for axis in range(3)]
-if getenv("BEAM_PADTO", 1): actions += [Opt(op=OptOps.PADTO, axis=axis, arg=amt) for amt in [32] for axis in range(7)]
-actions += [Opt(op=OptOps.LOCAL, axis=0, arg=32), Opt(op=OptOps.LOCAL, axis=6, arg=2)]
-actions += [Opt(op=OptOps.TC, axis=0, arg=(-1, 0, getenv("TC", 1)))]
-# covers resnet kernels (3 global * 3 reduce)
-actions += [Opt(op=OptOps.TC, axis=axis, arg=(-1, getenv("TC_OPT", 2), getenv("TC", 1))) for axis in range(9)]
-actions += [Opt(op=OptOps.SWAP, axis=axis_0, arg=axis_1) for axis_0 in range(5) for axis_1 in range(axis_0+1, 5)]
-if getenv("NOLOCALS"): actions += [Opt(op=OptOps.NOLOCALS)]
+# actions = [Opt(op=OptOps.UPCAST, axis=axis, arg=amt) for amt in [0,2,3,4,5,7] for axis in range(6)]
+# actions += [Opt(op=OptOps.UNROLL, axis=axis, arg=amt) for amt in [0,2,4,7,8,16] for axis in range(5)]
+# actions += [Opt(op=OptOps.LOCAL, axis=axis, arg=amt) for amt in [2,3,4,8,13,16,29] for axis in range(6)]
+# actions += [Opt(op=OptOps.GROUPTOP, axis=axis, arg=amt) for amt in [13,16,28,29,32,49,64,256] for axis in range(3)]
+# actions += [Opt(op=OptOps.GROUP, axis=axis, arg=amt) for amt in [0,4,8,16] for axis in range(3)]
+# if getenv("BEAM_PADTO", 1): actions += [Opt(op=OptOps.PADTO, axis=axis, arg=amt) for amt in [32] for axis in range(7)]
+# actions += [Opt(op=OptOps.LOCAL, axis=0, arg=32), Opt(op=OptOps.LOCAL, axis=6, arg=2)]
+# actions += [Opt(op=OptOps.TC, axis=0, arg=(-1, 0, getenv("TC", 1)))]
+# # covers resnet kernels (3 global * 3 reduce)
+# actions += [Opt(op=OptOps.TC, axis=axis, arg=(-1, getenv("TC_OPT", 2), getenv("TC", 1))) for axis in range(9)]
+# actions += [Opt(op=OptOps.SWAP, axis=axis_0, arg=axis_1) for axis_0 in range(5) for axis_1 in range(axis_0+1, 5)]
+# if getenv("NOLOCALS"): actions += [Opt(op=OptOps.NOLOCALS)]
+# actions += [Opt(op=OptOps.LDS, axis=buf, arg=None) for buf in [0,1,2]]
+# actions += [Opt(op=OptOps.LDS_SWAP, axis=buf, arg=(x,y)) for buf in [1,2] for x in range(13) for y in range(x+1, 14) if x < y]
+
+actions = [Opt(op=OptOps.UPCAST, axis=axis, arg=amt) for amt in [2] for axis in range(6)]
+actions += [Opt(op=OptOps.UNROLL, axis=axis, arg=amt) for amt in [2] for axis in range(5)]
+actions += [Opt(op=OptOps.LOCAL, axis=axis, arg=amt) for amt in [2] for axis in range(6)]
 actions += [Opt(op=OptOps.LDS, axis=buf, arg=None) for buf in [0,1,2]]
 actions += [Opt(op=OptOps.LDS_SWAP, axis=buf, arg=(x,y)) for buf in [1,2] for x in range(13) for y in range(x+1, 14) if x < y]
+actions += [Opt(op=OptOps.LDS_LAYOUT, axis=buf, arg=(x,y)) for buf in [0,1,2] for x in range(13) for y in range(x+1, 14) if x < y]
 
 def _get_test_global_size(global_size, max_global_size, var_vals):
   test_global_size, factor = [sym_infer(sz, var_vals) for sz in global_size], 1
@@ -120,7 +127,7 @@ def get_kernel_actions(lin:Kernel, include_0=True) -> dict[int, Kernel]:
           [Opt(op=OptOps.TC, axis=action.axis, arg=(tc_select, tc_arg[1], tc_arg[2])) for tc_select,_ in enumerate(lin.opts.tensor_cores)]
 
   for i,a in enumerate(kernel_actions):
-    if a.axis is not None and a.op not in (OptOps.TC, OptOps.LDS_SWAP):
+    if a.axis is not None and a.op not in (OptOps.TC, OptOps.LDS_SWAP, OptOps.LDS_LAYOUT):
       if ((ax:=lin.real_axis(a)) >= lin.shape_len) or (lin.full_shape[ax] == a.arg and Opt(a.op, ax, 0) in kernel_actions): continue
     lin2 = lin.copy()
     try:
@@ -129,12 +136,30 @@ def get_kernel_actions(lin:Kernel, include_0=True) -> dict[int, Kernel]:
       for s,c in zip(lin2.full_shape, lin2.colors()):
         if c in {"magenta", "yellow"}: up *= s
         elif c in {"cyan", "green", "white"}: lcl *= s
+      # TODO: revert if
       if up//tc_up > max_up or lcl > max_lcl:
         if getenv("BEAM_LOG_SURPASS_MAX"): print(f"too many upcast/local. {up//tc_up=}, {max_up=}, {lcl=}, {max_lcl=}")
         continue
       acted_lins[i+1] = lin2
     except KernelOptError: pass
   return acted_lins
+
+def get_lds_actions(lin:Kernel, buf:int) -> list[Kernel]:
+  lds_actions = [Opt(op=OptOps.LDS_SWAP, axis=buf, arg=(x,y)) for x in range(13) for y in range(x+1, 14) if x < y]
+  lds_actions += [Opt(op=OptOps.LDS_LAYOUT, axis=buf, arg=(x,y)) for buf in [0,1,2] for x in range(13) for y in range(x+1, 14) if x < y]
+  acted_lins = {}
+  for i,a in enumerate(lds_actions):
+    lin2 = lin.copy()
+    try:
+      lin2.apply_opt(a)
+      acted_lins[i+1] = lin2
+    except KernelOptError: pass
+  return list(acted_lins.values())
+
+def expand_lds_actions(kernels:list[Kernel], buf:int, depth:int) -> list[Kernel]:
+  if depth == 0: return []
+  base = flatten([get_lds_actions(k, buf) for k in kernels])
+  return base + expand_lds_actions(base, buf, depth-1)
 
 beam_pool, BEAM_DEBUG = None, getenv("BEAM_DEBUG")
 def beam_search(lin:Kernel, rawbufs:list[Buffer], amt:int, allow_test_size=True, disable_cache=IGNORE_BEAM_CACHE.value) -> Kernel:
@@ -165,6 +190,10 @@ def beam_search(lin:Kernel, rawbufs:list[Buffer], amt:int, allow_test_size=True,
     dev = Device[lin.opts.device]
     while not exiting:
       acted_lins: list[Kernel] = flatten([get_kernel_actions(lin, include_0=False).values() for lin,_ in beam])
+      expanded_lins = []
+      for lin in acted_lins:
+        if (lds:=lin.applied_opts[-1]).op is OptOps.LDS: expanded_lins.extend(expand_lds_actions([lin], cast(int,lds.axis), getenv("BEAM_LDS_DEPTH", 1)))
+      acted_lins += expanded_lins
       timed_lins: list[tuple[Kernel, float]] = []
       _compile_fn = functools.partial(_try_compile_linearized_w_idx, compiler=dev.compiler)
       least_compute_ops = math.inf
@@ -180,7 +209,7 @@ def beam_search(lin:Kernel, rawbufs:list[Buffer], amt:int, allow_test_size=True,
                                  allow_test_size=allow_test_size, clear_l2=hasattr(dev, 'invalidate_caches'))
         except RuntimeError: continue # for runtime issues
         timed_lins.append((acted_lins[i], min(tms)))
-        if BEAM_DEBUG > 1: print(f"{time.perf_counter() - st:7.2f}s: {i:5d} {len(cast(list, p.uops)):5d} uops {time_to_str(compile_et, w=12)} compile/{time_to_str(timed_lins[-1][1], w=12)} run {len(timed_lins):4d}/{len(acted_lins):4d} ({len(tms)}/3) {timed_lins[-1][0].applied_opts[-1]!s:40}  {timed_lins[-1][0].colored_shape()}")                       # noqa: E501
+        if BEAM_DEBUG > 1: print(f"{time.perf_counter() - st:7.2f}s:{i:5d}(i){len(cast(list, p.uops)):5d}(uops){time_to_str(compile_et, w=8)}(cmp){time_to_str(timed_lins[-1][1], w=8)}(run){len(timed_lins):4d}/{len(acted_lins):4d} ({len(tms)}/3) {timed_lins[-1][0].colored_shape(pad=60)} {timed_lins[-1][0].applied_opts}") # noqa: E501
         elif DEBUG >= 2: print(f"\r{time.perf_counter() - st:7.2f}s: {time_to_str(timed_lins[-1][1], w=12)}       {len(timed_lins):4d}/{len(acted_lins):4d}         {timed_lins[-1][0].colored_shape()}\033[K", end="")  # noqa: E501
 
       # done
@@ -188,7 +217,7 @@ def beam_search(lin:Kernel, rawbufs:list[Buffer], amt:int, allow_test_size=True,
       exiting = len(opts) == 0 or (opts[0][1] < min_progress) or (len(beam) > 0 and ((beam[0][1]-opts[0][1]) < min_progress))
       if not exiting: beam = opts[:amt]
       elif len(opts) > 0 and opts[0][1] < beam[0][1]: beam = opts[:1]
-      if DEBUG >= 2: print(f"\r{time.perf_counter() - st:7.2f}s:", colored(time_to_str(beam[0][1], w=12), "green" if exiting else None), f"from {len(acted_lins):3d} -> {len(opts):3d} actions\033[K", beam[0][0].colored_shape())  # noqa: E501
+      if DEBUG >= 2: print(f"\r{time.perf_counter() - st:7.2f}s:", colored(time_to_str(beam[0][1], w=12), "green" if exiting else None), f"from {len(acted_lins):3d} -> {len(opts):3d} actions\033[K", beam[0][0].colored_shape(), beam[0][0].applied_opts)  # noqa: E501
   except KeyboardInterrupt as e:
     if beam_pool is not None: beam_pool.terminate()
     raise e

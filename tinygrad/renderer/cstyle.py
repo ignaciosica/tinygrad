@@ -131,6 +131,7 @@ class CStyleLanguage(Renderer):
     depth = 1
     c: defaultdict[str, int] = defaultdict(int)
     name = "test"
+    self.commits_offset = len([u for u in uops if u.op is Ops.COMMIT]) - 1
     for u in uops:
       if u.op is Ops.SINK:
         if u.arg is not None: name = u.arg.name
@@ -152,7 +153,7 @@ class CStyleLanguage(Renderer):
       else:
         prefix = {Ops.WMMA: "wmma", Ops.DEFINE_LOCAL: "temp", Ops.CONST: "const",
                   Ops.CAST: "cast", Ops.BITCAST: "cast", Ops.GEP: "gep", Ops.VECTORIZE: "cast", Ops.NOOP: "precast",
-                  Ops.INDEX: "bidx", Ops.DEFINE_ACC: "acc", Ops.LOAD: "val"}.get(u.op, "alu")
+                  Ops.INDEX: "bidx", Ops.DEFINE_ACC: "acc", Ops.LOAD: "val", Ops.COMMIT: "commit"}.get(u.op, "alu")
         r[u] = f"{prefix}{c[prefix]}"
 
       l = cast(str, self.string_rewrite.rewrite(u, ctx=self))
@@ -356,6 +357,19 @@ class CUDARenderer(CStyleLanguage):
     Ops.SQRT: lambda x,dtype: f"hsqrt({x})" if dtype in (dtypes.half, dtypes.bfloat16) else f"sqrt({x})",
     Ops.RECIP: lambda x,dtype: f"hrcp({x})" if dtype in (dtypes.half, dtypes.bfloat16) else f"(1/{x})" }
   type_map = {dtypes.bfloat16: "nv_bfloat16"}
+  dst_shared = UPat(Ops.INDEX, src=(UPat((Ops.DEFINE_LOCAL)), UPat()), name="dest")
+  src_global = UPat(Ops.INDEX, src=(UPat((Ops.DEFINE_GLOBAL)), UPat()), name="src")
+  pre_matcher = PatternMatcher([
+    (dst_shared.store(src_global.load()), lambda dest, src: None if src.dtype.itemsize not in [4,8,16] else
+      UOp(Ops.CUSTOM, src=(dest, src), arg=f"__pipeline_memcpy_async({{0}}, {{1}}, {src.dtype.itemsize});")),
+    (dst_shared.cast().named("cast").store(src_global.cast().load()), lambda dest, src, cast: None if cast.dtype.itemsize not in [4,8,16] else
+      UOp(Ops.CUSTOM, src=(dest, src), arg=f"__pipeline_memcpy_async({{0}}, {{1}}, {cast.dtype.itemsize});")),
+    (UPat(Ops.BARRIER, src=(UPat(Ops.CUSTOM)), name="bar"), lambda ctx, bar: UOp(Ops.COMMIT, dtypes.void, (*bar.src,)).barrier())
+  ])
+  string_rewrite = PatternMatcher([
+    (UPat(Ops.COMMIT, name="c").barrier(), lambda ctx, c: f"__pipeline_wait_prior({ctx.commits_offset-int(ctx[c][6:])}); {ctx.barrier}"),
+    (UPat(Ops.COMMIT), lambda ctx: "__pipeline_commit();")
+  ]) + base_rewrite
 
   def render_vector_prefix(self, dt:DType) -> str:
     vec, scal = self.render_dtype(dt), self.render_dtype(dt.scalar()),
@@ -364,7 +378,7 @@ class CUDARenderer(CStyleLanguage):
 
   def render_kernel(self, function_name, kernel, bufs, uops, prefix=None):
     # TODO: why is dtypes.bfloat16.name == "__bf16"? would be easier not override dtypes.name
-    prefix = ["#define INFINITY (__int_as_float(0x7f800000))","#define NAN (__int_as_float(0x7fffffff))"]
+    prefix = ["#define INFINITY (__int_as_float(0x7f800000))","#define NAN (__int_as_float(0x7fffffff))","#include <cuda_pipeline.h>"]
 
     used_dtypes = uops_to_dtypes(uops)
     if any(dt.scalar() == dtypes.half for dt in used_dtypes): prefix.append("#include <cuda_fp16.h>")

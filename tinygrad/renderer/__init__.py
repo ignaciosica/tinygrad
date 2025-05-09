@@ -9,7 +9,8 @@ from tinygrad.dtype import DType
 
 class OptOps(Enum):
   TC = auto(); UPCAST = auto(); UNROLL = auto(); LOCAL = auto() # noqa: E702
-  GROUP = auto(); GROUPTOP = auto(); NOLOCALS = auto(); PADTO = auto(); SWAP = auto(); LDS = auto(); LDS_SWAP = auto() # noqa: E702
+  GROUP = auto(); GROUPTOP = auto(); NOLOCALS = auto(); PADTO = auto(); SWAP = auto() # noqa: E702
+  LDS = auto(); LDS_SWAP = auto(); LDS_LAYOUT = auto() # noqa: E702
   def __lt__(self, x:OptOps): return self.value < x.value
 
 @dataclass(frozen=True, order=True)
@@ -17,7 +18,10 @@ class Opt:
   op: OptOps
   axis: Optional[int] = None
   arg: Optional[int | tuple] = None
-  def __repr__(self): return f"Opt(op={self.op}, axis={self.axis}, arg={self.arg})"
+  # def __repr__(self): return f"Opt(op={self.op}, axis={self.axis}, arg={self.arg})"
+  # def __repr__(self): return f"{self.op.name!s:8} {self.axis!s:1} {self.arg!s:7}"
+  def __repr__(self): return f"{self.op.name[:2]+self.op.name[-1]} {self.axis} {self.arg!s:4}"
+
 
 @dataclass(frozen=True)
 class TensorCore: # D = A * B + C, A is (M x K), B is (K x N), C and D are (M x N)
