@@ -26,6 +26,7 @@ actions += [Opt(op=OptOps.SWAP, axis=axis_0, arg=axis_1) for axis_0 in range(5) 
 if getenv("NOLOCALS"): actions += [Opt(op=OptOps.NOLOCALS)]
 actions += [Opt(op=OptOps.LDS, axis=buf, arg=None) for buf in [0,1,2]]
 actions += [Opt(op=OptOps.LDS_SWAP, axis=buf, arg=(x,y)) for buf in [1,2] for x in range(13) for y in range(x+1, 14) if x < y]
+actions += [Opt(op=OptOps.LDS_LAYOUT, axis=buf, arg=(x,y)) for buf in [0,1,2] for x in range(13) for y in range(x+1, 14) if x < y]
 
 def _get_test_global_size(global_size, max_global_size, var_vals):
   test_global_size, factor = [sym_infer(sz, var_vals) for sz in global_size], 1
@@ -120,7 +121,7 @@ def get_kernel_actions(lin:Kernel, include_0=True) -> dict[int, Kernel]:
           [Opt(op=OptOps.TC, axis=action.axis, arg=(tc_select, tc_arg[1], tc_arg[2])) for tc_select,_ in enumerate(lin.opts.tensor_cores)]
 
   for i,a in enumerate(kernel_actions):
-    if a.axis is not None and a.op not in (OptOps.TC, OptOps.LDS_SWAP):
+    if a.axis is not None and a.op not in (OptOps.TC, OptOps.LDS_SWAP, OptOps.LDS_LAYOUT):
       if ((ax:=lin.real_axis(a)) >= lin.shape_len) or (lin.full_shape[ax] == a.arg and Opt(a.op, ax, 0) in kernel_actions): continue
     lin2 = lin.copy()
     try:
