@@ -410,7 +410,7 @@ jobs:
     - name: Test LDS
       run: |
         AMD=1 python -m pytest -rA test/test_lds.py
-        AMD=1 AMD_LLVM=1 python -m pytest -rA test/test_lds.py)
+        AMD=1 AMD_LLVM=1 python -m pytest -rA test/test_lds.py
         HIP=1 python -m pytest -rA test/test_lds.py
     # TODO: AMD compiler bug causes this to fail
     #- name: Fuzz Padded Tensor Core GEMM
