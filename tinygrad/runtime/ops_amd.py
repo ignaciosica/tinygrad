@@ -385,7 +385,8 @@ class AMDCopyQueue(HWQueue):
     self._q, self.cmd_sizes = hw_view, [len(self.indirect_cmd)]
 
   def _submit(self, dev:AMDDevice):
-    if dev.sdma_queue.put_value - dev.sdma_queue.read_ptr > dev.sdma_queue.ring.nbytes: raise RuntimeError("SDMA queue overrun")
+    # usb devices run in single-step mode, so they can't overrun the queue.
+    if not dev.is_usb() and dev.sdma_queue.put_value - dev.sdma_queue.read_ptr > dev.sdma_queue.ring.nbytes: raise RuntimeError("SDMA queue overrun")
 
     if self.binded_device == dev:
       # An IB packet must end on a 8 DW boundary.
@@ -465,7 +466,8 @@ class AMDProgram(HCQProgram):
     if hasattr(self, 'lib_gpu'): self.dev.allocator.free(self.lib_gpu, self.lib_gpu.size, BufferSpec(cpu_access=True, nolru=True))
 
 class AMDAllocator(HCQAllocator['AMDDevice']):
-  def __init__(self, dev:AMDDevice): super().__init__(dev, copy_bufs=getattr(dev.dev_iface, 'copy_bufs', None))
+  def __init__(self, dev:AMDDevice):
+    super().__init__(dev, copy_bufs=getattr(dev.dev_iface, 'copy_bufs', None), max_copyout_size=0x1000 if dev.is_usb() else None)
 
   def _alloc(self, size:int, options:BufferSpec) -> HCQBuffer:
     return self.dev.dev_iface.alloc(size, host=options.host, uncached=options.uncached, cpu_access=options.cpu_access)
@@ -815,9 +817,10 @@ class USBIface(PCIIface):
 
     self._setup_adev(f"usb:{dev_id}", USBMMIOInterface(self.usb, *self.bars[0], fmt='B'), USBMMIOInterface(self.usb, *self.bars[2], fmt='Q'),
       USBMMIOInterface(self.usb, *self.bars[5], fmt='I'))
+    self.usb._pci_cacheable += [self.bars[2]] # doorbell region is cacheable
 
     # special regions
-    self.copy_bufs = [self._new_dma_region(ctrl_addr=0xf000, sys_addr=0x200000, size=0x1000)]
+    self.copy_bufs = [self._new_dma_region(ctrl_addr=0xf000, sys_addr=0x200000, size=0x4000)]
     self.sys_buf, self.sys_next_off = self._new_dma_region(ctrl_addr=0xa000, sys_addr=0x820000, size=0x1000), 0
 
   def _new_dma_region(self, ctrl_addr, sys_addr, size):
