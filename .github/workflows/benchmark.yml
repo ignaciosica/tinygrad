@@ -214,9 +214,9 @@ jobs:
       run: DEBUG=2 CUDA=1 python -m pytest -rA test/test_tiny.py
     - name: Test LDS
       run: |
-        NV=1 python -m pytest -rA test/test_lds.py
-        CUDA=1 python -m pytest -rA test/test_lds.py
-        PTX=1 NV=1 python -m pytest -rA test/test_lds.py
+        NV=1 python3 -m pytest -rA test/test_lds.py
+        CUDA=1 python3 -m pytest -rA test/test_lds.py
+        PTX=1 NV=1 python3 -m pytest -rA test/test_lds.py
     - name: Run Stable Diffusion
       run: NV=1 python3 examples/stable_diffusion.py --fp16 --seed 0 --noshow --timing | tee sd.txt
     - name: Run SDXL
@@ -409,9 +409,9 @@ jobs:
       run: DEBUG=2 HIP=1 python -m pytest -rA test/test_tiny.py
     - name: Test LDS
       run: |
-        AMD=1 python -m pytest -rA test/test_lds.py
-        AMD=1 AMD_LLVM=1 python -m pytest -rA test/test_lds.py
-        HIP=1 python -m pytest -rA test/test_lds.py
+        AMD=1 python3 -m pytest -rA test/test_lds.py
+        AMD=1 AMD_LLVM=1 python3 -m pytest -rA test/test_lds.py
+        HIP=1 python3 -m pytest -rA test/test_lds.py
     # TODO: AMD compiler bug causes this to fail
     #- name: Fuzz Padded Tensor Core GEMM
     #  run: HSA=1 M_START=12 M_STOP=20 M_STEP=1 N_START=12 N_STOP=20 N_STEP=1 K_START=28 K_STOP=36 K_STEP=1 HALF=1 TC_OPT=2 DEBUG=2 python3 ./extra/gemm/fuzz_matmul.py
