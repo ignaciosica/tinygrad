@@ -284,7 +284,7 @@ class MetalRenderer(CStyleLanguage):
   # language options
   kernel_prefix = "kernel "
   buffer_prefix = "device "
-  smem_prefix = "threadgroup "
+  smem_prefix = "threadgroup __attribute__((aligned(16)))"
   arg_int_prefix = "constant int&"
   barrier = "threadgroup_barrier(mem_flags::mem_threadgroup);"
   float4 = "float4"
