@@ -90,12 +90,17 @@ impl<'a> WorkGroup<'a> {
         };
 
         loop {
+            let [id0, id1, id2] = self.id;
             if self.kernel[pc] == END_PRG {
-                // println!("==> {:?} finished wave = {}, pc = {}", self.id, wave_id, pc);
+                if *DEBUG {
+                    println!("[{id0:<3} {id1:<3} {id2:<3}] [_   _   _  ] __ BFB00000 SOPP {{ wave: {wave_id} }}");
+                }
                 break Ok(true);
             }
             if self.kernel[pc] == S_BARRIER {
-                // println!("{:?} syncing wave = {}, pc = {}", self.id, wave_id, pc);
+                if *DEBUG {
+                    println!("[{id0:<3} {id1:<3} {id2:<3}] [_   _   _  ] __ BFBD0000 SOPP {{ wave: {wave_id}, pc: {pc} }}");
+                }
                 pc += 1;
                 self.wave_state.insert(wave_id, WaveState { scalar_reg, scc, vec_reg, vcc, exec, pc, sds });
                 break Ok(false);
