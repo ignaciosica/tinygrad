@@ -9,8 +9,8 @@ from tinygrad.ops import Ops
 from tinygrad.device import Device
 from tinygrad.tensor import Tensor
 from tinygrad.engine.realize import CompiledRunner
-from tinygrad.helpers import Context, CI
-from tinygrad.dtype import dtypes, PtrDType
+from tinygrad.helpers import Context, CI, getenv
+from tinygrad.dtype import dtypes, PtrDType, _to_np_dtype
 from test.test_linearizer import helper_realized_ast
 
 def helper_lds_allclose(r:Tensor, desired:np.ndarray, opts:list[Opt]|None=None, desired_bufs_sizes:list[tuple[int, int]]|None=None,
@@ -38,7 +38,11 @@ def helper_lds_allclose(r:Tensor, desired:np.ndarray, opts:list[Opt]|None=None, 
     assert cast(PtrDType,local_bufs[i].dtype).size == sz, f"Expected buffer sz {sz}, got {cast(PtrDType,local_bufs[i].dtype).size=} for {opts=}"
 
 def helper_lds_matmul(opts:list[Opt], desired_bufs_sizes, N=32, M=64, K=16, dtype_in=dtypes.float, acc_dtype=dtypes.float, apply_lds=True):
-  with Context(DEBUG=0): a, b = Tensor.rand(M, K, dtype=dtype_in).realize(), Tensor.rand(K, N, dtype=dtype_in).realize()
+  def init_matrix(rows, cols, dtype_in) -> Tensor:
+    rng = np.random.default_rng()
+    if (np_dtype := _to_np_dtype(dtype_in)) is None: np_dtype = np.float32
+    return Tensor(rng.random((rows, cols), dtype=np.float32).astype(np_dtype)).cast(dtype_in).realize()
+  with Context(DEBUG=0): a, b = init_matrix(M, K, dtype_in), init_matrix(K, N, dtype_in)
   rtol, atol = 3e-2 if dtype_in is dtypes.half else 1e-4, 1e-4
 
   helper_lds_allclose(a.matmul(b, dtype=acc_dtype), a.numpy() @ b.numpy(), opts, desired_bufs_sizes, rtol, atol, apply_lds)
@@ -232,6 +236,7 @@ class TestLDSOps(unittest.TestCase):
 
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "tests require locals")
   @unittest.skipIf(CI and Device.DEFAULT in {"AMD", "NV", "CUDA"}, "CI is really slow here")
+  @unittest.skipIf(getenv("MOCKGPU", 0), "MOCKGPU is really slow here")
   def test_lds_conv2d(self):
     BS = 8
     CIN, COUT, HW = 32, 32, 32
@@ -249,6 +254,7 @@ class TestLDSOps(unittest.TestCase):
 
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "tests require locals")
   @unittest.skipIf(CI and Device.DEFAULT in {"AMD", "NV", "CUDA"}, "CI is really slow here")
+  @unittest.skipIf(getenv("MOCKGPU", 0), "MOCKGPU is really slow here")
   def test_lds_conv2d_variant(self):
     BS = 8
     CIN, COUT, HW = 32, 32, 32
