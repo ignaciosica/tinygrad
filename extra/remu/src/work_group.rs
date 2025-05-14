@@ -48,25 +48,22 @@ impl<'a> WorkGroup<'a> {
                 }
             }
         }
-        let waves = threads.chunks(WAVE_SIZE).collect::<Vec<_>>();
 
-        let mut sync = false;
-        for (i, x) in self.kernel.iter().enumerate() {
-            if i != 0 && BARRIERS.contains(&[*x, self.kernel[i - 1]]) {
-                sync = true;
-                break;
+        let mut waves = threads.chunks(WAVE_SIZE).collect::<Vec<_>>();
+        while !waves.is_empty() {
+            let mut next_waves = vec![];
+            for (i,w) in waves.iter().enumerate() {
+                if !self.exec_wave((i,w))? {
+                    next_waves.push(*w);
+                }
             }
+            waves = next_waves;
         }
 
-        for _ in 0..=(sync as usize) {
-            for w in waves.iter().enumerate() {
-                self.exec_wave(w)?
-            }
-        }
         Ok(())
     }
 
-    fn exec_wave(&mut self, (wave_id, threads): (usize, &&[[u32; 3]])) -> Result<(), i32> {
+    fn exec_wave(&mut self, (wave_id, threads): (usize, &&[[u32; 3]])) -> Result<bool, i32> {
         let (mut scalar_reg, mut scc, mut pc, mut vec_reg, mut vcc, mut exec, mut sds) = match self.wave_state.get(&wave_id) {
           None => {
             let mut scalar_reg = [0; SGPR_COUNT];
@@ -103,11 +100,14 @@ impl<'a> WorkGroup<'a> {
 
         loop {
             if self.kernel[pc] == END_PRG {
-                break Ok(());
+                println!("==> {:?} finished wave = {}, pc = {}", self.id, wave_id, pc);
+                break Ok(true);
             }
-            if BARRIERS.contains(&[self.kernel[pc], self.kernel[pc + 1]]) && self.wave_state.get(&wave_id).is_none() {
-                self.wave_state.insert(wave_id, WaveState { scalar_reg, scc, vec_reg, vcc, exec, pc, sds });
-                break Ok(());
+            if BARRIERS.contains(&[self.kernel[pc], self.kernel[pc + 1]]) {
+                println!("{:?} syncing wave = {}, pc = {}", self.id, wave_id, pc);
+                let resumed_pc = pc + 2;
+                self.wave_state.insert(wave_id, WaveState { scalar_reg, scc, pc: resumed_pc, vec_reg, vcc, exec, sds });
+                break Ok(false);
             }
             if SYNCS.contains(&self.kernel[pc]) || self.kernel[pc] >> 20 == 0xbf8 || self.kernel[pc] == 0x7E000000 {
                 pc += 1;
