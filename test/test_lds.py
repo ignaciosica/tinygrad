@@ -210,6 +210,12 @@ class TestLDS(unittest.TestCase):
             Opt(OptOps.UPCAST, 0, 2)]
     helper_lds_matmul(opts=opts, desired_bufs_sizes=[(0,8),(1,4),(2,8)])
 
+  @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
+  def test_lds_full_remu(self):
+    opts = [Opt(OptOps.LOCAL, 0, 64),
+            Opt(OptOps.UPCAST, 0, 16)]
+    helper_lds_matmul(opts=opts, desired_bufs_sizes=[(0,1024),(1,64),(2,16)])
+
 @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_shared, "tests require shared")
 class TestLDSOps(unittest.TestCase):
 
@@ -308,7 +314,7 @@ class TestLDSOps(unittest.TestCase):
     rng = np.random.default_rng()
     a = Tensor(rng.random((64), dtype=np.float32)-0.5).realize()
     b = Tensor(rng.random((64), dtype=np.float32)-0.5).realize()
-    helper_lds_allclose(a + b, a.numpy() + b.numpy(), [Opt(OptOps.LOCAL, 0, 64), Opt(OptOps.LDS, 0, None)], [(0,64)], apply_lds=False)
+    helper_lds_allclose(a + b, a.numpy() + b.numpy(), [Opt(OptOps.LOCAL, 0, 64), Opt(OptOps.LDS, 0, None), Opt(OptOps.LDS, 1, None)], [(0,64), (1,64)], apply_lds=False)
 
 if __name__ == '__main__':
   unittest.main()

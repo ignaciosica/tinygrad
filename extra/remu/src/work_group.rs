@@ -49,21 +49,20 @@ impl<'a> WorkGroup<'a> {
             }
         }
 
-        let mut waves = threads.chunks(WAVE_SIZE).collect::<Vec<_>>();
+        let mut waves: Vec<(usize, &[[u32; 3]])> = threads.chunks(WAVE_SIZE).enumerate().collect();
         while !waves.is_empty() {
             let mut next_waves = vec![];
-            for (i,w) in waves.iter().enumerate() {
-                if !self.exec_wave((i,w))? {
-                    next_waves.push(*w);
+            for &(id, w) in &waves {
+                if !self.exec_wave(id, w)? {
+                    next_waves.push((id, w));
                 }
             }
             waves = next_waves;
         }
-
         Ok(())
     }
 
-    fn exec_wave(&mut self, (wave_id, threads): (usize, &&[[u32; 3]])) -> Result<bool, i32> {
+    fn exec_wave(&mut self, wave_id:usize, threads:&[[u32; 3]]) -> Result<bool, i32> {
         let (mut scalar_reg, mut scc, mut pc, mut vec_reg, mut vcc, mut exec, mut sds) = match self.wave_state.get(&wave_id) {
           None => {
             let mut scalar_reg = [0; SGPR_COUNT];
@@ -100,11 +99,11 @@ impl<'a> WorkGroup<'a> {
 
         loop {
             if self.kernel[pc] == END_PRG {
-                println!("==> {:?} finished wave = {}, pc = {}", self.id, wave_id, pc);
+                // println!("==> {:?} finished wave = {}, pc = {}", self.id, wave_id, pc);
                 break Ok(true);
             }
             if BARRIERS.contains(&[self.kernel[pc], self.kernel[pc + 1]]) {
-                println!("{:?} syncing wave = {}, pc = {}", self.id, wave_id, pc);
+                // println!("{:?} syncing wave = {}, pc = {}", self.id, wave_id, pc);
                 let resumed_pc = pc + 2;
                 self.wave_state.insert(wave_id, WaveState { scalar_reg, scc, pc: resumed_pc, vec_reg, vcc, exec, sds });
                 break Ok(false);
