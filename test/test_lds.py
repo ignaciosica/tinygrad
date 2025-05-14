@@ -298,5 +298,9 @@ class TestLDSOps(unittest.TestCase):
     helper_lds_allclose(a.isnan(), np.isnan(a.numpy()))
     helper_lds_allclose(a.isinf(), np.isinf(a.numpy()))
 
+  def test_remu_sync(self):
+    with Context(DEBUG=0): a, b = Tensor.rand(64).realize(), Tensor.rand(64).realize()
+    helper_lds_allclose(a + b, a.numpy() + b.numpy(), [Opt(OptOps.LOCAL, 0, 64), Opt(OptOps.LDS, 0, None)], [(0,64)], apply_lds=False)
+
 if __name__ == '__main__':
   unittest.main()
