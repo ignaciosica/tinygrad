@@ -27,13 +27,8 @@ struct WaveState {
 }
 
 const SYNCS: [u32; 5] = [0xBF89FC07, 0xBFBD0000, 0xBC7C0000, 0xBF890007, 0xbFB60003];
-const BARRIERS: [[u32; 2]; 5] = [
-    [SYNCS[0], SYNCS[0]],
-    [SYNCS[0], SYNCS[1]],
-    [SYNCS[0], SYNCS[2]],
-    [SYNCS[3], SYNCS[1]],
-    [SYNCS[1], SYNCS[0]],
-];
+const S_BARRIER: u32 = 0xBFBD0000;
+
 impl<'a> WorkGroup<'a> {
     pub fn new(dispatch_dim: u32, id: [u32; 3], launch_bounds: [u32; 3], kernel: &'a Vec<u32>, kernel_args: *const u64) -> Self {
         Self { dispatch_dim, id, kernel, launch_bounds, kernel_args, lds: VecDataStore::new(), wave_state: HashMap::new() }
@@ -99,9 +94,9 @@ impl<'a> WorkGroup<'a> {
                 // println!("==> {:?} finished wave = {}, pc = {}", self.id, wave_id, pc);
                 break Ok(true);
             }
-            if BARRIERS.contains(&[self.kernel[pc], self.kernel[pc + 1]]) {
+            if self.kernel[pc] == S_BARRIER {
                 // println!("{:?} syncing wave = {}, pc = {}", self.id, wave_id, pc);
-                pc += 2;
+                pc += 1;
                 self.wave_state.insert(wave_id, WaveState { scalar_reg, scc, vec_reg, vcc, exec, pc, sds });
                 break Ok(false);
             }
