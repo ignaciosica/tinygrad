@@ -48,7 +48,6 @@ impl<'a> WorkGroup<'a> {
                 }
             }
         }
-
         let waves = threads.chunks(WAVE_SIZE).collect::<Vec<_>>();
         let mut finish = false;
         while !finish {
@@ -102,8 +101,8 @@ impl<'a> WorkGroup<'a> {
             }
             if BARRIERS.contains(&[self.kernel[pc], self.kernel[pc + 1]]) {
                 // println!("{:?} syncing wave = {}, pc = {}", self.id, wave_id, pc);
-                let resumed_pc = pc + 2;
-                self.wave_state.insert(wave_id, WaveState { scalar_reg, scc, pc: resumed_pc, vec_reg, vcc, exec, sds });
+                pc += 2;
+                self.wave_state.insert(wave_id, WaveState { scalar_reg, scc, vec_reg, vcc, exec, pc, sds });
                 break Ok(false);
             }
             if SYNCS.contains(&self.kernel[pc]) || self.kernel[pc] >> 20 == 0xbf8 || self.kernel[pc] == 0x7E000000 {
