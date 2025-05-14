@@ -49,20 +49,18 @@ impl<'a> WorkGroup<'a> {
             }
         }
 
-        let mut waves: Vec<(usize, &[[u32; 3]])> = threads.chunks(WAVE_SIZE).enumerate().collect();
-        while !waves.is_empty() {
-            let mut next_waves = vec![];
-            for &(id, w) in &waves {
-                if !self.exec_wave(id, w)? {
-                    next_waves.push((id, w));
-                }
+        let waves = threads.chunks(WAVE_SIZE).collect::<Vec<_>>();
+        let mut finish = false;
+        while !finish {
+            finish = true;
+            for w in waves.iter().enumerate() {
+                finish &= self.exec_wave(w)?
             }
-            waves = next_waves;
         }
         Ok(())
     }
 
-    fn exec_wave(&mut self, wave_id:usize, threads:&[[u32; 3]]) -> Result<bool, i32> {
+    fn exec_wave(&mut self, (wave_id, threads): (usize, &&[[u32; 3]])) -> Result<bool, i32> {
         let (mut scalar_reg, mut scc, mut pc, mut vec_reg, mut vcc, mut exec, mut sds) = match self.wave_state.get(&wave_id) {
           None => {
             let mut scalar_reg = [0; SGPR_COUNT];
