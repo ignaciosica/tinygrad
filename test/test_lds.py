@@ -5,7 +5,7 @@ import unittest
 from dataclasses import replace
 
 from tinygrad.codegen.kernel import Opt, OptOps, KernelOptError, Kernel
-from tinygrad.ops import Ops
+from tinygrad.uop.ops import Ops
 from tinygrad.device import Device
 from tinygrad.tensor import Tensor
 from tinygrad.engine.realize import CompiledRunner
