@@ -388,6 +388,8 @@ jobs:
         rocm-smi
     - name: Show off tinybox
       run: /opt/rocm/bin/rocm-bandwidth-test
+    - name: Test LDS debug hip error
+      run: DEBUG=4 HIP=1 python -m pytest -rA test/test_lds.py -s
     # TODO: unstable on AMD
     #- name: Run model inference benchmark
     #  run: LD_PRELOAD="/opt/rocm/lib/libhsa-runtime64.so" HSA=1 NOCLANG=1 python3 test/external/external_model_benchmark.py
