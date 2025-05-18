@@ -390,8 +390,6 @@ jobs:
         rocm-smi
     - name: Show off tinybox
       run: /opt/rocm/bin/rocm-bandwidth-test
-    - name: Test LDS debug hip error
-      run: DEBUG=4 HIP=1 python -m pytest -rA test/test_lds.py -s
     # TODO: unstable on AMD
     #- name: Run model inference benchmark
     #  run: LD_PRELOAD="/opt/rocm/lib/libhsa-runtime64.so" HSA=1 NOCLANG=1 python3 test/external/external_model_benchmark.py
@@ -415,9 +413,9 @@ jobs:
       run: DEBUG=2 HIP=1 python -m pytest -rA test/test_tiny.py
     - name: Test LDS
       run: |
-        AMD=1 python3 -m pytest -rA test/test_lds.py
-        AMD=1 AMD_LLVM=1 python3 -m pytest -rA test/test_lds.py
-        HIP=1 python3 -m pytest -rA test/test_lds.py
+        DEBUG=2 AMD=1 python3 -m pytest -rA test/test_lds.py -s
+        DEBUG=2 AMD=1 AMD_LLVM=1 python3 -m pytest -rA test/test_lds.py -s
+        DEBUG=2 HIP=1 python3 -m pytest -rA test/test_lds.py -s
     # TODO: AMD compiler bug causes this to fail
     #- name: Fuzz Padded Tensor Core GEMM
     #  run: HSA=1 M_START=12 M_STOP=20 M_STEP=1 N_START=12 N_STOP=20 N_STEP=1 K_START=28 K_STOP=36 K_STEP=1 HALF=1 TC_OPT=2 DEBUG=2 python3 ./extra/gemm/fuzz_matmul.py
