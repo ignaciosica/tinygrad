@@ -40,13 +40,15 @@ def cuda_disassemble(lib, arch):
 
 class CUDACompiler(Compiler):
   def __init__(self, arch:str, cache_key:str="cuda"):
-    self.arch, self.compile_options = arch, [f'--gpu-architecture={arch}']
+    self.arch, self.compile_options = arch, [f'--gpu-architecture={arch}', '-lineinfo']
     self.compile_options += [f"-I{CUDA_PATH}/include"] if CUDA_PATH else ["-I/usr/local/cuda/include", "-I/usr/include", "-I/opt/cuda/include"]
     nvrtc_check(nvrtc.nvrtcVersion((nvrtcMajor := ctypes.c_int()), (nvrtcMinor := ctypes.c_int())))
     if (nvrtcMajor.value, nvrtcMinor.value) >= (12, 4): self.compile_options.append("--minimal")
     super().__init__(f"compile_{cache_key}_{self.arch}")
   def _compile_program(self, src:str, nvrtc_get_content:Callable, nvrtc_get_size:Callable) -> bytes:
-    nvrtc_check(nvrtc.nvrtcCreateProgram(ctypes.byref(prog := nvrtc.nvrtcProgram()), src.encode(), "<null>".encode(), 0, None, None))
+    tmp = pathlib.Path(tempfile.gettempdir()) / f"tinycuda_{hashlib.md5(src.encode()).hexdigest()}.cu"
+    tmp.write_text(src)
+    nvrtc_check(nvrtc.nvrtcCreateProgram(ctypes.byref(prog := nvrtc.nvrtcProgram()), src.encode(), str(tmp).encode(), 0, None, None))
     nvrtc_check(nvrtc.nvrtcCompileProgram(prog, len(self.compile_options), to_char_p_p([o.encode() for o in self.compile_options])), prog)
     data = _get_bytes(prog, nvrtc_get_content, nvrtc_get_size, nvrtc_check)
     nvrtc_check(nvrtc.nvrtcDestroyProgram(ctypes.byref(prog)))
