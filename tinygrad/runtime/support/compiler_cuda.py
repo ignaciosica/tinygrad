@@ -19,12 +19,12 @@ def jitlink_check(status, ctx=None):
     err_log = _get_bytes(ctx, nvrtc.nvJitLinkGetErrorLog, nvrtc.nvJitLinkGetErrorLogSize, lambda _: None).decode() if ctx else ""
     raise CompileError(f"NvJitLink Error {status}, {nvrtc.nvJitLinkResult__enumvalues.get(status, 'Unknown')}\n{err_log}")
 
-def cuda_disassemble(lib:bytes, arch:str, is_cubin:bool=True):
+def cuda_disassemble(lib:bytes, arch:str):
   try:
     fn = (pathlib.Path(tempfile.gettempdir()) / f"tinycuda_{hashlib.md5(lib).hexdigest()}").as_posix()
     with open(fn, "wb") as f: f.write(lib)
-    if not is_cubin: subprocess.run(["ptxas", fn, f"-arch={arch}", "-o", fn], check=True)
-    print(subprocess.check_output(["nvdisasm", fn]).decode('utf-8'))
+    try: print(subprocess.check_output(["nvdisasm", fn]).decode('utf-8'))
+    except Exception: print(subprocess.check_output(f"ptxas {fn} -arch={arch} -o {fn} && nvdisasm {fn}", shell=True).decode('utf-8'))
   except Exception as e: print("Failed to generate SASS", str(e), "Make sure your PATH contains ptxas/nvdisasm binary of compatible version.")
 
 class CUDACompiler(Compiler):
@@ -50,7 +50,7 @@ class PTXCompiler(Compiler):
     self.arch = arch
     super().__init__(f"compile_{cache_key}_{self.arch}")
   def compile(self, src:str) -> bytes: return src.replace("TARGET", self.arch).replace("VERSION", "7.8" if self.arch >= "sm_89" else "7.5").encode()
-  def disassemble(self, lib:bytes): cuda_disassemble(lib, self.arch, is_cubin=False)
+  def disassemble(self, lib:bytes): cuda_disassemble(lib, self.arch)
 
 class NVPTXCompiler(PTXCompiler):
   def __init__(self, arch:str): super().__init__(arch, cache_key="nv_ptx")
@@ -61,4 +61,3 @@ class NVPTXCompiler(PTXCompiler):
     data = _get_bytes(handle, nvrtc.nvJitLinkGetLinkedCubin, nvrtc.nvJitLinkGetLinkedCubinSize, jitlink_check)
     jitlink_check(nvrtc.nvJitLinkDestroy(handle))
     return data
-  def disassemble(self, lib:bytes): cuda_disassemble(lib, self.arch)
