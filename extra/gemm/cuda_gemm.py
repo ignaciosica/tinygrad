@@ -1,3 +1,5 @@
+# sudo -E env "PATH=$PATH" CNT=1 DISABLE_COMPILER_CACHE=1 ncu --set full --import-source yes --target-processes all --call-stack -o profile -f python extra/gemm/cuda_gemm.py
+
 import numpy as np
 import statistics
 from tinygrad import dtypes
