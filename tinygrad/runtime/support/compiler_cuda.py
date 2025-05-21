@@ -30,12 +30,12 @@ def pretty_ptx(s):
   s = re.sub(r'(\.)(version|target|address_size|visible|entry)', lambda m:m[1]+colored(m[2], "magenta"), s, flags=re.M) # derivatives
   return s
 
-def cuda_disassemble(lib, arch):
+def cuda_disassemble(lib:bytes, arch:str, is_cubin:bool=True):
   try:
     fn = (pathlib.Path(tempfile.gettempdir()) / f"tinycuda_{hashlib.md5(lib).hexdigest()}").as_posix()
-    with open(fn + ".ptx", "wb") as f: f.write(lib)
-    subprocess.run(["ptxas", f"-arch={arch}", "-o", fn, fn+".ptx"], check=True)
-    print(subprocess.check_output(['nvdisasm', fn]).decode('utf-8'))
+    with open(fn, "wb") as f: f.write(lib)
+    if not is_cubin: subprocess.run(["ptxas", fn, f"-arch={arch}", "-o", fn], check=True)
+    print(subprocess.check_output(["nvdisasm", fn]).decode('utf-8'))
   except Exception as e: print("Failed to generate SASS", str(e), "Make sure your PATH contains ptxas/nvdisasm binary of compatible version.")
 
 class CUDACompiler(Compiler):
@@ -45,29 +45,23 @@ class CUDACompiler(Compiler):
     nvrtc_check(nvrtc.nvrtcVersion((nvrtcMajor := ctypes.c_int()), (nvrtcMinor := ctypes.c_int())))
     if (nvrtcMajor.value, nvrtcMinor.value) >= (12, 4): self.compile_options.append("--minimal")
     super().__init__(f"compile_{cache_key}_{self.arch}")
-  def _compile_program(self, src:str, nvrtc_get_content:Callable, nvrtc_get_size:Callable) -> bytes:
+  def compile(self, src:str) -> bytes:
     nvrtc_check(nvrtc.nvrtcCreateProgram(ctypes.byref(prog := nvrtc.nvrtcProgram()), src.encode(), "<null>".encode(), 0, None, None))
     nvrtc_check(nvrtc.nvrtcCompileProgram(prog, len(self.compile_options), to_char_p_p([o.encode() for o in self.compile_options])), prog)
-    data = _get_bytes(prog, nvrtc_get_content, nvrtc_get_size, nvrtc_check)
+    data = _get_bytes(prog, nvrtc.nvrtcGetCUBIN, nvrtc.nvrtcGetCUBINSize, nvrtc_check)
     nvrtc_check(nvrtc.nvrtcDestroyProgram(ctypes.byref(prog)))
     return data
-  def compile(self, src:str) -> bytes: return self._compile_program(src, nvrtc.nvrtcGetPTX, nvrtc.nvrtcGetPTXSize)
-  def disassemble(self, lib:bytes):
-    try:
-      fn = (pathlib.Path(tempfile.gettempdir()) / f"tinycuda_{hashlib.md5(lib).hexdigest()}").as_posix()
-      with open(fn + ".cubin", "wb") as f: f.write(lib)
-      print(subprocess.check_output(["nvdisasm", fn+".cubin"]).decode('utf-8'))
-    except Exception as e: print("Failed to disasm cubin:", str(e), "Make sure your PATH contains nvdisasm binary of compatible version.")
+  def disassemble(self, lib:bytes): cuda_disassemble(lib, self.arch)
 
 class NVCompiler(CUDACompiler):
   def __init__(self, arch:str): super().__init__(arch, cache_key="nv")
-  def compile(self, src:str) -> bytes: return self._compile_program(src, nvrtc.nvrtcGetCUBIN, nvrtc.nvrtcGetCUBINSize)
 
 class PTXCompiler(Compiler):
   def __init__(self, arch:str, cache_key="ptx"):
     self.arch = arch
     super().__init__(f"compile_{cache_key}_{self.arch}")
   def compile(self, src:str) -> bytes: return src.replace("TARGET", self.arch).replace("VERSION", "7.8" if self.arch >= "sm_89" else "7.5").encode()
+  def disassemble(self, lib:bytes): cuda_disassemble(lib, self.arch, is_cubin=False)
 
 class NVPTXCompiler(PTXCompiler):
   def __init__(self, arch:str): super().__init__(arch, cache_key="nv_ptx")
@@ -78,3 +72,4 @@ class NVPTXCompiler(PTXCompiler):
     data = _get_bytes(handle, nvrtc.nvJitLinkGetLinkedCubin, nvrtc.nvJitLinkGetLinkedCubinSize, jitlink_check)
     jitlink_check(nvrtc.nvJitLinkDestroy(handle))
     return data
+  def disassemble(self, lib:bytes): cuda_disassemble(lib, self.arch)
