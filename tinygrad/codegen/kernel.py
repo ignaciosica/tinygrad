@@ -546,11 +546,13 @@ class Kernel:
 
   def apply_lds(self, ast) -> UOp:
     def transform(ctx:tuple[Kernel, set[UOp]], global_access:UOp):
-      if (buf := global_access.src[0]).op is not Ops.DEFINE_GLOBAL or buf.arg in ctx[1] or not (k := ctx[0]).lds[buf.arg]: return None
+      buf, kernel = global_access.src[0], ctx[0]
+      if buf.op is not Ops.DEFINE_GLOBAL or not kernel.lds[buf.arg] or buf.arg in ctx[1]: return None
       ctx[1].add(buf.arg)
       global_st: ShapeTracker = global_access.src[1].arg
-      gd, fr, fu, shape = k.global_dims, k.first_reduce, k.first_upcast, []
-      for i, st in enumerate(global_st.real_strides()): shape.append(global_st.shape[i] if i >= gd and st != 0 and (i < fr or i >= fu) else 1)
+      shape: list[int] = []
+      for i, st in enumerate(global_st.real_strides()):
+        shape.append(global_st.shape[i] if i >=  kernel.global_dims and st != 0 and (i < kernel.first_reduce or i >= kernel.first_upcast) else 1)
       store_st = load_st = ShapeTracker.from_shape(tuple(shape))
 
       local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
