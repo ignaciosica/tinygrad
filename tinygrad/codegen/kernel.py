@@ -549,8 +549,9 @@ class Kernel:
       buf, kernel = global_access.src[0], ctx[0]
       if buf.op is not Ops.DEFINE_GLOBAL or not kernel.lds[buf.arg] or buf.arg in ctx[1]: return None
       ctx[1].add(buf.arg)
+
       global_st: ShapeTracker = global_access.src[1].arg
-      shape: list[int] = []
+      shape: list[sint] = []
       for i, st in enumerate(global_st.real_strides()):
         shape.append(global_st.shape[i] if i >=  kernel.global_dims and st != 0 and (i < kernel.first_reduce or i >= kernel.first_upcast) else 1)
       store_st = load_st = ShapeTracker.from_shape(tuple(shape))
