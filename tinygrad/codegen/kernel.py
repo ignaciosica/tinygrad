@@ -545,9 +545,10 @@ class Kernel:
     return graph_rewrite(fixed_ast, view_left, name="fixup optimized AST")
 
   def apply_lds(self, ast) -> UOp:
-    def transform(ctx:Kernel, global_access:UOp):
+    def transform(ctx:tuple[Kernel, set[UOp]], global_access:UOp):
       buf, kernel = global_access.src[0], ctx[0]
-      if buf.op is not Ops.DEFINE_GLOBAL or not kernel.lds[buf.arg] or buf.tag != "lds": return None
+      if buf.op is not Ops.DEFINE_GLOBAL or not kernel.lds[buf.arg] or buf.arg in ctx[1]: return None
+      ctx[1].add(buf.arg)
 
       global_st: ShapeTracker = global_access.src[1].arg
       shape: list[sint] = []
@@ -565,7 +566,7 @@ class Kernel:
         local_load = UOp(Ops.LOAD, local_buffer.dtype.base, (local_buffer, load_st.to_uop(), local_store))
         return global_access.replace(src=(global_access.src[0], global_st.to_uop(), local_load))
 
-    return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), transform)]), ctx=self)
+    return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), transform)]), ctx=(self, set()))
 
   # **** this is the lowerer ****
 
