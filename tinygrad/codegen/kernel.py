@@ -545,10 +545,9 @@ class Kernel:
     return graph_rewrite(fixed_ast, view_left, name="fixup optimized AST")
 
   def apply_lds(self, ast) -> UOp:
-    def transform(ctx:tuple[Kernel, set[UOp]], global_access:UOp):
-      buf, kernel = global_access.src[0], ctx[0]
-      if buf.op is not Ops.DEFINE_GLOBAL or not kernel.lds[buf.arg] or buf.arg in ctx[1]: return None
-      ctx[1].add(buf.arg)
+    def transform(ctx:Kernel, global_access:UOp):
+      buf, kernel = global_access.src[0], ctx
+      if buf.op is not Ops.DEFINE_GLOBAL or not kernel.lds[buf.arg] or buf.tag == "applied_lds": return None
 
       global_st: ShapeTracker = global_access.src[1].arg
       shape: list[sint] = []
@@ -558,15 +557,15 @@ class Kernel:
 
       local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
       if global_access.op == Ops.LOAD:
-        global_access = global_access.replace(src=(global_access.src[0], global_st.to_uop()))
+        global_access = global_access.replace(src=(buf.replace(tag="applied_lds"), global_st.to_uop()))
         local_store = UOp.store(local_buffer, store_st.to_uop(), global_access)
         return UOp(Ops.LOAD, global_access.dtype, (local_buffer, load_st.to_uop(), local_store))
       if global_access.op == Ops.STORE:
         local_store = UOp.store(local_buffer, store_st.to_uop(), global_access.src[2])
         local_load = UOp(Ops.LOAD, local_buffer.dtype.base, (local_buffer, load_st.to_uop(), local_store))
-        return global_access.replace(src=(global_access.src[0], global_st.to_uop(), local_load))
+        return global_access.replace(src=(buf.replace(tag="applied_lds"), global_st.to_uop(), local_load))
 
-    return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), transform)]), ctx=(self, set()))
+    return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), transform)]), ctx=self)
 
   # **** this is the lowerer ****
 
