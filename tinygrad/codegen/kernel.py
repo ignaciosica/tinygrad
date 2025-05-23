@@ -447,12 +447,21 @@ class Kernel:
     num = f"n{Kernel.kernel_cnt[function_name]-1}" if Kernel.kernel_cnt[function_name] > 1 else ""
     return name + colored(num, 'BLACK')
 
+  # TODO: viz tile
+  #   index is dot product between hier_cord and strides
+  #   mask global dims and reduce to get tile
+  #   make layout declarative? in kernel ~ it will kind of substitute the actual optops pipeline, the layout itself will describe data and compute
+  def viz_tile(self, st:ShapeTracker, row:int, col:int):
+    print(st)
+
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
     def fixup_ast(op:UOp) -> UOp:
       ret = op.replace(src=tuple(fixup_ast(x) for x in op.src)) # noqa: F821
       if op.op in GroupOp.Buffer and op in self.bufs:
-        st_uop = self.sts[self.bufs.index(op)].to_uop()
+        st = self.sts[self.bufs.index(op)]
+        self.viz_tile(st, 8, 8)
+        st_uop = st.to_uop()
         # NOTE: if CONST got masked after applying opts, we create a new VALID
         if op.op is Ops.CONST and any(v.mask is not None for v in unwrap(st_uop.st).views): return op.valid(unwrap(st_uop.st))
         # otherwise we just replace the VIEW source
