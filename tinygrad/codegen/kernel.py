@@ -456,9 +456,24 @@ class Kernel:
     from itertools import product
     from functools import reduce
     from operator import add
-
+    import colorsys
     RESET = "\x1b[0m"
-    def ansi_bg(t: int) -> str: return f"\x1b[48;5;{16 + (t % 216)}m"
+    # def ansi_bg(t: int) -> str: return f"\x1b[48;5;{16 + (t % 216)}m"
+    # RESET  = "\x1b[0m"
+
+    def ansi_bg(t: int) -> str:
+      """Return an ANSI background + foreground escape for thread t (0-31)."""
+      hue       = t / 32                    # 0 → 1
+      r, g, b   = colorsys.hsv_to_rgb(hue, 0.65, 0.80)   # pastel
+      # map 0-1 floats to 0-5 cube indices
+      R, G, B   = (int(x * 5 + 0.5) for x in (r, g, b))
+      code256   = 16 + 36*R + 6*G + B       # xterm cube
+      # perceived luminance to flip foreground
+      lum       = 0.2126*r + 0.7152*g + 0.0722*b
+      # fg        = 15 if lum < 0.5 else 0    # 15=white, 0=black
+      fg        = 0 if lum < 0.5 else 0    # 15=white, 0=black
+      return f"\x1b[38;5;{fg}m\x1b[48;5;{code256}m"
+
     def make_tile_st(st_full: ShapeTracker,
                     tile_shape: tuple[int, ...],
                     tile_idx:  tuple[int, ...]) -> ShapeTracker:
@@ -534,7 +549,7 @@ class Kernel:
       upcast_index = dot(coord[self.first_upcast:], updast_strides)
       if i and i % lengths[idx] == 0:
           print("")                       # row break
-      label = f"T{thread_index:02d}[{upcast_index:01d}]"
+      label = f"T{thread_index:03d}[{upcast_index:02d}]"
       print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
 
     del layout
