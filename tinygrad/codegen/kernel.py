@@ -521,14 +521,14 @@ class Kernel:
     _m = max(prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 0), 1)
     _n = max(prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 1), 1)
     # print("K:", _k, "M:", _m, "N:", _n)
-    lengths = (_m, _k, _m)
+    lengths = (_n, _k, _n)
 
     for coord in grid(shape):
       # print(f"{dot(coord, st.real_strides()):2d}", coord)
       layout[dot(coord, st.real_strides())] = coord
 
     locals_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.global_dims: self.first_reduce][::-1])).real_strides()[::-1])
-    updast_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.first_upcast:])).real_strides())
+    updast_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.first_upcast:][::-1])).real_strides()[::-1])
 
     # locals_strides = st.real_strides()[self.global_dims: self.first_reduce]
     # updast_strides = st.real_strides()[self.first_upcast:]
@@ -545,8 +545,8 @@ class Kernel:
     for i, coord in sorted(layout.items()):
       thread_index = dot(coord[self.global_dims:self.first_reduce], locals_strides)
       upcast_index = dot(coord[self.first_upcast:], updast_strides)
-      # if i and i % lengths[idx] == 0:
-      if i and i % 8 == 0:
+      if i and i % lengths[idx] == 0:
+      # if i and i % 8 == 0:
           print("")                       # row break
       label = f"T{thread_index:02d}[{upcast_index:01d}]"
       print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
