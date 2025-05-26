@@ -453,6 +453,8 @@ class Kernel:
   #   make layout declarative? in kernel ~ it will kind of substitute the actual optops pipeline, the layout itself will describe data and compute
 
   def viz_tile(self, st:ShapeTracker, idx: int):
+    print(st)
+
     from itertools import product
     from functools import reduce
     from operator import add
@@ -515,13 +517,9 @@ class Kernel:
 
     layout: dict[int, tuple[int, ...]] = {}
 
-    # dimensions = N local x true upcast
-    # dimensions = M local x true upcast
-    # dimensions = K unroll
-
-    _k = prod(op.arg for op in self.applied_opts if op.op is OptOps.UNROLL)
-    _m = prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 0)
-    _n = prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 1)
+    _k = max(prod(op.arg for op in self.applied_opts if op.op is OptOps.UNROLL), 1)
+    _m = max(prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 0), 1)
+    _n = max(prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 1), 1)
     # print("K:", _k, "M:", _m, "N:", _n)
     lengths = (_m, _k, _m)
 
@@ -547,9 +545,10 @@ class Kernel:
     for i, coord in sorted(layout.items()):
       thread_index = dot(coord[self.global_dims:self.first_reduce], locals_strides)
       upcast_index = dot(coord[self.first_upcast:], updast_strides)
-      if i and i % lengths[idx] == 0:
+      # if i and i % lengths[idx] == 0:
+      if i and i % 8 == 0:
           print("")                       # row break
-      label = f"T{thread_index:03d}[{upcast_index:02d}]"
+      label = f"T{thread_index:02d}[{upcast_index:01d}]"
       print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
 
     del layout
@@ -648,7 +647,7 @@ class Kernel:
     modified_ast = self.get_optimized_ast(name_override)
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
 
-    bufs: list[UOp] = [x for x in modified_ast.toposort() if x.op in GroupOp.Buffer][::-1]
+    bufs: list[UOp] = [x for x in modified_ast.toposort() if x.op in GroupOp.Buffer]
     membufs = dedup([x for x in bufs if x.op in {Ops.LOAD, Ops.STORE} and x.src[0].op in {Ops.DEFINE_GLOBAL}])
     sts: list[ShapeTracker] = [(x.st_arg, x.src[0].arg) for x in membufs]
 
