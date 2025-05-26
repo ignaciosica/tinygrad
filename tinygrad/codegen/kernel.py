@@ -279,11 +279,11 @@ class Kernel:
 
         # attempt to pad the tensor axes that require it
         try:
-          for axis, dim in tc_opts.axis_pads: self.apply_opt(Opt(OptOps.PADTO, axis, dim), append_opt=False) # PADTO might fail
+          for axis, dim in tc_opts.axis_pads: self.apply_opt(Opt(OptOps.PADTO, axis, dim), append_opt=True) # PADTO might fail
         except KernelOptError: continue
         # tensor core -- unroll the reduce dim (K), upcast and local the inner and outer dims (N, M)
-        for dim, amt in tc.get_reduce_axes(): self.apply_opt(Opt(OptOps.UNROLL, tc_opts.axes[2]-self.first_reduce, amt), append_opt=False)
-        for opt in tc.opts: self.apply_opt(Opt({"u":OptOps.UPCAST, "l":OptOps.LOCAL}[opt[0]], tc_opts.axes[int(opt[1])], 2), append_opt=False)
+        for dim, amt in tc.get_reduce_axes(): self.apply_opt(Opt(OptOps.UNROLL, tc_opts.axes[2]-self.first_reduce, amt), append_opt=True)
+        for opt in tc.opts: self.apply_opt(Opt({"u":OptOps.UPCAST, "l":OptOps.LOCAL}[opt[0]], tc_opts.axes[int(opt[1])], 2), append_opt=True)
         self.tensor_core = tc
         self.use_tensor_cores = use_tensor_cores  # TC=2 will do the shape ops without the WMMA
         return True
@@ -451,17 +451,102 @@ class Kernel:
   #   index is dot product between hier_cord and strides
   #   mask global dims and reduce to get tile
   #   make layout declarative? in kernel ~ it will kind of substitute the actual optops pipeline, the layout itself will describe data and compute
-  def viz_tile(self, st:ShapeTracker, row:int, col:int):
-    print(st)
+
+  def viz_tile(self, st:ShapeTracker, idx: int):
+    from itertools import product
+    from functools import reduce
+    from operator import add
+
+    RESET = "\x1b[0m"
+    def ansi_bg(t: int) -> str: return f"\x1b[48;5;{16 + (t % 216)}m"
+    def make_tile_st(st_full: ShapeTracker,
+                    tile_shape: tuple[int, ...],
+                    tile_idx:  tuple[int, ...]) -> ShapeTracker:
+      """Return a ShapeTracker that views one tile of st_full.
+        *tile_shape* is the (h, w, …) of the tile.
+        *tile_idx*  is which tile to pick along each axis."""
+      assert st_full.shape == tuple(t * g for t, g
+                                    in zip(tile_shape,
+                                          [s//t for s, t in zip(st_full.shape, tile_shape)]))
+      # 1. reshape (g0, t0, g1, t1, ...)
+      grid_shape = tuple(s//t for s, t in zip(st_full.shape, tile_shape))
+      interleaved = reduce(add, zip(grid_shape, tile_shape))   # (g0,t0,g1,t1,...)
+
+      st = st_full.reshape(interleaved)
+
+      # 2. shrink global axes to the chosen tile
+      shrink_args = []
+      for g, t, idx in zip(grid_shape, tile_shape, tile_idx):
+        shrink_args.extend([(idx, idx+1),        # global axis
+                            (0, t)])             # local axis
+      st = st.shrink(tuple(shrink_args))
+
+      # 3. drop the length-1 axes so shape == tile_shape
+      st = st.reshape(tile_shape).simplify()
+      return st
+
+    shape = tuple(1 if stride == 0 or i < self.global_dims or (i >= self.first_reduce and i < self.first_upcast) else st.shape[i]
+                  for i, stride in enumerate(st.real_strides()))
+    tile_st = make_tile_st(st, shape, (0,)*len(shape))
+    # print(st)
+    # print(tile_st)
+    print(idx)
+    new_st = ShapeTracker.from_shape(shape)
+
+    def dot(coord, strides): return sum(c * s for c, s in zip(coord, strides))
+    def grid(shape, *, inclusive=True):
+      for p in product(*[(range(d) if inclusive else range(d)) for d in reversed(shape)]):
+        yield tuple(reversed(p))
+
+    layout: dict[int, tuple[int, ...]] = {}
+
+    # dimensions = N local x true upcast
+    # dimensions = M local x true upcast
+    # dimensions = K unroll
+
+    _k = prod(op.arg for op in self.applied_opts if op.op is OptOps.UNROLL)
+    _m = prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 0)
+    _n = prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 1)
+    # print("K:", _k, "M:", _m, "N:", _n)
+    lengths = (_m, _k, _m)
+
+    for coord in grid(shape):
+      # print(f"{dot(coord, st.real_strides()):2d}", coord)
+      layout[dot(coord, st.real_strides())] = coord
+
+    locals_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.global_dims: self.first_reduce][::-1])).real_strides()[::-1])
+    updast_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.first_upcast:])).real_strides())
+
+    # locals_strides = st.real_strides()[self.global_dims: self.first_reduce]
+    # updast_strides = st.real_strides()[self.first_upcast:]
+
+
+    # for i, coord in sorted(layout.items()):
+    #   # print('sorted:', f"{i:2d}", "local_dims", coord[self.global_dims: self.first_reduce], "upcast_dims", coord[self.first_upcast:])
+    #   thread_index = dot(coord[self.global_dims: self.first_reduce], locals_strides)
+    #   upcast_index = dot(coord[self.first_upcast:], updast_strides)
+    #   if i != 0 and i % lengths[idx] == 0: print("")
+    #   # print(f"T{thread_index:2d}[{upcast_index:2d}]  {i:2d} {coord}")
+    #   print(f"T{thread_index:2d}[{upcast_index:2d}] ", end="")
+
+    for i, coord in sorted(layout.items()):
+      thread_index = dot(coord[self.global_dims:self.first_reduce], locals_strides)
+      upcast_index = dot(coord[self.first_upcast:], updast_strides)
+      if i and i % lengths[idx] == 0:
+          print("")                       # row break
+      label = f"T{thread_index:02d}[{upcast_index:01d}]"
+      print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
+
+    del layout
+    print("")
+    # print(st)
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
     def fixup_ast(op:UOp) -> UOp:
       ret = op.replace(src=tuple(fixup_ast(x) for x in op.src)) # noqa: F821
       if op.op in GroupOp.Buffer and op in self.bufs:
-        st = self.sts[self.bufs.index(op)]
-        self.viz_tile(st, 8, 8)
-        st_uop = st.to_uop()
+        st_uop = self.sts[self.bufs.index(op)].to_uop()
         # NOTE: if CONST got masked after applying opts, we create a new VALID
         if op.op is Ops.CONST and any(v.mask is not None for v in unwrap(st_uop.st).views): return op.valid(unwrap(st_uop.st))
         # otherwise we just replace the VIEW source
@@ -547,6 +632,13 @@ class Kernel:
 
     modified_ast = self.get_optimized_ast(name_override)
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
+
+    bufs: list[UOp] = [x for x in modified_ast.toposort() if x.op in GroupOp.Buffer][::-1]
+    membufs = dedup([x for x in bufs if x.op in {Ops.LOAD, Ops.STORE} and x.src[0].op in {Ops.DEFINE_GLOBAL}])
+    sts: list[ShapeTracker] = [(x.st_arg, x.src[0].arg) for x in membufs]
+
+    for (st, arg) in sts:
+      self.viz_tile(st, arg)
 
     if DEBUG >= 3:
       print(self.name)
