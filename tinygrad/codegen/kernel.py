@@ -461,8 +461,7 @@ class Kernel:
     print(st)
 
     def ansi_bg(t:int):
-      hue=t/32
-      r,g,b=colorsys.hsv_to_rgb(hue,0.65,0.80)
+      r,g,b=colorsys.hsv_to_rgb(t/32,0.65,0.80)
       R,G,B=(int(x*5+.5) for x in (r,g,b))
       return f"\x1b[38;5;0m\x1b[48;5;{17+36*R+6*G+B}m"
 
@@ -488,14 +487,13 @@ class Kernel:
     rows,row=[],[]
     for j,(i,cs) in enumerate(sorted(layout.items(),key=lambda x:x[0])):
       label = ""
+      tidx=getenv("TIDX",-1)
       if len(cs) == 1:
-        tidx=getenv("TIDX",-1)
         th=dot(cs[0][self.global_dims:self.first_reduce],locals_strides)
         up=dot(cs[0][self.first_upcast:],upcast_strides)
         label=f"{ansi_bg(th) if tidx==-1 else ansi_bg(5) if tidx==th else RESET}T{th:02d}[{up:02d}]{RESET}"
       else:
         ths=tuple(dot(c[self.global_dims:self.first_reduce],locals_strides) for c in cs)
-        tidx=getenv("TIDX",-1)
         label = f"{ansi_bg(ths[0]) if tidx==-1 else ansi_bg(5) if tidx in ths else RESET}T("
         for c in cs:
           th=dot(c[self.global_dims:self.first_reduce],locals_strides)
