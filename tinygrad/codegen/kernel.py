@@ -457,9 +457,8 @@ class Kernel:
     print(st)
 
     def ansi_bg(t:int):
-      r,g,b=colorsys.hsv_to_rgb(t/32,0.65,0.80)
-      R,G,B=(int(x*5+.5) for x in (r,g,b))
-      return f"\x1b[38;5;0m\x1b[48;5;{17+36*R+6*G+B}m"
+      _R,_G,_B=(int(x*5+.5) for x in colorsys.hsv_to_rgb(t/32,0.65,0.80))
+      return f"\x1b[38;5;0m\x1b[48;5;{17+36*_R+6*_G+_B}m"
 
     shape=tuple(1 if i<self.global_dims or (self.first_reduce<=i<self.first_upcast) or (self.first_upcast <= i and  s==0) else (st.shape[i] if st.shape[i] != 1 else 2)
                 for i,s in enumerate(st.real_strides()))
@@ -598,8 +597,7 @@ class Kernel:
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
 
     if getenv("VIZ_TILE"):
-      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE} and x.src[0].op in {Ops.DEFINE_GLOBAL,Ops.DEFINE_LOCAL}]):
-        self.viz_tile(buf)
+      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
 
     if DEBUG >= 3:
       print(self.name)
