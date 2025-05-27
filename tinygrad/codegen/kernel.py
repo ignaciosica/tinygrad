@@ -452,55 +452,6 @@ class Kernel:
   #   mask global dims and reduce to get tile
   #   make layout declarative? in kernel ~ it will kind of substitute the actual optops pipeline, the layout itself will describe data and compute
 
-  def viz_tile(self, st:ShapeTracker, idx: int):
-    print(f"\nBUF[{idx}] {'store' if idx == 0 else 'load'}")
-
-    import colorsys
-    from itertools import product
-    RESET = "\x1b[0m"
-
-    def ansi_bg(t: int) -> str:
-      """Return an ANSI background + foreground escape for thread t (0-31)."""
-      hue       = t / 32                                  # 0 → 1
-      r, g, b   = colorsys.hsv_to_rgb(hue, 0.65, 0.80)    # pastel
-      R, G, B   = (int(x * 5 + 0.5) for x in (r, g, b))   # map 0-1 floats to 0-5 cube indices
-      code256   = 17 + 36*R + 6*G + B                     # xterm cube
-      return f"\x1b[38;5;0m\x1b[48;5;{code256}m"
-
-    shape = tuple(1 if stride == 0 or i < self.global_dims or (i >= self.first_reduce and i < self.first_upcast) else st.shape[i]
-                  for i, stride in enumerate(st.real_strides()))
-
-    def dot(coord, strides): return sum(c * (s or 0) for c, s in zip(coord, strides))
-    def grid(shape, *, inclusive=True):
-      for p in product(*[(range(d) if inclusive else range(d)) for d in reversed(shape)]):
-        yield tuple(reversed(p))
-
-    layout: dict[int, tuple[int, ...]] = {}
-
-    _k = max(prod(op.arg for op in self.applied_opts if op.op is OptOps.UNROLL), 1)
-    _m = max(prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 0), 1)
-    _n = max(prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 1), 1)
-    # print("K:", _k, "M:", _m, "N:", _n)
-    lengths: tuple[int,int,int] = (_n, _k, _n)
-
-    for coord in grid(shape): layout[dot(coord, st.real_strides())] = coord
-
-    locals_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.global_dims: self.first_reduce][::-1])).real_strides()[::-1])
-    upcast_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.first_upcast:][::-1])).real_strides()[::-1])
-
-    for i, coord in sorted(layout.items()):
-      thread_index = dot(coord[self.global_dims:self.first_reduce], locals_strides)
-      upcast_index = dot(coord[self.first_upcast:], upcast_strides)
-      label = f"T{thread_index:03d}[{upcast_index:02d}]"
-
-      if i and i % lengths[idx] == 0: print("")
-      # if i and i % 8 == 0: print("")
-
-      if (tidx := getenv("TIDX", -1)) > -1: print(f"{ansi_bg(thread_index) if tidx == thread_index else RESET}{label}{RESET} ", end="")
-      else: print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
-
-    del layout
-
   def viz_tile_tab(self, st:ShapeTracker, idx:int):
     from tabulate import tabulate
     from itertools import product
