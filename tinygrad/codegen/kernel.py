@@ -452,12 +452,13 @@ class Kernel:
   #   mask global dims and reduce to get tile
   #   make layout declarative? in kernel ~ it will kind of substitute the actual optops pipeline, the layout itself will describe data and compute
 
-  def viz_tile_tab(self, st:ShapeTracker, idx:int):
+  def viz_tile_tab(self, st:ShapeTracker, idx:int, tag = None, op:UOp|None = None):
     from tabulate import tabulate
     from itertools import product
     import colorsys
     RESET = "\x1b[0m"
-    print(f"\nBUF[{idx}] {'store' if idx==0 else 'load'}")
+    print(f"\nBUF[{idx + (1 if tag == 'shared' else 0)}] {'store' if op.op == Ops.STORE else 'load'} {tag or ''}")
+    print(st)
 
     def ansi_bg(t:int):
       hue=t/32
@@ -465,7 +466,7 @@ class Kernel:
       R,G,B=(int(x*5+.5) for x in (r,g,b))
       return f"\x1b[38;5;0m\x1b[48;5;{17+36*R+6*G+B}m"
 
-    shape=tuple(1 if i<self.global_dims or (self.first_reduce<=i<self.first_upcast) or (self.first_upcast <= i and  s==0) else st.shape[i]
+    shape=tuple(1 if i<self.global_dims or (self.first_reduce<=i<self.first_upcast) or (self.first_upcast <= i and  s==0) else (st.shape[i] if st.shape[i] != 1 else 2)
                 for i,s in enumerate(st.real_strides()))
     dot=lambda c,s: sum(ci*(si or 0) for ci,si in zip(c,s))                                   # noqa: E731
     grid=lambda sh: (tuple(reversed(p)) for p in product(*[range(d) for d in reversed(sh)]))  # noqa: E731
@@ -502,13 +503,13 @@ class Kernel:
         up=dot(cs[0][self.first_upcast:],upcast_strides)
         label = label[:-1] + f")[{up:02d}]{RESET}"
       row.append(label)
-      if (j+1)%lengths[idx]==0:
+      if (j+1)%lengths[idx%len(lengths)]==0:
         rows.append(row)
         row=[]
     if row: rows.append(row)
 
-    # print(tabulate(rows,tablefmt="simple_grid"))
-    print(tabulate(rows,tablefmt="plain"))
+    print(tabulate(rows,tablefmt="simple_grid"))
+    # print(tabulate(rows,tablefmt="plain"))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
@@ -605,11 +606,11 @@ class Kernel:
 
     if getenv("VIZ_TILE"):
       bufs: list[UOp] = [x for x in modified_ast.toposort() if x.op in GroupOp.Buffer]
-      membufs = dedup([x for x in bufs if x.op in {Ops.LOAD, Ops.STORE} and x.src[0].op in {Ops.DEFINE_GLOBAL}])
-      sts: list[ShapeTracker] = [(x.st_arg, x.src[0].arg) for x in membufs]
+      membufs = dedup([x for x in bufs if x.op in {Ops.LOAD, Ops.STORE} and x.src[0].op in {Ops.DEFINE_GLOBAL, Ops.DEFINE_LOCAL}])
+      sts: list[ShapeTracker] = [(x.st_arg, x.src[0].arg, x) for x in membufs]
 
-      for (st, arg) in sts:
-        self.viz_tile_tab(st, arg)
+      for (st, arg, op) in sts:
+        self.viz_tile_tab(st, arg if isinstance(arg, int) else int(arg[-1:]), "shared" if op.src[0].op == Ops.DEFINE_LOCAL else "device", op)
 
     if DEBUG >= 3:
       print(self.name)
