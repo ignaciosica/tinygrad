@@ -464,15 +464,13 @@ class Kernel:
       hue       = t / 32                                  # 0 → 1
       r, g, b   = colorsys.hsv_to_rgb(hue, 0.65, 0.80)    # pastel
       R, G, B   = (int(x * 5 + 0.5) for x in (r, g, b))   # map 0-1 floats to 0-5 cube indices
-      code256   = 16 + 36*R + 6*G + B                     # xterm cube
-      lum       = 0.2126*r + 0.7152*g + 0.0722*b          # perceived luminance to flip foreground
-      fg        = 0 if lum < 0.5 else 0                   # 15=white, 0=black
-      return f"\x1b[38;5;{fg}m\x1b[48;5;{code256}m"
+      code256   = 17 + 36*R + 6*G + B                     # xterm cube
+      return f"\x1b[38;5;0m\x1b[48;5;{code256}m"
 
     shape = tuple(1 if stride == 0 or i < self.global_dims or (i >= self.first_reduce and i < self.first_upcast) else st.shape[i]
                   for i, stride in enumerate(st.real_strides()))
 
-    def dot(coord, strides): return sum(c * s for c, s in zip(coord, strides))
+    def dot(coord, strides): return sum(c * (s or 0) for c, s in zip(coord, strides))
     def grid(shape, *, inclusive=True):
       for p in product(*[(range(d) if inclusive else range(d)) for d in reversed(shape)]):
         yield tuple(reversed(p))
@@ -490,22 +488,64 @@ class Kernel:
     locals_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.global_dims: self.first_reduce][::-1])).real_strides()[::-1])
     upcast_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.first_upcast:][::-1])).real_strides()[::-1])
 
-    # locals_strides = st.real_strides()[self.global_dims: self.first_reduce]
-    # upcast_strides = st.real_strides()[self.first_upcast:]
-
     for i, coord in sorted(layout.items()):
       thread_index = dot(coord[self.global_dims:self.first_reduce], locals_strides)
       upcast_index = dot(coord[self.first_upcast:], upcast_strides)
-      label = f"T{thread_index:02d}[{upcast_index:01d}]"
+      label = f"T{thread_index:03d}[{upcast_index:02d}]"
 
       if i and i % lengths[idx] == 0: print("")
+      # if i and i % 8 == 0: print("")
 
       if (tidx := getenv("TIDX", -1)) > -1: print(f"{ansi_bg(thread_index) if tidx == thread_index else RESET}{label}{RESET} ", end="")
       else: print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
 
     del layout
-    print("")
-    # print(st)
+
+  def viz_tile_tab(self, st:ShapeTracker, idx:int):
+    from tabulate import tabulate
+    from itertools import product
+    import colorsys
+    RESET = "\x1b[0m"
+    print(f"\nBUF[{idx}] {'store' if idx==0 else 'load'}")
+
+    def ansi_bg(t:int):
+      hue=t/32
+      r,g,b=colorsys.hsv_to_rgb(hue,0.65,0.80)
+      R,G,B=(int(x*5+.5) for x in (r,g,b))
+      return f"\x1b[38;5;0m\x1b[48;5;{17+36*R+6*G+B}m"
+
+    shape=tuple(1 if s==0 or i<self.global_dims or (self.first_reduce<=i<self.first_upcast) else st.shape[i]
+                for i,s in enumerate(st.real_strides()))
+    dot=lambda c,s: sum(ci*(si or 0) for ci,si in zip(c,s))                                   # noqa: E731
+    grid=lambda sh: (tuple(reversed(p)) for p in product(*[range(d) for d in reversed(sh)]))  # noqa: E731
+
+    layout={}
+    _k=max(prod(o.arg for o in self.applied_opts if o.op is OptOps.UNROLL),1)
+    _m=max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL,OptOps.UPCAST) and o.axis==0),1)
+    _n=max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL,OptOps.UPCAST) and o.axis==1),1)
+    lengths=(_n,_k,_n)
+
+    locals_strides=tuple(ShapeTracker.from_shape(shape[self.global_dims:self.first_reduce][::-1]).real_strides()[::-1])
+    upcast_strides=tuple(ShapeTracker.from_shape(shape[self.first_upcast:][::-1]).real_strides()[::-1])
+
+    for c in grid(shape):
+      layout[dot(c,st.real_strides())] = c
+
+    rows,row=[],[]
+    for j,(i,c) in enumerate(sorted(layout.items(),key=lambda x:x[0])):
+      tidx=getenv("TIDX",-1)
+      th=dot(c[self.global_dims:self.first_reduce],locals_strides)
+      up=dot(c[self.first_upcast:],upcast_strides)
+      label=f"{ansi_bg(th) if tidx==-1 or tidx==th else RESET}T{th:02d}[{up:02d}]{RESET}"
+      row.append(label)
+      if (j+1)%lengths[idx]==0:
+        rows.append(row)
+        row=[]
+    if row: rows.append(row)
+
+    # print(tabulate(rows,tablefmt="simple_grid"))
+    print(tabulate(rows,tablefmt="plain"))
+    del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
@@ -605,7 +645,7 @@ class Kernel:
       sts: list[ShapeTracker] = [(x.st_arg, x.src[0].arg) for x in membufs]
 
       for (st, arg) in sts:
-        self.viz_tile(st, arg)
+        self.viz_tile_tab(st, arg)
 
     if DEBUG >= 3:
       print(self.name)
