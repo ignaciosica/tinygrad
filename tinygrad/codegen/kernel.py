@@ -467,12 +467,7 @@ class Kernel:
     locals_strides = tuple(ShapeTracker.from_shape(shape[self.global_dims : self.first_reduce][::-1]).real_strides()[::-1])
     upcast_strides = tuple(ShapeTracker.from_shape(shape[self.first_upcast :][::-1]).real_strides()[::-1])
 
-    for c in grid(shape):
-      coord = dot(c, st.real_strides())
-      if coord in layout:
-        layout.get(coord, []).append(c)
-      else:
-        layout[coord] = [c]
+    for c in grid(shape): layout.setdefault(dot(c, st.real_strides()), []).append(c)
 
     def ansi(t: int):
       _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
