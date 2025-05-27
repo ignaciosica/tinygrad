@@ -540,11 +540,11 @@ class Kernel:
         tidx=getenv("TIDX",-1)
         th=dot(cs[0][self.global_dims:self.first_reduce],locals_strides)
         up=dot(cs[0][self.first_upcast:],upcast_strides)
-        label=f"{ansi_bg(th) if tidx==-1 or tidx==th else RESET}T{th:02d}[{up:02d}]{RESET}"
+        label=f"{ansi_bg(th) if tidx==-1 else ansi_bg(5) if tidx==th else RESET}T{th:02d}[{up:02d}]{RESET}"
       else:
         ths=tuple(dot(c[self.global_dims:self.first_reduce],locals_strides) for c in cs)
         tidx=getenv("TIDX",-1)
-        label = f"{ansi_bg(ths[0]) if tidx==-1 or tidx in ths else RESET}T("
+        label = f"{ansi_bg(ths[0]) if tidx==-1 else ansi_bg(5) if tidx in ths else RESET}T("
         for c in cs:
           th=dot(c[self.global_dims:self.first_reduce],locals_strides)
           label+=f"{th:02d},"
