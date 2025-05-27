@@ -474,26 +474,15 @@ class Kernel:
       else:
         layout[coord] = [c]
 
-    def ansi_bg(t: int):
+    def ansi(t: int):
       _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
     rows, row, tidx, RESET = [], [], getenv("TIDX", -1), "\x1b[0m"
     for (i, cs) in sorted(layout.items(), key=lambda x: x[0]):
-      label = ""
-      if len(cs) == 1:
-        th = dot(cs[0][self.global_dims : self.first_reduce], locals_strides)
-        up = dot(cs[0][self.first_upcast :], upcast_strides)
-        label = f"{ansi_bg(th) if tidx == -1 else ansi_bg(5) if tidx == th else RESET}T{th:02d}[{up:02d}]{RESET}"
-      else:
-        ths = tuple(dot(c[self.global_dims : self.first_reduce], locals_strides) for c in cs)
-        label = f"{ansi_bg(ths[0]) if tidx == -1 else ansi_bg(5) if tidx in ths else RESET}T("
-        for c in cs:
-          th = dot(c[self.global_dims : self.first_reduce], locals_strides)
-          label += f"{th:02d},"
-        up = dot(cs[0][self.first_upcast :], upcast_strides)
-        label = label[:-1] + f")[{up:02d}]{RESET}"
-      row.append(label)
+      ths = tuple(dot(c[self.global_dims : self.first_reduce], locals_strides) for c in cs)
+      ups = tuple(dot(c[self.first_upcast :], upcast_strides) for c in cs)
+      row.append(f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}")
       if (i + 1) % lengths[idx % len(lengths)] == 0:
         rows.append(row)
         row = []
