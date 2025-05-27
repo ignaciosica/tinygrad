@@ -1,5 +1,5 @@
 from __future__ import annotations
-import itertools, functools, math
+import itertools, functools, math, tabulate, colorsys
 from dataclasses import dataclass
 from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
@@ -447,18 +447,11 @@ class Kernel:
     num = f"n{Kernel.kernel_cnt[function_name]-1}" if Kernel.kernel_cnt[function_name] > 1 else ""
     return name + colored(num, 'BLACK')
 
-  # TODO: viz tile
-  #   index is dot product between hier_cord and strides
-  #   mask global dims and reduce to get tile
-  #   make layout declarative? in kernel ~ it will kind of substitute the actual optops pipeline, the layout itself will describe data and compute
-
   def viz_tile(self, op:UOp):
     st:ShapeTracker = op.st_arg
     idx:int = op.src[0].arg if op.src[0].op is Ops.DEFINE_GLOBAL else int(op.src[0].arg[-1:])
     tag:str = "device" if op.op is Ops.DEFINE_GLOBAL else "shared"
-    from tabulate import tabulate
-    from itertools import product
-    import colorsys
+
     RESET = "\x1b[0m"
     print(f"\nBUF[{idx + (1 if tag == 'shared' else 0)}] {'store' if op.op == Ops.STORE else 'load'} {tag or ''}")
     print(st)
@@ -470,8 +463,8 @@ class Kernel:
 
     shape=tuple(1 if i<self.global_dims or (self.first_reduce<=i<self.first_upcast) or (self.first_upcast <= i and  s==0) else (st.shape[i] if st.shape[i] != 1 else 2)
                 for i,s in enumerate(st.real_strides()))
-    dot=lambda c,s: sum(ci*(si or 0) for ci,si in zip(c,s))                                   # noqa: E731
-    grid=lambda sh: (tuple(reversed(p)) for p in product(*[range(d) for d in reversed(sh)]))  # noqa: E731
+    dot=lambda c,s: sum(ci*(si or 0) for ci,si in zip(c,s))                                             # noqa: E731
+    grid=lambda sh: (tuple(reversed(p)) for p in itertools.product(*[range(d) for d in reversed(sh)]))  # noqa: E731
 
     layout={}
     _k=max(prod(o.arg for o in self.applied_opts if o.op is OptOps.UNROLL),1)
@@ -509,7 +502,7 @@ class Kernel:
         row=[]
     if row: rows.append(row)
 
-    print(tabulate(rows,tablefmt="simple_grid"))
+    print(tabulate.tabulate(rows,tablefmt="simple_grid"))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
