@@ -447,25 +447,20 @@ class Kernel:
     num = f"n{Kernel.kernel_cnt[function_name]-1}" if Kernel.kernel_cnt[function_name] > 1 else ""
     return name + colored(num, 'BLACK')
 
-  def viz_tile(self, op: UOp):
-    st: ShapeTracker = op.st_arg
-    idx: int = op.src[0].arg if op.src[0].op is Ops.DEFINE_GLOBAL else int(op.src[0].arg[-1:])
-    tag: str = "device" if op.op is Ops.DEFINE_GLOBAL else "shared"
+  def viz_tile(self, uop: UOp):
+    st: ShapeTracker = uop.st_arg
+    idx: int = uop.src[0].arg if uop.src[0].op is Ops.DEFINE_GLOBAL else int(uop.src[0].arg[-1:])
 
     RESET = "\x1b[0m"
-    print(f"\nBUF[{idx + (1 if tag == 'shared' else 0)}] {'store' if op.op == Ops.STORE else 'load'} {tag or ''}")
+    print(f"\nBuf [{uop.src[0].arg}] (op: {'st' if uop.op == Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'})")
     print(st)
 
     def ansi_bg(t: int):
       _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
-    shape = tuple(
-      1
-      if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) or (self.first_upcast <= i and s == 0)
-      else (st.shape[i] if st.shape[i] != 1 else 2)
-      for i, s in enumerate(st.real_strides())
-    )
+    shape = tuple(1 if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) or (self.first_upcast <= i and s == 0)
+                  else (st.shape[i] if st.shape[i] != 1 else 2) for i, s in enumerate(st.real_strides()))
     dot = lambda c, s: sum(ci * (si or 0) for ci, si in zip(c, s))  # noqa: E731
     grid = lambda sh: (tuple(reversed(p)) for p in itertools.product(*[range(d) for d in reversed(sh)]))  # noqa: E731
 
@@ -481,7 +476,7 @@ class Kernel:
     for c in grid(shape):
       coord = dot(c, st.real_strides())
       if coord in layout:
-        layout[coord].append(c)
+        layout.get(coord, []).append(c)
       else:
         layout[coord] = [c]
 
