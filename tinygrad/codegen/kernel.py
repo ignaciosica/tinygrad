@@ -455,10 +455,10 @@ class Kernel:
 
     shape = tuple(1 if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) or (self.first_upcast <= i and s == 0)
                   else (st.shape[i] if st.shape[i] != 1 else 2) for i, s in enumerate(st.real_strides()))
-    dot = lambda c, s: sum(ci * (si or 0) for ci, si in zip(c, s))  # noqa: E731
+    dot = lambda c, s: sum(ci * (si or 0) for ci, si in zip(c, s))                                        # noqa: E731
     grid = lambda sh: (tuple(reversed(p)) for p in itertools.product(*[range(d) for d in reversed(sh)]))  # noqa: E731
 
-    layout = {}
+    layout: dict[int, list[tuple[int, ...]]] = {}
     _k = max(prod(o.arg for o in self.applied_opts if o.op is OptOps.UNROLL), 1)
     _m = max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL, OptOps.UPCAST) and o.axis == 0), 1)
     _n = max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL, OptOps.UPCAST) and o.axis == 1), 1)
@@ -483,11 +483,8 @@ class Kernel:
       ths = tuple(dot(c[self.global_dims : self.first_reduce], locals_strides) for c in cs)
       ups = tuple(dot(c[self.first_upcast :], upcast_strides) for c in cs)
       row.append(f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}")
-      if (i + 1) % lengths[idx % len(lengths)] == 0:
-        rows.append(row)
-        row = []
-    if row:
-      rows.append(row)
+      if (i + 1) % lengths[idx % len(lengths)] == 0: rows.append(row); row = []                           # noqa: E702
+    if row: rows.append(row)
 
     print(tabulate.tabulate(rows, tablefmt="simple_grid"))
     del layout
