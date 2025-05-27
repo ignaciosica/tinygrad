@@ -447,61 +447,68 @@ class Kernel:
     num = f"n{Kernel.kernel_cnt[function_name]-1}" if Kernel.kernel_cnt[function_name] > 1 else ""
     return name + colored(num, 'BLACK')
 
-  def viz_tile(self, op:UOp):
-    st:ShapeTracker = op.st_arg
-    idx:int = op.src[0].arg if op.src[0].op is Ops.DEFINE_GLOBAL else int(op.src[0].arg[-1:])
-    tag:str = "device" if op.op is Ops.DEFINE_GLOBAL else "shared"
+  def viz_tile(self, op: UOp):
+    st: ShapeTracker = op.st_arg
+    idx: int = op.src[0].arg if op.src[0].op is Ops.DEFINE_GLOBAL else int(op.src[0].arg[-1:])
+    tag: str = "device" if op.op is Ops.DEFINE_GLOBAL else "shared"
 
     RESET = "\x1b[0m"
     print(f"\nBUF[{idx + (1 if tag == 'shared' else 0)}] {'store' if op.op == Ops.STORE else 'load'} {tag or ''}")
     print(st)
 
-    def ansi_bg(t:int):
-      _R,_G,_B=(int(x*5+.5) for x in colorsys.hsv_to_rgb(t/32,0.65,0.80))
-      return f"\x1b[38;5;0m\x1b[48;5;{17+36*_R+6*_G+_B}m"
+    def ansi_bg(t: int):
+      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
+      return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
-    shape=tuple(1 if i<self.global_dims or (self.first_reduce<=i<self.first_upcast) or (self.first_upcast <= i and  s==0) else (st.shape[i] if st.shape[i] != 1 else 2)
-                for i,s in enumerate(st.real_strides()))
-    dot=lambda c,s: sum(ci*(si or 0) for ci,si in zip(c,s))                                             # noqa: E731
-    grid=lambda sh: (tuple(reversed(p)) for p in itertools.product(*[range(d) for d in reversed(sh)]))  # noqa: E731
+    shape = tuple(
+      1
+      if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) or (self.first_upcast <= i and s == 0)
+      else (st.shape[i] if st.shape[i] != 1 else 2)
+      for i, s in enumerate(st.real_strides())
+    )
+    dot = lambda c, s: sum(ci * (si or 0) for ci, si in zip(c, s))  # noqa: E731
+    grid = lambda sh: (tuple(reversed(p)) for p in itertools.product(*[range(d) for d in reversed(sh)]))  # noqa: E731
 
-    layout={}
-    _k=max(prod(o.arg for o in self.applied_opts if o.op is OptOps.UNROLL),1)
-    _m=max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL,OptOps.UPCAST) and o.axis==0),1)
-    _n=max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL,OptOps.UPCAST) and o.axis==1),1)
-    lengths=(_n,_k,_n)
+    layout = {}
+    _k = max(prod(o.arg for o in self.applied_opts if o.op is OptOps.UNROLL), 1)
+    _m = max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL, OptOps.UPCAST) and o.axis == 0), 1)
+    _n = max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL, OptOps.UPCAST) and o.axis == 1), 1)
+    lengths = (_n, _k, _n)
 
-    locals_strides=tuple(ShapeTracker.from_shape(shape[self.global_dims:self.first_reduce][::-1]).real_strides()[::-1])
-    upcast_strides=tuple(ShapeTracker.from_shape(shape[self.first_upcast:][::-1]).real_strides()[::-1])
+    locals_strides = tuple(ShapeTracker.from_shape(shape[self.global_dims : self.first_reduce][::-1]).real_strides()[::-1])
+    upcast_strides = tuple(ShapeTracker.from_shape(shape[self.first_upcast :][::-1]).real_strides()[::-1])
 
     for c in grid(shape):
-      coord = dot(c,st.real_strides())
-      if coord in layout: layout[coord].append(c)
-      else: layout[coord] = [c]
-
-    rows,row=[],[]
-    for j,(i,cs) in enumerate(sorted(layout.items(),key=lambda x:x[0])):
-      label = ""
-      tidx=getenv("TIDX",-1)
-      if len(cs) == 1:
-        th=dot(cs[0][self.global_dims:self.first_reduce],locals_strides)
-        up=dot(cs[0][self.first_upcast:],upcast_strides)
-        label=f"{ansi_bg(th) if tidx==-1 else ansi_bg(5) if tidx==th else RESET}T{th:02d}[{up:02d}]{RESET}"
+      coord = dot(c, st.real_strides())
+      if coord in layout:
+        layout[coord].append(c)
       else:
-        ths=tuple(dot(c[self.global_dims:self.first_reduce],locals_strides) for c in cs)
-        label = f"{ansi_bg(ths[0]) if tidx==-1 else ansi_bg(5) if tidx in ths else RESET}T("
+        layout[coord] = [c]
+
+    rows, row = [], []
+    for j, (i, cs) in enumerate(sorted(layout.items(), key=lambda x: x[0])):
+      label = ""
+      tidx = getenv("TIDX", -1)
+      if len(cs) == 1:
+        th = dot(cs[0][self.global_dims : self.first_reduce], locals_strides)
+        up = dot(cs[0][self.first_upcast :], upcast_strides)
+        label = f"{ansi_bg(th) if tidx == -1 else ansi_bg(5) if tidx == th else RESET}T{th:02d}[{up:02d}]{RESET}"
+      else:
+        ths = tuple(dot(c[self.global_dims : self.first_reduce], locals_strides) for c in cs)
+        label = f"{ansi_bg(ths[0]) if tidx == -1 else ansi_bg(5) if tidx in ths else RESET}T("
         for c in cs:
-          th=dot(c[self.global_dims:self.first_reduce],locals_strides)
-          label+=f"{th:02d},"
-        up=dot(cs[0][self.first_upcast:],upcast_strides)
+          th = dot(c[self.global_dims : self.first_reduce], locals_strides)
+          label += f"{th:02d},"
+        up = dot(cs[0][self.first_upcast :], upcast_strides)
         label = label[:-1] + f")[{up:02d}]{RESET}"
       row.append(label)
-      if (j+1)%lengths[idx%len(lengths)]==0:
+      if (j + 1) % lengths[idx % len(lengths)] == 0:
         rows.append(row)
-        row=[]
-    if row: rows.append(row)
+        row = []
+    if row:
+      rows.append(row)
 
-    print(tabulate.tabulate(rows,tablefmt="simple_grid"))
+    print(tabulate.tabulate(rows, tablefmt="simple_grid"))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
