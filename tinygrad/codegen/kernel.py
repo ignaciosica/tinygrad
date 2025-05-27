@@ -514,7 +514,7 @@ class Kernel:
       R,G,B=(int(x*5+.5) for x in (r,g,b))
       return f"\x1b[38;5;0m\x1b[48;5;{17+36*R+6*G+B}m"
 
-    shape=tuple(1 if s==0 or i<self.global_dims or (self.first_reduce<=i<self.first_upcast) else st.shape[i]
+    shape=tuple(1 if i<self.global_dims or (self.first_reduce<=i<self.first_upcast) or (self.first_upcast <= i and  s==0) else st.shape[i]
                 for i,s in enumerate(st.real_strides()))
     dot=lambda c,s: sum(ci*(si or 0) for ci,si in zip(c,s))                                   # noqa: E731
     grid=lambda sh: (tuple(reversed(p)) for p in product(*[range(d) for d in reversed(sh)]))  # noqa: E731
@@ -529,14 +529,27 @@ class Kernel:
     upcast_strides=tuple(ShapeTracker.from_shape(shape[self.first_upcast:][::-1]).real_strides()[::-1])
 
     for c in grid(shape):
-      layout[dot(c,st.real_strides())] = c
+      coord = dot(c,st.real_strides())
+      if coord in layout: layout[coord].append(c)
+      else: layout[coord] = [c]
 
     rows,row=[],[]
-    for j,(i,c) in enumerate(sorted(layout.items(),key=lambda x:x[0])):
-      tidx=getenv("TIDX",-1)
-      th=dot(c[self.global_dims:self.first_reduce],locals_strides)
-      up=dot(c[self.first_upcast:],upcast_strides)
-      label=f"{ansi_bg(th) if tidx==-1 or tidx==th else RESET}T{th:02d}[{up:02d}]{RESET}"
+    for j,(i,cs) in enumerate(sorted(layout.items(),key=lambda x:x[0])):
+      label = ""
+      if len(cs) == 1:
+        tidx=getenv("TIDX",-1)
+        th=dot(cs[0][self.global_dims:self.first_reduce],locals_strides)
+        up=dot(cs[0][self.first_upcast:],upcast_strides)
+        label=f"{ansi_bg(th) if tidx==-1 or tidx==th else RESET}T{th:02d}[{up:02d}]{RESET}"
+      else:
+        ths=tuple(dot(c[self.global_dims:self.first_reduce],locals_strides) for c in cs)
+        tidx=getenv("TIDX",-1)
+        label = f"{ansi_bg(ths[0]) if tidx==-1 or tidx in ths else RESET}T("
+        for c in cs:
+          th=dot(c[self.global_dims:self.first_reduce],locals_strides)
+          label+=f"{th:02d},"
+        up=dot(cs[0][self.first_upcast:],upcast_strides)
+        label = label[:-1] + f")[{up:02d}]{RESET}"
       row.append(label)
       if (j+1)%lengths[idx]==0:
         rows.append(row)
