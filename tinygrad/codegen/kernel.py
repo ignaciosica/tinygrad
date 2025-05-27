@@ -452,63 +452,25 @@ class Kernel:
   #   mask global dims and reduce to get tile
   #   make layout declarative? in kernel ~ it will kind of substitute the actual optops pipeline, the layout itself will describe data and compute
 
-  def viz_tile(self, st:ShapeTracker, idx: int, tidx: int | None = None):
-    print(st)
+  def viz_tile(self, st:ShapeTracker, idx: int):
+    print(f"\nBUF[{idx}] {'store' if idx == 0 else 'load'}")
 
-    from itertools import product
-    from functools import reduce
-    from operator import add
     import colorsys
+    from itertools import product
     RESET = "\x1b[0m"
-    # def ansi_bg(t: int) -> str: return f"\x1b[48;5;{16 + (t % 216)}m"
-    # RESET  = "\x1b[0m"
 
     def ansi_bg(t: int) -> str:
       """Return an ANSI background + foreground escape for thread t (0-31)."""
-      hue       = t / 32                    # 0 → 1
-      r, g, b   = colorsys.hsv_to_rgb(hue, 0.65, 0.80)   # pastel
-      # map 0-1 floats to 0-5 cube indices
-      R, G, B   = (int(x * 5 + 0.5) for x in (r, g, b))
-      code256   = 16 + 36*R + 6*G + B       # xterm cube
-      # perceived luminance to flip foreground
-      lum       = 0.2126*r + 0.7152*g + 0.0722*b
-      # fg        = 15 if lum < 0.5 else 0    # 15=white, 0=black
-      fg        = 0 if lum < 0.5 else 0    # 15=white, 0=black
+      hue       = t / 32                                  # 0 → 1
+      r, g, b   = colorsys.hsv_to_rgb(hue, 0.65, 0.80)    # pastel
+      R, G, B   = (int(x * 5 + 0.5) for x in (r, g, b))   # map 0-1 floats to 0-5 cube indices
+      code256   = 16 + 36*R + 6*G + B                     # xterm cube
+      lum       = 0.2126*r + 0.7152*g + 0.0722*b          # perceived luminance to flip foreground
+      fg        = 0 if lum < 0.5 else 0                   # 15=white, 0=black
       return f"\x1b[38;5;{fg}m\x1b[48;5;{code256}m"
-
-    def make_tile_st(st_full: ShapeTracker,
-                    tile_shape: tuple[int, ...],
-                    tile_idx:  tuple[int, ...]) -> ShapeTracker:
-      """Return a ShapeTracker that views one tile of st_full.
-        *tile_shape* is the (h, w, …) of the tile.
-        *tile_idx*  is which tile to pick along each axis."""
-      assert st_full.shape == tuple(t * g for t, g
-                                    in zip(tile_shape,
-                                          [s//t for s, t in zip(st_full.shape, tile_shape)]))
-      # 1. reshape (g0, t0, g1, t1, ...)
-      grid_shape = tuple(s//t for s, t in zip(st_full.shape, tile_shape))
-      interleaved = reduce(add, zip(grid_shape, tile_shape))   # (g0,t0,g1,t1,...)
-
-      st = st_full.reshape(interleaved)
-
-      # 2. shrink global axes to the chosen tile
-      shrink_args = []
-      for g, t, idx in zip(grid_shape, tile_shape, tile_idx):
-        shrink_args.extend([(idx, idx+1),        # global axis
-                            (0, t)])             # local axis
-      st = st.shrink(tuple(shrink_args))
-
-      # 3. drop the length-1 axes so shape == tile_shape
-      st = st.reshape(tile_shape).simplify()
-      return st
 
     shape = tuple(1 if stride == 0 or i < self.global_dims or (i >= self.first_reduce and i < self.first_upcast) else st.shape[i]
                   for i, stride in enumerate(st.real_strides()))
-    tile_st = make_tile_st(st, shape, (0,)*len(shape))
-    # print(st)
-    # print(tile_st)
-    print(idx)
-    new_st = ShapeTracker.from_shape(shape)
 
     def dot(coord, strides): return sum(c * s for c, s in zip(coord, strides))
     def grid(shape, *, inclusive=True):
@@ -521,39 +483,25 @@ class Kernel:
     _m = max(prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 0), 1)
     _n = max(prod(op.arg for op in self.applied_opts if op.op in (OptOps.LOCAL,OptOps.UPCAST) and op.axis == 1), 1)
     # print("K:", _k, "M:", _m, "N:", _n)
-    lengths = (_n, _k, _n)
+    lengths: tuple[int,int,int] = (_n, _k, _n)
 
-    for coord in grid(shape):
-      # print(f"{dot(coord, st.real_strides()):2d}", coord)
-      layout[dot(coord, st.real_strides())] = coord
+    for coord in grid(shape): layout[dot(coord, st.real_strides())] = coord
 
     locals_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.global_dims: self.first_reduce][::-1])).real_strides()[::-1])
-    updast_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.first_upcast:][::-1])).real_strides()[::-1])
+    upcast_strides = tuple(ShapeTracker.from_shape(tuple(shape[self.first_upcast:][::-1])).real_strides()[::-1])
 
     # locals_strides = st.real_strides()[self.global_dims: self.first_reduce]
-    # updast_strides = st.real_strides()[self.first_upcast:]
-
-
-    # for i, coord in sorted(layout.items()):
-    #   # print('sorted:', f"{i:2d}", "local_dims", coord[self.global_dims: self.first_reduce], "upcast_dims", coord[self.first_upcast:])
-    #   thread_index = dot(coord[self.global_dims: self.first_reduce], locals_strides)
-    #   upcast_index = dot(coord[self.first_upcast:], updast_strides)
-    #   if i != 0 and i % lengths[idx] == 0: print("")
-    #   # print(f"T{thread_index:2d}[{upcast_index:2d}]  {i:2d} {coord}")
-    #   print(f"T{thread_index:2d}[{upcast_index:2d}] ", end="")
+    # upcast_strides = st.real_strides()[self.first_upcast:]
 
     for i, coord in sorted(layout.items()):
       thread_index = dot(coord[self.global_dims:self.first_reduce], locals_strides)
-      upcast_index = dot(coord[self.first_upcast:], updast_strides)
-      if i and i % lengths[idx] == 0:
-      # if i and i % 8 == 0:
-          print("")                      # row break
-      if tidx > -1:
-        label = f"T{thread_index:02d}[{upcast_index:01d}]"
-        print(f"{ansi_bg(thread_index) if tidx == thread_index else RESET}{label}{RESET} ", end="")
-      else:
-        label = f"T{thread_index:02d}[{upcast_index:01d}]"
-        print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
+      upcast_index = dot(coord[self.first_upcast:], upcast_strides)
+      label = f"T{thread_index:02d}[{upcast_index:01d}]"
+
+      if i and i % lengths[idx] == 0: print("")
+
+      if (tidx := getenv("TIDX", -1)) > -1: print(f"{ansi_bg(thread_index) if tidx == thread_index else RESET}{label}{RESET} ", end="")
+      else: print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
 
     del layout
     print("")
@@ -657,7 +605,7 @@ class Kernel:
       sts: list[ShapeTracker] = [(x.st_arg, x.src[0].arg) for x in membufs]
 
       for (st, arg) in sts:
-        self.viz_tile(st, arg, getenv("TIDX", -1))
+        self.viz_tile(st, arg)
 
     if DEBUG >= 3:
       print(self.name)
