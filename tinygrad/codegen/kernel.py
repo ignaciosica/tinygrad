@@ -449,15 +449,9 @@ class Kernel:
 
   def viz_tile(self, uop: UOp):
     st: ShapeTracker = uop.st_arg
-    idx: int = uop.src[0].arg if uop.src[0].op is Ops.DEFINE_GLOBAL else int(uop.src[0].arg[-1:])
-
-    RESET = "\x1b[0m"
+    idx: int = uop.src[0].arg if uop.src[0].op is Ops.DEFINE_GLOBAL else int(uop.src[0].arg[-1:]) + 1
     print(f"\nBuf [{uop.src[0].arg}] (op: {'st' if uop.op == Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'})")
     print(st)
-
-    def ansi_bg(t: int):
-      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
-      return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
     shape = tuple(1 if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) or (self.first_upcast <= i and s == 0)
                   else (st.shape[i] if st.shape[i] != 1 else 2) for i, s in enumerate(st.real_strides()))
@@ -480,10 +474,13 @@ class Kernel:
       else:
         layout[coord] = [c]
 
-    rows, row = [], []
-    for j, (i, cs) in enumerate(sorted(layout.items(), key=lambda x: x[0])):
+    def ansi_bg(t: int):
+      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
+      return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
+
+    rows, row, tidx, RESET = [], [], getenv("TIDX", -1), "\x1b[0m"
+    for (i, cs) in sorted(layout.items(), key=lambda x: x[0]):
       label = ""
-      tidx = getenv("TIDX", -1)
       if len(cs) == 1:
         th = dot(cs[0][self.global_dims : self.first_reduce], locals_strides)
         up = dot(cs[0][self.first_upcast :], upcast_strides)
@@ -497,7 +494,7 @@ class Kernel:
         up = dot(cs[0][self.first_upcast :], upcast_strides)
         label = label[:-1] + f")[{up:02d}]{RESET}"
       row.append(label)
-      if (j + 1) % lengths[idx % len(lengths)] == 0:
+      if (i + 1) % lengths[idx % len(lengths)] == 0:
         rows.append(row)
         row = []
     if row:
