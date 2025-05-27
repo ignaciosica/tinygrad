@@ -452,7 +452,7 @@ class Kernel:
   #   mask global dims and reduce to get tile
   #   make layout declarative? in kernel ~ it will kind of substitute the actual optops pipeline, the layout itself will describe data and compute
 
-  def viz_tile(self, st:ShapeTracker, idx: int):
+  def viz_tile(self, st:ShapeTracker, idx: int, tidx: int | None = None):
     print(st)
 
     from itertools import product
@@ -547,9 +547,13 @@ class Kernel:
       upcast_index = dot(coord[self.first_upcast:], updast_strides)
       if i and i % lengths[idx] == 0:
       # if i and i % 8 == 0:
-          print("")                       # row break
-      label = f"T{thread_index:02d}[{upcast_index:01d}]"
-      print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
+          print("")                      # row break
+      if tidx > -1:
+        label = f"T{thread_index:02d}[{upcast_index:01d}]"
+        print(f"{ansi_bg(thread_index) if tidx == thread_index else RESET}{label}{RESET} ", end="")
+      else:
+        label = f"T{thread_index:02d}[{upcast_index:01d}]"
+        print(f"{ansi_bg(thread_index)}{label}{RESET} ", end="")
 
     del layout
     print("")
@@ -647,12 +651,13 @@ class Kernel:
     modified_ast = self.get_optimized_ast(name_override)
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
 
-    bufs: list[UOp] = [x for x in modified_ast.toposort() if x.op in GroupOp.Buffer]
-    membufs = dedup([x for x in bufs if x.op in {Ops.LOAD, Ops.STORE} and x.src[0].op in {Ops.DEFINE_GLOBAL}])
-    sts: list[ShapeTracker] = [(x.st_arg, x.src[0].arg) for x in membufs]
+    if getenv("VIZ_TILE"):
+      bufs: list[UOp] = [x for x in modified_ast.toposort() if x.op in GroupOp.Buffer]
+      membufs = dedup([x for x in bufs if x.op in {Ops.LOAD, Ops.STORE} and x.src[0].op in {Ops.DEFINE_GLOBAL}])
+      sts: list[ShapeTracker] = [(x.st_arg, x.src[0].arg) for x in membufs]
 
-    for (st, arg) in sts:
-      self.viz_tile(st, arg)
+      for (st, arg) in sts:
+        self.viz_tile(st, arg, getenv("TIDX", -1))
 
     if DEBUG >= 3:
       print(self.name)
