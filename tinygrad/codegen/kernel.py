@@ -452,7 +452,10 @@ class Kernel:
   #   mask global dims and reduce to get tile
   #   make layout declarative? in kernel ~ it will kind of substitute the actual optops pipeline, the layout itself will describe data and compute
 
-  def viz_tile_tab(self, st:ShapeTracker, idx:int, tag = None, op:UOp|None = None):
+  def viz_tile(self, op:UOp):
+    st:ShapeTracker = op.st_arg
+    idx:int = op.src[0].arg if op.src[0].op is Ops.DEFINE_GLOBAL else int(op.src[0].arg[-1:])
+    tag:str = "device" if op.op is Ops.DEFINE_GLOBAL else "shared"
     from tabulate import tabulate
     from itertools import product
     import colorsys
@@ -507,7 +510,6 @@ class Kernel:
     if row: rows.append(row)
 
     print(tabulate(rows,tablefmt="simple_grid"))
-    # print(tabulate(rows,tablefmt="plain"))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
@@ -603,12 +605,8 @@ class Kernel:
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
 
     if getenv("VIZ_TILE"):
-      bufs: list[UOp] = [x for x in modified_ast.toposort() if x.op in GroupOp.Buffer]
-      membufs = dedup([x for x in bufs if x.op in {Ops.LOAD, Ops.STORE} and x.src[0].op in {Ops.DEFINE_GLOBAL, Ops.DEFINE_LOCAL}])
-      sts: list[ShapeTracker] = [(x.st_arg, x.src[0].arg, x) for x in membufs]
-
-      for (st, arg, op) in sts:
-        self.viz_tile_tab(st, arg if isinstance(arg, int) else int(arg[-1:]), "shared" if op.src[0].op == Ops.DEFINE_LOCAL else "device", op)
+      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE} and x.src[0].op in {Ops.DEFINE_GLOBAL,Ops.DEFINE_LOCAL}]):
+        self.viz_tile(buf)
 
     if DEBUG >= 3:
       print(self.name)
