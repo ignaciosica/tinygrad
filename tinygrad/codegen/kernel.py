@@ -473,15 +473,14 @@ class Kernel:
       _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
-    rows, row, tidx, RESET = [], [], getenv("TIDX", -1), "\x1b[0m"
+    matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
     for (i, cs) in sorted(layout.items(), key=lambda x: x[0]):
       ths = tuple(dot(c[self.global_dims : self.first_reduce], locals_strides) for c in cs)
       ups = tuple(dot(c[self.first_upcast :], upcast_strides) for c in cs)
-      row.append(f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}")
-      if (i + 1) % lengths[idx % len(lengths)] == 0: rows.append(row); row = []                           # noqa: E702
-    if row: rows.append(row)
+      elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
 
-    print(tabulate.tabulate(rows, tablefmt="simple_grid"))
+    if len(elems) % (n := lengths[idx % len(lengths)]) == 0: matrix = [elems[i:i+n] for i in range(0,len(elems), n)]
+    print(tabulate.tabulate(matrix or [elems], tablefmt=tabulate._table_formats["simple_grid"]._replace(padding=0) ))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
