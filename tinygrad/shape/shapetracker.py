@@ -61,6 +61,135 @@ class ShapeTracker:
     for v in st.views: ret = ShapeTracker(ret.views + (v,)).simplify() # one view at a time = better simplification
     return ret
 
+  def coord(self, index: int) -> int:
+    """
+    Given a flat logical index for the current shape of the ShapeTracker,
+    returns the corresponding physical offset in the underlying buffer.
+    """
+    # Ensure the index is valid for the current logical shape.
+    # If self.size is 0 (e.g., shape has a zero dimension), no index is valid.
+    assert 0 <= index < self.size, f"Index {index} out of bounds for ShapeTracker with size {self.size}"
+
+    # Unravel the flat logical index into multi-dimensional coordinates.
+    # tinygrad.shape.view.unravel handles self.shape == () (scalar case) by returning ().
+    logical_coords: tuple[sint, ...] = unravel(self.shape, index) # type: ignore
+    # print(logical_coords)
+    # Convert coordinates to UOp constants.
+    # sint_to_uop creates UOp(Ops.CONST, ..., arg=value_of_c)
+    coord_uops: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in logical_coords)
+
+    # Get the symbolic physical index and validity from the views.
+    # self.to_indexed_uops calls the cached views_to_indexed_uops with these constant UOps.
+    # All symbolic simplifications are applied within views_to_indexed_uops.
+    final_idx_uop, final_valid_uop = self.to_indexed_uops(coord_uops)
+
+    # After simplifications with constant inputs, the resulting index UOp should be a constant.
+    if final_idx_uop.op != Ops.CONST:
+      # This indicates an issue, e.g., unbound Variables in views affecting indexing,
+      # or incomplete simplification. The offset must be a concrete integer.
+      raise RuntimeError(f"Coordinate calculation for index {index} (logical coords {logical_coords}) "
+                         f"did not simplify to a constant offset. Got: {final_idx_uop}")
+
+    # The argument of the constant UOp is the integer offset.
+    offset_val = final_idx_uop.arg
+
+    # Ensure the argument is indeed an integer, as sint can be Variable.
+    # This should hold if op is CONST and simplifications worked as expected.
+    if not isinstance(offset_val, int):
+      raise RuntimeError(f"Expected integer offset, but got {type(offset_val)}: {offset_val}. UOp: {final_idx_uop}")
+
+    # Note on validity:
+    # final_valid_uop indicates if this logical index maps to a valid (unmasked) physical location.
+    # If final_valid_uop evaluates to CONST 0, the index points to a masked area (e.g., padding).
+    # The current requirement is to "return the coord offset" regardless.
+    # Example: if final_valid_uop.arg == 0, offset_val could be an address in a padding region.
+    # One might add a warning or an error here if strict validity is required:
+    if final_valid_uop.op == Ops.CONST and final_valid_uop.arg == 0:
+      print(f"Warning: Index {index} (logical coords {logical_coords}) maps to a masked-out " \
+            f"physical location (offset {offset_val}). View mask might be active.")
+
+    return offset_val
+
+  def with_shape_one_for_zero_strides(self) -> ShapeTracker:
+    """
+    Creates a new ShapeTracker based on the current one.
+    In the new ShapeTracker, dimensions that had a stride of 0 in the original's
+    effective strides (real_strides) will have their shape set to 1 and
+    their stride set to 0. Other dimensions will retain their original shape
+    and their original effective stride.
+
+    This transformation primarily affects the last view of the ShapeTracker,
+    modifying its shape and strides while preserving its offset and mask.
+    The resulting ShapeTracker (with the potentially new list of views)
+    is then simplified.
+
+    This can be useful, for example, to get a representation of a tensor
+    where broadcasted dimensions (which have stride 0) are explicitly set to shape 1.
+
+    Returns:
+        A new ShapeTracker instance reflecting these changes.
+    """
+    if not self.views:
+      # This state should ideally not be reached if ShapeTracker instances are
+      # always created with at least one view (e.g., via ShapeTracker.from_shape).
+      raise AssertionError("ShapeTracker must have at least one view to perform this operation.")
+
+    current_shape = self.shape  # Effective shape from self.views[-1].shape
+
+    # Retrieve the real (effective) strides of the current ShapeTracker.
+    # We use ignore_valid=True to get the underlying geometric stride values,
+    # as the check is for a numerical stride of 0, irrespective of masking.
+    original_real_strides = self.real_strides(ignore_valid=True)
+
+    if not current_shape:  # Handles the scalar case where shape is ()
+      return self  # No dimensions to modify, return the original ShapeTracker
+
+    new_shape_parts: list[sint] = list(current_shape)
+    # Initialize with None, as strides can be None if they are complex/unknown
+    new_strides_parts: list[Optional[sint]] = [None] * len(current_shape)
+
+    for i in range(len(current_shape)):
+      stride_i = original_real_strides[i]
+
+      is_deterministically_zero = False
+      if stride_i is not None:  # The stride must be a known value (not None)
+        if isinstance(stride_i, int):
+          is_deterministically_zero = stride_i == 0
+        elif isinstance(stride_i, Variable):
+          # A Variable is considered deterministically zero if its symbolic range is precisely [0,0].
+          is_deterministically_zero = stride_i.min == 0 and stride_i.max == 0
+        # Note: If stride_i could be other symbolic types, this check might need to be extended.
+
+      if is_deterministically_zero:
+        new_shape_parts[i] = 1  # Set shape of this dimension to 1
+        new_strides_parts[i] = 0  # Stride for a unit dimension is conventionally 0
+      else:
+        new_shape_parts[i] = current_shape[i]  # Keep the original shape component for this dimension
+        new_strides_parts[i] = stride_i  # Keep the original real stride (can be int, Variable, or None)
+
+    final_new_shape: tuple[sint, ...] = tuple(new_shape_parts)
+    # The elements of new_strides_parts are Optional[sint], matching the expected tuple type.
+    final_new_strides: tuple[Optional[sint], ...] = tuple(new_strides_parts)
+
+    original_last_view = self.views[-1]
+
+    # Create a new View object that will replace the last view.
+    # This new view uses the calculated new_shape and new_strides,
+    # but importantly preserves the offset and mask from the original last view.
+    modified_last_view = View.create(shape=final_new_shape, strides=final_new_strides, offset=original_last_view.offset, mask=original_last_view.mask)
+
+    # Construct the tuple of views for the new ShapeTracker.
+    if len(self.views) == 1:
+      # If the original ShapeTracker had only one view, the new one will also have one (the modified view).
+      new_views_tuple = (modified_last_view,)
+    else:
+      # If there were multiple views, keep all views except the last one, and append the modified_last_view.
+      new_views_tuple = self.views[:-1] + (modified_last_view,)
+
+    # Create the new ShapeTracker with the updated list of views and simplify it.
+    # Simplification might merge the modified_last_view with the preceding view if possible.
+    return ShapeTracker(new_views_tuple).simplify()
+
   def invert(self, out_shape:tuple[sint, ...]) -> Optional[ShapeTracker]:
     inverted_views:list[View] = []
     for v,s in zip(self.views[::-1], [x.shape for x in self.views[::-1][1:]]+[out_shape]):

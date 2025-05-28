@@ -6,7 +6,7 @@ from tabulate import tabulate, _table_formats
 from typing import Optional, cast, Final, Callable, Sequence
 
 from tinygrad.uop.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, track_rewrites, print_uops
-from tinygrad.uop.ops import PatternMatcher, smax
+from tinygrad.uop.ops import PatternMatcher, smax, sint_to_uop
 from tinygrad.uop.spec import type_verify, ast_spec
 from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec, Opt, OptOps
@@ -464,10 +464,10 @@ class Kernel:
     grid = lambda sh: (tuple(reversed(p)) for p in itertools.product(*[range(d) for d in reversed(sh)]))  # noqa: E731
 
     layout: dict[int, list[tuple[int, ...]]] = {}
-    # _k = max(prod(o.arg for o in self.applied_opts if o.op is OptOps.UNROLL), 1)
-    # _m = max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL, OptOps.UPCAST) and o.axis == 0), 1)
-    # _n = max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL, OptOps.UPCAST) and o.axis == 1), 1)
-    # lengths = (_n, _k, _n)
+    _k = max(prod(o.arg for o in self.applied_opts if o.op is OptOps.UNROLL), 1)
+    _m = max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL, OptOps.UPCAST) and o.axis == 0), 1)
+    _n = max(prod(o.arg for o in self.applied_opts if o.op in (OptOps.LOCAL, OptOps.UPCAST) and o.axis == 1), 1)
+    lengths = (_n, _k, _n)
     # lengths = (7, 7, 7)
 
     locals_strides = tuple(ShapeTracker.from_shape(shape[self.global_dims : self.first_reduce][::-1]).real_strides(True)[::-1])
@@ -486,9 +486,70 @@ class Kernel:
       elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
 
     # if len(elems) % (n := lengths[idx % len(lengths)]) == 0: matrix = [elems[i:i+n] for i in range(0,len(elems), n)]
-    # matrix = [elems[i:i+lengths[idx]] for i in range(0,len(elems), lengths[idx])]
+    matrix = [elems[i:i+lengths[idx]] for i in range(0,len(elems), lengths[idx])]
     if matrix: print(tabulate(matrix or [elems], tablefmt=_table_formats["simple_grid"]._replace(padding=0)))
     else: print(tabulate([elems], tablefmt=_table_formats["plain"]))
+    del layout
+
+  def viz_tile_2(self, uop: UOp):
+    from tinygrad.shape.view import unravel
+    st: ShapeTracker = uop.st_arg
+    print(f"\nBuf [{uop.src[0].arg}] (op: {'st' if uop.op == Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'})")
+    print(st)
+    # st = st.with_shape_one_for_zero_strides()
+
+    layout: dict[int, list[int]] = {}
+    # iterate through real size, so ignore 0 strided dimensions like reduce ones
+    # for i in range(st.real_size()):
+    for i in range(st.size):
+      print(f"{i=} {st.coord(i)=} {unravel(st.shape[::-1], i)[::-1]}")
+      layout.setdefault(st.coord(i), []).append(i)
+
+    def ansi(t: int):
+      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
+      return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
+
+    matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
+    for (i, cs) in sorted(layout.items(), key=lambda x: x[0]):
+      ths = tuple(st.coord(c)//2 for c in cs)
+      ups = tuple(st.coord(c)%2 for c in cs)
+      elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
+
+    # if len(elems) % (n := lengths[idx % len(lengths)]) == 0: matrix = [elems[i:i+n] for i in range(0,len(elems), n)]
+    matrix = [elems[i:i+8] for i in range(0,len(elems), 8)]
+    if matrix: print(tabulate(matrix or [elems], tablefmt=_table_formats["simple_grid"]._replace(padding=0)))
+    else: print(tabulate([elems], tablefmt=_table_formats["plain"]))
+    del layout
+
+  def viz_tile_3(self, uop: UOp):
+    from tinygrad.shape.view import unravel
+    st: ShapeTracker = uop.st_arg
+    print(f"\nBuf [{uop.src[0].arg}] (op: {'st' if uop.op == Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'})")
+    print(st)
+
+    layout: dict[int, list[int]] = {}
+    for i in range(st.real_size()):
+      # logical_coords: tuple[sint, ...] = tuple(unravel(st.shape[::-1], i)[::-1])
+      logical_coords: tuple[sint, ...] = tuple(unravel(st.shape, i))
+      coord_uops: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in logical_coords)
+      final_idx_uop, _ = st.to_indexed_uops(coord_uops)
+      offset_val = final_idx_uop.arg
+      print(f"{i=:02d} {offset_val=:02d} {unravel(st.shape, i)}")
+      layout.setdefault(offset_val, []).append(i)
+
+    def ansi(t: int):
+      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
+      return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
+
+    matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
+    for (i, cs) in sorted(layout.items(), key=lambda x: x[0]):
+      ths = tuple(c%32 for c in cs)
+      ups = tuple(c for c in cs)
+      print(i, cs)
+      elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
+
+    matrix = [elems[i:i+8] for i in range(0,len(elems), 8)]
+    print(tabulate(matrix or [elems], tablefmt="simple_grid"))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
@@ -584,7 +645,7 @@ class Kernel:
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
 
     if getenv("VIZ_TILE"):
-      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
+      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile_3(buf)
 
     if DEBUG >= 3:
       print(self.name)
