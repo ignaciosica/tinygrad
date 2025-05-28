@@ -1,7 +1,8 @@
 from __future__ import annotations
-import itertools, functools, math, tabulate, colorsys
+import itertools, functools, math, colorsys
 from dataclasses import dataclass
 from collections import defaultdict
+from tabulate import tabulate, _table_formats
 from typing import Optional, cast, Final, Callable, Sequence
 
 from tinygrad.uop.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, track_rewrites, print_uops
@@ -480,7 +481,7 @@ class Kernel:
       elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
 
     if len(elems) % (n := lengths[idx % len(lengths)]) == 0: matrix = [elems[i:i+n] for i in range(0,len(elems), n)]
-    print(tabulate.tabulate(matrix or [elems], tablefmt=tabulate._table_formats["simple_grid"]._replace(padding=0)))
+    print(tabulate(matrix or [elems], tablefmt=_table_formats["simple_grid"]._replace(padding=0)))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
