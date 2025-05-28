@@ -560,24 +560,17 @@ class Kernel:
     print((st := uop.st_arg))
 
     layout: dict = {}
-    print(f"{st.size=} {st.real_size()}")
     for i in range(st.size):
       logical_coords: tuple[sint, ...] = tuple(unravel(st.shape, i))
       coord_uops: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in logical_coords)
       idx_uop, _ = st.to_indexed_uops(coord_uops)
 
-      thread_shape = st.shape[self.global_dims : self.local_dims]
-      thread_strides = canonicalize_strides(thread_shape, tuple(itertools.accumulate(thread_shape, operator.mul, initial=1)))
-      thread_st = ShapeTracker((View.create(shape=thread_shape, strides=thread_strides),))
-      thread_idx_uop, _ = thread_st.to_indexed_uops(coord_uops[self.global_dims : self.local_dims])
+      shape = tuple(1 if i >= self.first_upcast and s == 0 else st.shape[i] for i,s in enumerate(st.real_strides(True)))
+      strides = canonicalize_strides(shape, tuple(itertools.accumulate(shape, operator.mul, initial=1)))
+      elem_st = ShapeTracker((View.create(shape=shape, strides=strides),))
+      elem_uop, _ = elem_st.to_indexed_uops(coord_uops)
 
-      upcast_shape = st.shape[self.first_upcast :]
-      upcast_shape = tuple(up if st.real_strides(True)[self.first_upcast + i] != 0 else 1 for i, up in enumerate(upcast_shape))
-      upcast_strides = canonicalize_strides(upcast_shape, tuple(itertools.accumulate(upcast_shape, operator.mul, initial=1)))
-      upcast_st = ShapeTracker((View.create(shape=upcast_shape, strides=upcast_strides),))
-      upcast_idx_uop, _ = upcast_st.to_indexed_uops(coord_uops[self.first_upcast :])
-
-      layout.setdefault(idx_uop.arg, []).append((thread_idx_uop.arg, upcast_idx_uop.arg, logical_coords))
+      layout.setdefault(idx_uop.arg, []).append((elem_uop.arg%32, elem_uop.arg//32, logical_coords))
 
     for (i, coords) in sorted(layout.items()):
       threads = ','.join(set(f'{th:02d}' for th, _, _ in coords))
