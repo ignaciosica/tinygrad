@@ -552,6 +552,39 @@ class Kernel:
     print(tabulate(matrix or [elems], tablefmt="simple_grid"))
     del layout
 
+  def viz_tile_4(self, uop: UOp):
+    from tinygrad.shape.view import View, unravel, canonicalize_strides
+    import operator
+
+    print(f"\nBuf [{uop.src[0].arg}] (op: {'st' if uop.op == Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'})")
+    print((st := uop.st_arg))
+
+    layout: dict = {}
+    print(f"{st.size=} {st.real_size()}")
+    for i in range(st.size):
+      logical_coords: tuple[sint, ...] = tuple(unravel(st.shape, i))
+      coord_uops: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in logical_coords)
+      idx_uop, _ = st.to_indexed_uops(coord_uops)
+
+      thread_shape = st.shape[self.global_dims : self.local_dims]
+      thread_strides = canonicalize_strides(thread_shape, tuple(itertools.accumulate(thread_shape, operator.mul, initial=1)))
+      thread_st = ShapeTracker((View.create(shape=thread_shape, strides=thread_strides),))
+      thread_idx_uop, _ = thread_st.to_indexed_uops(coord_uops[self.global_dims : self.local_dims])
+
+      upcast_shape = st.shape[self.first_upcast :]
+      upcast_shape = tuple(up if st.real_strides(True)[self.first_upcast + i] != 0 else 1 for i, up in enumerate(upcast_shape))
+      upcast_strides = canonicalize_strides(upcast_shape, tuple(itertools.accumulate(upcast_shape, operator.mul, initial=1)))
+      upcast_st = ShapeTracker((View.create(shape=upcast_shape, strides=upcast_strides),))
+      upcast_idx_uop, _ = upcast_st.to_indexed_uops(coord_uops[self.first_upcast :])
+
+      layout.setdefault(idx_uop.arg, []).append((thread_idx_uop.arg, upcast_idx_uop.arg, logical_coords))
+
+    for (i, coords) in sorted(layout.items()):
+      threads = ','.join(set(f'{th:02d}' for th, _, _ in coords))
+      upcasts = ','.join(set(f'{up:02d}' for _, up, _ in coords))
+      if i > 0 and i % 8 == 0: print("")
+      print(f"T({threads})[{upcasts}] ", end = "")
+
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
     def fixup_ast(op:UOp) -> UOp:
@@ -593,7 +626,9 @@ class Kernel:
             if self.use_tensor_cores == 3:  # for TC=3, emulate the warp addressing with locals
               local_shape = tuple(1 if st == 0 or i < wd or (i >= self.first_reduce and i < tcd) else src_st.shape[i] \
                                   for i,st in enumerate(src_st.real_strides()))
-              st = store_st = ShapeTracker.from_shape(local_shape)
+              local_expanded_shape = tuple(src_st.shape[i] if wd <= i < self.first_reduce else ls for i,ls in enumerate(local_shape))
+              store_st = ShapeTracker.from_shape(local_shape)
+              st = store_st.expand(local_expanded_shape)
               local_buffer = UOp(Ops.DEFINE_LOCAL, tc.dtype_in.ptr(size=st.real_size(), local=True), (), f"temp{i}")
               if swizzle: store_st = get_tc_swizzle_st(store_st.shape, *swizzle)
               local_store = UOp.store(local_buffer, store_st.to_uop(), srcs[i])
@@ -645,7 +680,7 @@ class Kernel:
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
 
     if getenv("VIZ_TILE"):
-      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile_3(buf)
+      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile_4(buf)
 
     if DEBUG >= 3:
       print(self.name)
