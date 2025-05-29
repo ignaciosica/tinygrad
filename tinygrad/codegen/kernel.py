@@ -481,10 +481,9 @@ class Kernel:
       elems += [f"{ansi(ts[0]) if tidx == -1 else ansi(5) if tidx in ts else RESET}T({','.join(str(f'{t:02d}') for t in ts)})[{us[0]:02d}]{RESET}"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
-      if width == stride: width *= shape
+      if width == stride and width * shape <= 32: width *= shape
       else: break
     if buf.op is Ops.DEFINE_LOCAL: width = 32 * 4 // buf.dtype.itemsize
-    width = min(width, 32)
 
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
     print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width))))
