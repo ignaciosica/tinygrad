@@ -455,48 +455,6 @@ class Kernel:
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
     print(f"Buf [{(buf := uop.src[0]).arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
-    # print(st := uop.st_arg)
-    st = uop.st_arg
-
-    local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
-    # expand local dimensions
-    # mask global dimensions
-    # mask reduce dimensions
-    # mask broadcasted upcast dimensions (shouldn't exist)
-    tile_shape = tuple(
-      1 if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) or (i >= self.first_upcast and s == 0) else st.shape[i]
-      for i, s in enumerate(st.real_strides(True))
-    )
-    tile_strides = canonicalize_strides(tile_shape, tuple(itertools.accumulate(tile_shape, operator.mul, initial=1)))
-    # print(tile_st := ShapeTracker((View.create(shape=tile_shape, strides=tile_strides),)))
-    tile_st = ShapeTracker((View.create(shape=tile_shape, strides=tile_strides),))
-
-    layout: dict = {}
-    # print(f"{st.size=} {st.real_size()=} {tile_st.size=} {tile_st.real_size()=}")
-    for i in range(0, tile_st.size):
-      logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
-      idx, idx_valid = st.to_indexed_uops(logical_coords)
-      tile_idx, tile_valid = tile_st.to_indexed_uops(logical_coords)
-      if idx_valid.arg and tile_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
-
-    matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
-    for i, coords in sorted(layout.items()):
-      ths = tuple(set(cs %  local_size for cs in coords))
-      ups = tuple(set(cs // local_size for cs in coords))
-      # print(f"T({ths})[{ups}]")
-      elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
-
-    width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 8
-    matrix = [elems[i:i+width] for i in range(0,len(elems), width)]
-    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=17, showindex=True, headers=tuple(i for i in range(width)), stralign="center"))
-    del layout
-
-  def viz_tile_2(self, uop: UOp):
-    def ansi(t: int):
-      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
-      return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
-
-    print(f"Buf [{(buf := uop.src[0]).arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
     st = uop.st_arg
     st = st.shrink(tuple((0, 1) if i < self.global_dims else (0, s) for i,s in enumerate(st.shape)))                                        # noqa:E501 shrink global dims
     st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i,s in enumerate(st.shape)))              # noqa:E501 expand local dims
