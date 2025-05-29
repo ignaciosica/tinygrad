@@ -453,7 +453,7 @@ class Kernel:
       _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
-    print(f"Buf [{uop.src[0].arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'})")
+    print(f"Buf [{(buf := uop.src[0]).arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
     print(st := uop.st_arg)
 
     local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
@@ -479,8 +479,9 @@ class Kernel:
       # print(f"T({ths})[{ups}]")
       elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
 
-    matrix = [elems[i:i+9] for i in range(0,len(elems), 9)]
-    print(tabulate(matrix or [elems], tablefmt="simple_grid"))
+    width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 8
+    matrix = [elems[i:i+width] for i in range(0,len(elems), width)]
+    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
