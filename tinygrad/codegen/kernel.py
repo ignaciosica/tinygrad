@@ -448,7 +448,7 @@ class Kernel:
     num = f"n{Kernel.kernel_cnt[function_name]-1}" if Kernel.kernel_cnt[function_name] > 1 else ""
     return name + colored(num, 'BLACK')
 
-  def viz_tile_4(self, uop: UOp):
+  def viz_tile(self, uop: UOp):
     def ansi(t: int):
       _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
@@ -573,9 +573,6 @@ class Kernel:
     modified_ast = self.get_optimized_ast(name_override)
     if ast_transform is not None: modified_ast = ast_transform(self, modified_ast)
 
-    if getenv("VIZ_TILE"):
-      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile_4(buf)
-
     if DEBUG >= 3:
       print(self.name)
       if DEBUG >= 5: print(self.ast)
@@ -584,6 +581,7 @@ class Kernel:
               str(st) if DEBUG >= 4 else "")
       print(self.applied_opts)
       if DEBUG >= 5: print(modified_ast)
+      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
     # verify AST matches the spec after applying opts
     if __debug__: type_verify(list(modified_ast.toposort()))
     # TODO: sadly modified_ast doesn't pass the shape spec because of how group_for_reduces constructs UOps, there's probably a way to fix this
