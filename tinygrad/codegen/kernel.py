@@ -464,9 +464,9 @@ class Kernel:
     layout: dict = {}
     for i in range(0, st.size):
       logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(st.shape, i))
-      idx, _ = st.to_indexed_uops(logical_coords)
-      elem, _ = elem_st.to_indexed_uops(logical_coords)
-      layout.setdefault(idx.arg, []).append(elem.arg)
+      idx, idx_valid = st.to_indexed_uops(logical_coords)
+      elem, elem_valid = elem_st.to_indexed_uops(logical_coords)
+      if idx_valid.arg and elem_valid.arg: layout.setdefault(idx.arg, []).append(elem.arg)
 
     matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
     for i, coords in sorted(layout.items()):
@@ -520,9 +520,8 @@ class Kernel:
             if self.use_tensor_cores == 3:  # for TC=3, emulate the warp addressing with locals
               local_shape = tuple(1 if st == 0 or i < wd or (i >= self.first_reduce and i < tcd) else src_st.shape[i] \
                                   for i,st in enumerate(src_st.real_strides()))
-              local_expanded_shape = tuple(src_st.shape[i] if wd <= i < self.first_reduce else ls for i,ls in enumerate(local_shape))
-              st = store_st = ShapeTracker.from_shape(local_shape)
-              st = store_st.expand(local_expanded_shape)
+              store_st = ShapeTracker.from_shape(local_shape)
+              st = store_st.expand(tuple(src_st.shape[i] if wd <= i < self.first_reduce else ls for i,ls in enumerate(local_shape)))
               local_buffer = UOp(Ops.DEFINE_LOCAL, tc.dtype_in.ptr(size=st.real_size(), local=True), (), f"temp{i}")
               if swizzle: store_st = get_tc_swizzle_st(store_st.shape, *swizzle)
               local_store = UOp.store(local_buffer, store_st.to_uop(), srcs[i])
