@@ -553,6 +553,10 @@ class Kernel:
     del layout
 
   def viz_tile_4(self, uop: UOp):
+    def ansi(t: int):
+      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
+      return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
+
     print(f"Buf [{uop.src[0].arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'})")
     print(st := uop.st_arg)
 
@@ -564,13 +568,20 @@ class Kernel:
     layout: dict = {}
     for i in range(0, st.size):
       logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(st.shape, i))
-      idx_uop, _ = st.to_indexed_uops(logical_coords)
-      layout.setdefault(idx_uop.arg, []).append(logical_coords)
+      idx, _ = st.to_indexed_uops(logical_coords)
+      elem, _ = elem_st.to_indexed_uops(logical_coords)
+      layout.setdefault(idx.arg, []).append(elem.arg)
 
+    matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
     for i, coords in sorted(layout.items()):
-      ths = ",".join(set(f"{(elem_st.to_indexed_uops(cs)[0]).arg % local_size:02d}" for cs in coords))
-      ups = ",".join(set(f"{(elem_st.to_indexed_uops(cs)[0]).arg // local_size:02d}" for cs in coords))
-      print(f"T({ths})[{ups}]")
+      ths = tuple(set(cs %  local_size for cs in coords))
+      ups = tuple(set(cs // local_size for cs in coords))
+      # print(f"T({ths})[{ups}]")
+      elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
+
+    matrix = [elems[i:i+8] for i in range(0,len(elems), 8)]
+    print(tabulate(matrix or [elems], tablefmt="simple_grid"))
+    del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
