@@ -478,7 +478,6 @@ class Kernel:
     for i, coords in sorted(layout.items()):
       ts = tuple(set(cs % local_size for cs in coords))
       us = tuple(set(cs // local_size for cs in coords))
-      # print(f"T({ts})[{us}]")
       elems += [f"{ansi(ts[0]) if tidx == -1 else ansi(5) if tidx in ts else RESET}T({','.join(str(f'{t:02d}') for t in ts)})[{us[0]:02d}]{RESET}"]
 
     width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 8
