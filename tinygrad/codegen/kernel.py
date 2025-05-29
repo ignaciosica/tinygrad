@@ -486,9 +486,9 @@ class Kernel:
       # print(f"T({ths})[{ups}]")
       elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
 
-    width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 7
+    width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 8
     matrix = [elems[i:i+width] for i in range(0,len(elems), width)]
-    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width)), stralign="center"))
+    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=17, showindex=True, headers=tuple(i for i in range(width)), stralign="center"))
     del layout
 
   def viz_tile_2(self, uop: UOp):
@@ -497,29 +497,15 @@ class Kernel:
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
     print(f"Buf [{(buf := uop.src[0]).arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
-    # print(st := uop.st_arg)
     st = uop.st_arg
-    st = st.shrink(tuple((0, 1) if i < self.global_dims else (0, s) for i,s in enumerate(st.shape)))
-    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i,s in enumerate(st.shape)))
-    st = st.shrink(tuple((0, 1) if self.first_reduce <= i < self.first_upcast else (0, s) for i,s in enumerate(st.shape)))
-    st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i,s in enumerate(st.real_strides(True))))
-    print(st)
-
-    # tile_st = tile_st.expand()
+    st = st.shrink(tuple((0, 1) if i < self.global_dims else (0, s) for i,s in enumerate(st.shape)))                                        # noqa:E501 shrink global dims
+    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i,s in enumerate(st.shape)))              # noqa:E501 expand local dims
+    st = st.shrink(tuple((0, 1) if self.first_reduce <= i < self.first_upcast else (0, s) for i,s in enumerate(st.shape)))                  # noqa:E501 shrink reduce dims
+    st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i,s in enumerate(st.real_strides(True))))  # noqa:E501 shrink broadcasted upcast dims
 
     local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
-    # mask global dimensions
-    # expand local dimensions
-    # mask reduce dimensions
-    # mask broadcasted upcast dimensions (shouldn't exist)
-    tile_shape = tuple(
-      1 if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) or (i >= self.first_upcast and s == 0) else st.shape[i]
-      for i, s in enumerate(st.real_strides(True))
-    )
-    tile_strides = canonicalize_strides(tile_shape, tuple(itertools.accumulate(tile_shape, operator.mul, initial=1)))
-    # print(tile_st := ShapeTracker((View.create(shape=tile_shape, strides=tile_strides),)))
-    tile_st = ShapeTracker((View.create(shape=tile_shape, strides=tile_strides),))
-    print(tile_st)
+    tile_strides = canonicalize_strides(st.shape, tuple(itertools.accumulate(st.shape, operator.mul, initial=1)))
+    tile_st = ShapeTracker((View.create(shape=st.shape, strides=tile_strides),))
 
     layout: dict = {}
     # print(f"{st.size=} {st.real_size()=} {tile_st.size=} {tile_st.real_size()=}")
@@ -538,7 +524,7 @@ class Kernel:
 
     width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 8
     matrix = [elems[i:i+width] for i in range(0,len(elems), width)]
-    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width)), stralign="center"))
+    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=14, showindex=True, headers=tuple(i for i in range(width)), stralign="center"))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
@@ -641,7 +627,7 @@ class Kernel:
               str(st) if DEBUG >= 4 else "")
       print(self.applied_opts)
       if DEBUG >= 5: print(modified_ast)
-      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile_2(buf)
+      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
     # verify AST matches the spec after applying opts
     if __debug__: type_verify(list(modified_ast.toposort()))
     # TODO: sadly modified_ast doesn't pass the shape spec because of how group_for_reduces constructs UOps, there's probably a way to fix this
