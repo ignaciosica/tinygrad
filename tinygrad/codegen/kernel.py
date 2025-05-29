@@ -454,7 +454,8 @@ class Kernel:
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
     print(f"Buf [{(buf := uop.src[0]).arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
-    print(st := uop.st_arg)
+    # print(st := uop.st_arg)
+    st = uop.st_arg
 
     local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
     elem_shape = tuple(
@@ -462,10 +463,11 @@ class Kernel:
       for i, s in enumerate(st.real_strides(True))
     )
     elem_strides = canonicalize_strides(elem_shape, tuple(itertools.accumulate(elem_shape, operator.mul, initial=1)))
-    print(elem_st := ShapeTracker((View.create(shape=elem_shape, strides=elem_strides),)))
+    # print(elem_st := ShapeTracker((View.create(shape=elem_shape, strides=elem_strides),)))
+    elem_st = ShapeTracker((View.create(shape=elem_shape, strides=elem_strides),))
 
     layout: dict = {}
-    print(f"{st.size=} {st.real_size()=} {elem_st.size=} {elem_st.real_size()=}")
+    # print(f"{st.size=} {st.real_size()=} {elem_st.size=} {elem_st.real_size()=}")
     for i in range(0, elem_st.size):
       logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(elem_st.shape, i))
       idx, idx_valid = st.to_indexed_uops(logical_coords)
@@ -481,7 +483,7 @@ class Kernel:
 
     width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 8
     matrix = [elems[i:i+width] for i in range(0,len(elems), width)]
-    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11))
+    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width)), stralign="center"))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
