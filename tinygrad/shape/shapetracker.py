@@ -61,55 +61,6 @@ class ShapeTracker:
     for v in st.views: ret = ShapeTracker(ret.views + (v,)).simplify() # one view at a time = better simplification
     return ret
 
-  def coord(self, index: int) -> int:
-    """
-    Given a flat logical index for the current shape of the ShapeTracker,
-    returns the corresponding physical offset in the underlying buffer.
-    """
-    # Ensure the index is valid for the current logical shape.
-    # If self.size is 0 (e.g., shape has a zero dimension), no index is valid.
-    assert 0 <= index < self.size, f"Index {index} out of bounds for ShapeTracker with size {self.size}"
-
-    # Unravel the flat logical index into multi-dimensional coordinates.
-    # tinygrad.shape.view.unravel handles self.shape == () (scalar case) by returning ().
-    logical_coords: tuple[sint, ...] = unravel(self.shape, index) # type: ignore
-    # print(logical_coords)
-    # Convert coordinates to UOp constants.
-    # sint_to_uop creates UOp(Ops.CONST, ..., arg=value_of_c)
-    coord_uops: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in logical_coords)
-
-    # Get the symbolic physical index and validity from the views.
-    # self.to_indexed_uops calls the cached views_to_indexed_uops with these constant UOps.
-    # All symbolic simplifications are applied within views_to_indexed_uops.
-    final_idx_uop, final_valid_uop = self.to_indexed_uops(coord_uops)
-
-    # After simplifications with constant inputs, the resulting index UOp should be a constant.
-    if final_idx_uop.op != Ops.CONST:
-      # This indicates an issue, e.g., unbound Variables in views affecting indexing,
-      # or incomplete simplification. The offset must be a concrete integer.
-      raise RuntimeError(f"Coordinate calculation for index {index} (logical coords {logical_coords}) "
-                         f"did not simplify to a constant offset. Got: {final_idx_uop}")
-
-    # The argument of the constant UOp is the integer offset.
-    offset_val = final_idx_uop.arg
-
-    # Ensure the argument is indeed an integer, as sint can be Variable.
-    # This should hold if op is CONST and simplifications worked as expected.
-    if not isinstance(offset_val, int):
-      raise RuntimeError(f"Expected integer offset, but got {type(offset_val)}: {offset_val}. UOp: {final_idx_uop}")
-
-    # Note on validity:
-    # final_valid_uop indicates if this logical index maps to a valid (unmasked) physical location.
-    # If final_valid_uop evaluates to CONST 0, the index points to a masked area (e.g., padding).
-    # The current requirement is to "return the coord offset" regardless.
-    # Example: if final_valid_uop.arg == 0, offset_val could be an address in a padding region.
-    # One might add a warning or an error here if strict validity is required:
-    if final_valid_uop.op == Ops.CONST and final_valid_uop.arg == 0:
-      print(f"Warning: Index {index} (logical coords {logical_coords}) maps to a masked-out " \
-            f"physical location (offset {offset_val}). View mask might be active.")
-
-    return offset_val
-
   def invert(self, out_shape:tuple[sint, ...]) -> Optional[ShapeTracker]:
     inverted_views:list[View] = []
     for v,s in zip(self.views[::-1], [x.shape for x in self.views[::-1][1:]]+[out_shape]):
