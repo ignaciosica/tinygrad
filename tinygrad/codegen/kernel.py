@@ -473,14 +473,19 @@ class Kernel:
       if idx_valid.arg and tile_valid.arg:
         layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
-    matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
+    matrix, elems, tidx, width, RESET = None, [], getenv("TIDX", -1), 1, "\x1b[0m"
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
     for i, coords in sorted(layout.items()):
       ts = tuple(set(cs % local_size for cs in coords))
       us = tuple(set(cs // local_size for cs in coords))
       elems += [f"{ansi(ts[0]) if tidx == -1 else ansi(5) if tidx in ts else RESET}T({','.join(str(f'{t:02d}') for t in ts)})[{us[0]:02d}]{RESET}"]
 
-    width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 8
+    for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
+      if width == stride: width *= shape
+      else: break
+    if buf.op is Ops.DEFINE_LOCAL: width = 32 * 4 // buf.dtype.itemsize
+    width = min(width, 32)
+
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
     print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width))))
     del layout
