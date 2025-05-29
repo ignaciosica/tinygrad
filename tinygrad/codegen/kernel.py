@@ -461,12 +461,12 @@ class Kernel:
     st = st.shrink(tuple((0, 1) if self.first_reduce <= i < self.first_upcast else (0, s) for i,s in enumerate(st.shape)))                  # noqa:E501 shrink reduce dims
     st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i,s in enumerate(st.real_strides(True))))  # noqa:E501 shrink broadcasted upcast dims
 
-    local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
     tile_strides = canonicalize_strides(st.shape, tuple(itertools.accumulate(st.shape, operator.mul, initial=1)))
     tile_st = ShapeTracker((View.create(shape=st.shape, strides=tile_strides),))
 
     layout: dict = {}
-    # print(f"{st.size=} {st.real_size()=} {tile_st.size=} {tile_st.real_size()=}")
+    print(f"{uop.st_arg.size=} {uop.st_arg.real_size()=} {st.size=} {st.real_size()=} {tile_st.size=} {tile_st.real_size()=}")
+    print(f"{uop.st_arg}\n{st}\n{tile_st}")
     for i in range(0, tile_st.real_size()):
       logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
       idx, idx_valid = st.to_indexed_uops(logical_coords)
@@ -474,6 +474,7 @@ class Kernel:
       if idx_valid.arg and tile_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
     matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
+    local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
     for i, coords in sorted(layout.items()):
       ths = tuple(set(cs %  local_size for cs in coords))
       ups = tuple(set(cs // local_size for cs in coords))
@@ -482,7 +483,7 @@ class Kernel:
 
     width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 8
     matrix = [elems[i:i+width] for i in range(0,len(elems), width)]
-    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=14, showindex=True, headers=tuple(i for i in range(width)), stralign="center"))
+    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width)), stralign="center"))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
