@@ -2,7 +2,6 @@ from __future__ import annotations
 import itertools, functools, math, colorsys, operator
 from dataclasses import dataclass
 from collections import defaultdict
-from tabulate import tabulate, _table_formats
 from typing import Optional, cast, Final, Callable, Sequence
 
 from tinygrad.uop.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, track_rewrites, print_uops
@@ -280,11 +279,11 @@ class Kernel:
 
         # attempt to pad the tensor axes that require it
         try:
-          for axis, dim in tc_opts.axis_pads: self.apply_opt(Opt(OptOps.PADTO, axis, dim), append_opt=True) # PADTO might fail
+          for axis, dim in tc_opts.axis_pads: self.apply_opt(Opt(OptOps.PADTO, axis, dim), append_opt=False) # PADTO might fail
         except KernelOptError: continue
         # tensor core -- unroll the reduce dim (K), upcast and local the inner and outer dims (N, M)
-        for dim, amt in tc.get_reduce_axes(): self.apply_opt(Opt(OptOps.UNROLL, tc_opts.axes[2]-self.first_reduce, amt), append_opt=True)
-        for opt in tc.opts: self.apply_opt(Opt({"u":OptOps.UPCAST, "l":OptOps.LOCAL}[opt[0]], tc_opts.axes[int(opt[1])], 2), append_opt=True)
+        for dim, amt in tc.get_reduce_axes(): self.apply_opt(Opt(OptOps.UNROLL, tc_opts.axes[2]-self.first_reduce, amt), append_opt=False)
+        for opt in tc.opts: self.apply_opt(Opt({"u":OptOps.UPCAST, "l":OptOps.LOCAL}[opt[0]], tc_opts.axes[int(opt[1])], 2), append_opt=False)
         self.tensor_core = tc
         self.use_tensor_cores = use_tensor_cores  # TC=2 will do the shape ops without the WMMA
         return True
@@ -449,6 +448,7 @@ class Kernel:
     return name + colored(num, 'BLACK')
 
   def viz_tile(self, uop: UOp):
+    from tabulate import tabulate
     def ansi(t: int):
       _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
@@ -474,7 +474,7 @@ class Kernel:
         layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
     matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
-    local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
+    local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
     for i, coords in sorted(layout.items()):
       ts = tuple(set(cs % local_size for cs in coords))
       us = tuple(set(cs // local_size for cs in coords))
@@ -585,7 +585,8 @@ class Kernel:
               str(st) if DEBUG >= 4 else "")
       print(self.applied_opts)
       if DEBUG >= 5: print(modified_ast)
-      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
+      if getenv("VIZ_TILE"):
+        for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
     # verify AST matches the spec after applying opts
     if __debug__: type_verify(list(modified_ast.toposort()))
     # TODO: sadly modified_ast doesn't pass the shape spec because of how group_for_reduces constructs UOps, there's probably a way to fix this
