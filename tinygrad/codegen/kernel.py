@@ -553,41 +553,23 @@ class Kernel:
     del layout
 
   def viz_tile_4(self, uop: UOp):
-    print(f"Buf [{uop.src[0].arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'}) {(st:=uop.st_arg)}")
-    local_size = prod(s for s in st.shape[self.global_dims:self.first_reduce])
-    # upcast_size = prod(s for s in st.shape[self.first_upcast:])
-    shape = tuple(1 if i >= self.first_upcast and s == 0 else st.shape[i] for i,s in enumerate(st.real_strides(True)))
-    strides = canonicalize_strides(shape, tuple(itertools.accumulate(shape, operator.mul, initial=1)))
-    elem_st = ShapeTracker((View.create(shape=shape, strides=strides),))
-    print(elem_st)
+    print(f"Buf [{uop.src[0].arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'})")
+    print(st := uop.st_arg)
+
+    local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
+    elem_shape = tuple(1 if i >= self.first_upcast and s == 0 else st.shape[i] for i, s in enumerate(st.real_strides(True)))
+    elem_strides = canonicalize_strides(elem_shape, tuple(itertools.accumulate(elem_shape, operator.mul, initial=1)))
+    elem_st = ShapeTracker((View.create(shape=elem_shape, strides=elem_strides),))
 
     layout: dict = {}
     for i in range(0, st.size):
       logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(st.shape, i))
       idx_uop, _ = st.to_indexed_uops(logical_coords)
       layout.setdefault(idx_uop.arg, []).append(logical_coords)
-      # shape = tuple(1 if i >= self.first_upcast and s == 0 else st.shape[i] for i,s in enumerate(st.real_strides(True)))
-      # shape = st.shape
-      # strides = canonicalize_strides(shape, tuple(itertools.accumulate(shape, operator.mul, initial=1)))
-      # elem_st = ShapeTracker((View.create(shape=shape, strides=strides),))
-      # elem_st = ShapeTracker.from_shape(st.shape)
-      # print(elem_st)
 
-      # logical_coords_2: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(st.shape, idx_uop.arg))
-      # elem_uop, _ = stF.to_indexed_uops(logical_coords_2)
-      # print(f"{i:02d} {idx_uop.arg:02d}", f"{elem_uop.arg:02d}", tuple(c.arg for c in logical_coords), tuple(c.arg for c in logical_coords_2))
-      # print(f"{idx_uop.arg:02d}", tuple(c.arg for c in logical_coords))
-
-      # local_size = prod(s for s in st.shape[self.global_dims:self.first_reduce])
-      # upcast_size = prod(s for s in st.shape[self.first_upcast:])
-
-      # layout.setdefault(idx_uop.arg, []).append((elem_uop.arg%local_size, elem_uop.arg//local_size))
-      # layout.setdefault(idx_uop.arg, []).append(((idx_uop.arg), (idx_uop.arg)))
-
-    for (i, coords) in sorted(layout.items()):
-      ths = ','.join(set(f'{(elem_st.to_indexed_uops(cs)[0]).arg%local_size:02d}' for cs in coords))
-      ups = ','.join(set(f'{(elem_st.to_indexed_uops(cs)[0]).arg//local_size:02d}' for cs in coords))
-      # print(f"T({ths})[{ups}] {tuple(tuple(c.arg for c in cs) for cs in coords)}")
+    for i, coords in sorted(layout.items()):
+      ths = ",".join(set(f"{(elem_st.to_indexed_uops(cs)[0]).arg % local_size:02d}" for cs in coords))
+      ups = ",".join(set(f"{(elem_st.to_indexed_uops(cs)[0]).arg // local_size:02d}" for cs in coords))
       print(f"T({ths})[{ups}]")
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
