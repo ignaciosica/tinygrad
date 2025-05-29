@@ -315,7 +315,6 @@ class Kernel:
     if not self.opts.tensor_cores: return False
     try: # check TC first and apply hand-coded opts if successful
       self.apply_opt(Opt(OptOps.TC, axis, (tc_select, tc_opt, use_tensor_cores)))
-      return True
 
       if (tc_opts:=self.tensor_core_opts) is not None:
         if extra_opts is not None: self.apply_opts(extra_opts)
@@ -457,9 +456,9 @@ class Kernel:
     print(f"Buf [{(buf := uop.src[0]).arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
     st = uop.st_arg
     st = st.shrink(tuple((0, 1) if i < self.global_dims else (0, s) for i,s in enumerate(st.shape)))                                        # noqa:E501 shrink global dims
-    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i,s in enumerate(st.shape)))              # noqa:E501 expand local dims
     st = st.shrink(tuple((0, 1) if self.first_reduce <= i < self.first_upcast else (0, s) for i,s in enumerate(st.shape)))                  # noqa:E501 shrink reduce dims
     st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i,s in enumerate(st.real_strides(True))))  # noqa:E501 shrink broadcasted upcast dims
+    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i,s in enumerate(st.shape)))              # noqa:E501 expand local dims
 
     tile_strides = canonicalize_strides(st.shape, tuple(itertools.accumulate(st.shape, operator.mul, initial=1)))
     tile_st = ShapeTracker((View.create(shape=st.shape, strides=tile_strides),))
@@ -483,7 +482,7 @@ class Kernel:
 
     width = 32 * 4 // buf.dtype.itemsize if buf.op is Ops.DEFINE_LOCAL else 8
     matrix = [elems[i:i+width] for i in range(0,len(elems), width)]
-    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width)), stralign="center"))
+    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width))))
     del layout
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
