@@ -561,24 +561,32 @@ class Kernel:
 
     layout: dict = {}
     for i in range(0, st.size):
-      shape = tuple(1 if i >= self.first_upcast and s == 0 else st.shape[i] for i,s in enumerate(st.real_strides(True)))
+      # shape = tuple(1 if i >= self.first_upcast and s == 0 else st.shape[i] for i,s in enumerate(st.real_strides(True)))
       # shape = st.shape
-      strides = canonicalize_strides(shape, tuple(itertools.accumulate(shape, operator.mul, initial=1)))
-      elem_st = ShapeTracker((View.create(shape=shape, strides=strides),))
+      # strides = canonicalize_strides(shape, tuple(itertools.accumulate(shape, operator.mul, initial=1)))
+      # elem_st = ShapeTracker((View.create(shape=shape, strides=strides),))
+      # elem_st = ShapeTracker.from_shape(st.shape)
+      # print(elem_st)
 
-      logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(st.shape, i))
-      idx_uop, _ = st.to_indexed_uops(logical_coords)
-      elem_uop, _ = elem_st.to_indexed_uops(logical_coords)
+      logical_coords_1: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(st.shape, i))
+      idx_uop, _ = st.to_indexed_uops(logical_coords_1)
+      # logical_coords_2: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(st.shape, idx_uop.arg))
+      # elem_uop, _ = elem_st.to_indexed_uops(logical_coords_2)
+      # print(f"{i:02d} {idx_uop.arg:02d}", f"{elem_uop.arg:02d}", tuple(c.arg for c in logical_coords_1), tuple(c.arg for c in logical_coords_2))
+      print(f"{idx_uop.arg:02d}", tuple(c.arg for c in logical_coords_1))
 
-      local_size = prod(s for s in self.full_shape[self.global_dims:self.first_reduce])
+      # local_size = prod(s for s in st.shape[self.global_dims:self.first_reduce])
+      # upcast_size = prod(s for s in st.shape[self.first_upcast:])
 
-      layout.setdefault(idx_uop.arg, []).append((elem_uop.arg%local_size, elem_uop.arg//local_size))
+      # layout.setdefault(idx_uop.arg, []).append((elem_uop.arg%local_size, elem_uop.arg//local_size))
+      # layout.setdefault(idx_uop.arg, []).append(((idx_uop.arg), (idx_uop.arg)))
+      layout.setdefault(idx_uop.arg, []).append(logical_coords_1)
 
     for (i, coords) in sorted(layout.items()):
-      threads = ','.join(set(f'{th:02d}' for th, _ in coords))
-      upcasts = ','.join(set(f'{up:02d}' for _, up in coords))
-      if i > 0 and i % (32 if uop.src[0].op is Ops.DEFINE_LOCAL else 8) == 0: print("")
-      print(f"T({threads})[{upcasts}] ", end = "")
+      # threads = ','.join(set(f'{th:02d}' for th, _ in coords))
+      # upcasts = ','.join(set(f'{up:02d}' for _, up in coords))
+      # print(f"T({threads})[{upcasts}]")
+      print(f"T({i:02d})[{tuple(c.arg for c in coords[0])}]")
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
