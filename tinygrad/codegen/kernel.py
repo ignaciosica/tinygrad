@@ -560,22 +560,24 @@ class Kernel:
     print((st := uop.st_arg))
 
     layout: dict = {}
-    for i in range(st.size):
-      logical_coords: tuple[sint, ...] = tuple(unravel(st.shape, i))
-      coord_uops: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in logical_coords)
-      idx_uop, _ = st.to_indexed_uops(coord_uops)
-
+    for i in range(0, st.size):
       shape = tuple(1 if i >= self.first_upcast and s == 0 else st.shape[i] for i,s in enumerate(st.real_strides(True)))
+      # shape = st.shape
       strides = canonicalize_strides(shape, tuple(itertools.accumulate(shape, operator.mul, initial=1)))
       elem_st = ShapeTracker((View.create(shape=shape, strides=strides),))
-      elem_uop, _ = elem_st.to_indexed_uops(coord_uops)
 
-      layout.setdefault(idx_uop.arg, []).append((elem_uop.arg%32, elem_uop.arg//32, logical_coords))
+      logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(st.shape, i))
+      idx_uop, _ = st.to_indexed_uops(logical_coords)
+      elem_uop, _ = elem_st.to_indexed_uops(logical_coords)
+
+      local_size = prod(s for s in self.full_shape[self.global_dims:self.first_reduce])
+
+      layout.setdefault(idx_uop.arg, []).append((elem_uop.arg%local_size, elem_uop.arg//local_size))
 
     for (i, coords) in sorted(layout.items()):
-      threads = ','.join(set(f'{th:02d}' for th, _, _ in coords))
-      upcasts = ','.join(set(f'{up:02d}' for _, up, _ in coords))
-      if i > 0 and i % 8 == 0: print("")
+      threads = ','.join(set(f'{th:02d}' for th, _ in coords))
+      upcasts = ','.join(set(f'{up:02d}' for _, up in coords))
+      if i > 0 and i % (32 if uop.src[0].op is Ops.DEFINE_LOCAL else 8) == 0: print("")
       print(f"T({threads})[{upcasts}] ", end = "")
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
@@ -620,7 +622,7 @@ class Kernel:
               local_shape = tuple(1 if st == 0 or i < wd or (i >= self.first_reduce and i < tcd) else src_st.shape[i] \
                                   for i,st in enumerate(src_st.real_strides()))
               local_expanded_shape = tuple(src_st.shape[i] if wd <= i < self.first_reduce else ls for i,ls in enumerate(local_shape))
-              store_st = ShapeTracker.from_shape(local_shape)
+              st = store_st = ShapeTracker.from_shape(local_shape)
               st = store_st.expand(local_expanded_shape)
               local_buffer = UOp(Ops.DEFINE_LOCAL, tc.dtype_in.ptr(size=st.real_size(), local=True), (), f"temp{i}")
               if swizzle: store_st = get_tc_swizzle_st(store_st.shape, *swizzle)
