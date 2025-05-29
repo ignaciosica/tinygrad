@@ -457,39 +457,8 @@ class Kernel:
     print(st := uop.st_arg)
 
     local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
-    elem_shape = tuple(1 if i >= self.first_upcast and s == 0 else st.shape[i] for i, s in enumerate(st.real_strides(True)))
-    elem_strides = canonicalize_strides(elem_shape, tuple(itertools.accumulate(elem_shape, operator.mul, initial=1)))
-    elem_st = ShapeTracker((View.create(shape=elem_shape, strides=elem_strides),))
-
-    layout: dict = {}
-    for i in range(0, st.size):
-      logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(st.shape, i))
-      idx, idx_valid = st.to_indexed_uops(logical_coords)
-      elem, elem_valid = elem_st.to_indexed_uops(logical_coords)
-      if idx_valid.arg and elem_valid.arg: layout.setdefault(idx.arg, []).append(elem.arg)
-
-    matrix, elems, tidx, RESET = None, [], getenv("TIDX", -1), "\x1b[0m"
-    for i, coords in sorted(layout.items()):
-      ths = tuple(set(cs %  local_size for cs in coords))
-      ups = tuple(set(cs // local_size for cs in coords))
-      # print(f"T({ths})[{ups}]")
-      elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
-
-    matrix = [elems[i:i+8] for i in range(0,len(elems), 8)]
-    print(tabulate(matrix or [elems], tablefmt="simple_grid"))
-    del layout
-
-  def viz_tile_2(self, uop: UOp):
-    def ansi(t: int):
-      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
-      return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
-
-    print(f"Buf [{uop.src[0].arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if uop.src[0].op is Ops.DEFINE_GLOBAL else 'shared'})")
-    print(st := uop.st_arg)
-
-    local_size = prod(s for s in st.shape[self.global_dims : self.first_reduce])
     elem_shape = tuple(
-      1 if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) or (i >= self.first_upcast and s == 0) else st.shape[i]
+      1 if i < self.global_dims or (self.first_reduce < i <= self.first_upcast) or (i >= self.first_upcast and s == 0) else st.shape[i]
       for i, s in enumerate(st.real_strides(True))
     )
     elem_strides = canonicalize_strides(elem_shape, tuple(itertools.accumulate(elem_shape, operator.mul, initial=1)))
@@ -510,7 +479,7 @@ class Kernel:
       # print(f"T({ths})[{ups}]")
       elems += [f"{ansi(ths[0]) if tidx==-1 else ansi(5) if tidx in ths else RESET}T({','.join(str(f'{t:02d}') for t in ths)})[{ups[0]:02d}]{RESET}"]
 
-    matrix = [elems[i:i+8] for i in range(0,len(elems), 8)]
+    matrix = [elems[i:i+9] for i in range(0,len(elems), 9)]
     print(tabulate(matrix or [elems], tablefmt="simple_grid"))
     del layout
 
@@ -615,7 +584,7 @@ class Kernel:
               str(st) if DEBUG >= 4 else "")
       print(self.applied_opts)
       if DEBUG >= 5: print(modified_ast)
-      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile_2(buf)
+      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
     # verify AST matches the spec after applying opts
     if __debug__: type_verify(list(modified_ast.toposort()))
     # TODO: sadly modified_ast doesn't pass the shape spec because of how group_for_reduces constructs UOps, there's probably a way to fix this
