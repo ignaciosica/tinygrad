@@ -32,7 +32,7 @@ setup(name='tinygrad',
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License"
       ],
-      install_requires=[],
+      install_requires=["tabulate"],
       python_requires='>=3.10',
       extras_require={
         'arm': ["unicorn"],
