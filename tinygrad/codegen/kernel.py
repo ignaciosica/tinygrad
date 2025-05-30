@@ -470,7 +470,7 @@ class Kernel:
         tile_idx, tile_idx_valid = tile_st.to_indexed_uops(logical_coords)
         if idx_valid.arg and tile_idx_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
-    matrix, elems, width, tidx = None, [], 1, getenv("TIDX", -1)
+    matrix, elems, width, tidx = None, [], 1, getenv("VIZ_TILE_TIDX", -1)
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
     upcast_size = prod(s for s in tile_st.shape[self.first_upcast :])
     local_w, upcast_w = len(str(local_size - 1)), len(str(upcast_size - 1))
@@ -481,8 +481,9 @@ class Kernel:
 
     for i, coords in sorted(layout.items()):
       thread_idxs = tuple(sorted(set(cs % local_size for cs in coords)))
-      upcast_idx = tuple(set(cs // local_size for cs in coords))[0]  # broadcasted upcast dimensions do not reflect in tile
-      elems += [f"T({','.join(ansi(thread_idx) for thread_idx in thread_idxs)})\nV[{upcast_idx:0{upcast_w}d}]"]
+      upcast_idx = tuple(set(cs // local_size for cs in coords))[0]
+      elems += [f"T({','.join((f'{chr(10)}  ' if i > 0 and i % 4 == 0 else '') + ansi(thread_idx) for i,thread_idx in enumerate(thread_idxs))})\n" + \
+                f"V[{upcast_idx:0{upcast_w}d}]"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
       if width == stride and width * shape <= getenv("VIZ_TILE_MAX_WIDTH", 32): width *= shape
@@ -491,7 +492,8 @@ class Kernel:
 
     if len(elems) % width != 0: width = 1
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
-    print(tabulate(matrix, tablefmt="simple_grid") if matrix else "<< failed to viz tile >>")
+    if matrix: print(tabulate(matrix, tablefmt="simple_grid", showindex=True, headers=tuple(str(i) for i in range(width))))
+    else: print("<< failed to viz tile >>")
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
