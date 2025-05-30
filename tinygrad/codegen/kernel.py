@@ -469,14 +469,14 @@ class Kernel:
         tile_idx, tile_valid = tile_st.to_indexed_uops(logical_coords)
         if idx_valid.arg and tile_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
-    matrix, elems, width = None, [], 1,
+    matrix, elems, width = None, [], 1
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
-    upcast_size = prod(s for s in tile_st.shape[self.first_upcast : ])
+    upcast_size = prod(s for s in tile_st.shape[self.first_upcast :])
     local_w, upcast_w = len(str(local_size - 1)), len(str(upcast_size - 1))
 
     for i, coords in sorted(layout.items()):
       thread_idxs = tuple(sorted(set(cs % local_size for cs in coords)))
-      upcast_idx = tuple(set(cs // local_size for cs in coords))[0] # broadcasted upcast dimensions do not reflect in tile
+      upcast_idx = tuple(set(cs // local_size for cs in coords))[0]  # broadcasted upcast dimensions do not reflect in tile
       elems += [f"T({','.join(str(f'{thread_idx:0{local_w}d}') for thread_idx in thread_idxs)})[{upcast_idx:0{upcast_w}d}]"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
