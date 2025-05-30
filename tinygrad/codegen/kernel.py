@@ -464,8 +464,7 @@ class Kernel:
     tile_st = ShapeTracker((View.create(shape=st.shape, strides=tile_strides),))
 
     layout: dict = {}
-    print(f"{uop.st_arg}\n{st}\n{tile_st}")
-    print(f"{uop.st_arg.size=} {uop.st_arg.real_size()=} {st.size=} {st.real_size()=} {tile_st.size=} {tile_st.real_size()=}")
+    print(f"{uop.st_arg} {uop.st_arg.size} {uop.st_arg.real_size()}\n{st} {st.size} {st.real_size()}\n{tile_st} {tile_st.size} {tile_st.real_size()}")
     with Context(TRACK_MATCH_STATS=0):
       for i in range(0, tile_st.real_size()):
         logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
@@ -476,12 +475,12 @@ class Kernel:
     matrix, elems, tidx, width, RESET = None, [], getenv("TIDX", -1), 1, "\x1b[0m"
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
     upcast_size = prod(s for s in tile_st.shape[self.first_upcast : ])
+    local_w, upcast_w = len(str(local_size - 1)), len(str(upcast_size - 1))
     for i, coords in sorted(layout.items()):
       ts = tuple(set(cs % local_size for cs in coords))
       us = tuple(set(cs // local_size for cs in coords))
       elems += [f"{ansi(ts[0]) if tidx == -1 else ansi(5) if tidx in ts else RESET}T" + \
-                f"({','.join(str(f'{t:0{len(str(local_size - 1))}d}') for t in ts)})" + \
-                f"[{us[0]:0{len(str(upcast_size - 1))}d}]{RESET}"]
+                f"({','.join(str(f'{t:0{local_w}d}') for t in ts)})[{us[0]:0{upcast_w}d}]{RESET}"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
       if width == stride and width * shape <= 32: width *= shape
