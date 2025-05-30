@@ -488,9 +488,9 @@ class Kernel:
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
       if width == stride and width * shape <= getenv("VIZ_TILE_MAX_WIDTH", 32): width *= shape
       else: break
-    if buf.op is Ops.DEFINE_LOCAL: width = 32 * 4 // buf.dtype.itemsize
+    if buf.op is Ops.DEFINE_LOCAL: width = 32 * 4 // buf.dtype.itemsize # override width to visualize smem banks
+    if len(elems) % width != 0: width = 1 # fallback to width 1 for some cases of padding
 
-    if len(elems) % width != 0: width = 1
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
     if matrix: print(tabulate(matrix, tablefmt="simple_grid", showindex=True, headers=tuple(str(i) for i in range(width))))
     else: print("<< failed to viz tile >>")
