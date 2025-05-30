@@ -11,7 +11,7 @@ from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec, Opt, OptOps
 from tinygrad.dtype import ImageDType
 from tinygrad.helpers import all_same, colored, ansilen, dedup, getenv, prod, round_up, all_int, to_function_name, diskcache_put, unwrap, ContextVar
-from tinygrad.helpers import DEBUG, TC_SELECT, TC_OPT, AMX, CAPTURE_PROCESS_REPLAY
+from tinygrad.helpers import DEBUG, TC_SELECT, TC_OPT, AMX, CAPTURE_PROCESS_REPLAY, Context
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import strides_for_shape, View, unravel, canonicalize_strides
 from tinygrad.codegen.lowerer import get_contraction
@@ -466,11 +466,12 @@ class Kernel:
     layout: dict = {}
     # print(f"{uop.st_arg.size=} {uop.st_arg.real_size()=} {st.size=} {st.real_size()=} {tile_st.size=} {tile_st.real_size()=}")
     # print(f"{uop.st_arg}\n{st}\n{tile_st}")
-    for i in range(0, tile_st.real_size()):
-      logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
-      idx, idx_valid = st.to_indexed_uops(logical_coords)
-      tile_idx, tile_valid = tile_st.to_indexed_uops(logical_coords)
-      if idx_valid.arg and tile_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
+    with Context(TRACK_MATCH_STATS=0):
+      for i in range(0, tile_st.real_size()):
+        logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
+        idx, idx_valid = st.to_indexed_uops(logical_coords)
+        tile_idx, tile_valid = tile_st.to_indexed_uops(logical_coords)
+        if idx_valid.arg and tile_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
     matrix, elems, tidx, width, RESET = None, [], getenv("TIDX", -1), 1, "\x1b[0m"
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
