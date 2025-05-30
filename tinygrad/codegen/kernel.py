@@ -449,9 +449,6 @@ class Kernel:
 
   def viz_tile(self, uop: UOp):
     from tabulate import tabulate
-    def ansi(t: int):
-      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
-      return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
     st, buf = uop.st_arg, uop.src[0].src[0]
     print(f"Buf [{buf.arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
@@ -464,7 +461,7 @@ class Kernel:
     tile_st = ShapeTracker((View.create(shape=st.shape, strides=tile_strides),))
 
     layout: dict = {}
-    print(f"{uop.st_arg} {uop.st_arg.size} {uop.st_arg.real_size()}\n{st} {st.size} {st.real_size()}\n{tile_st} {tile_st.size} {tile_st.real_size()}")
+    # print(f"{uop.st_arg} {uop.st_arg.size} {uop.st_arg.real_size()}\n{st} {st.size} {st.real_size()}\n{tile_st} {tile_st.size} {tile_st.real_size()}")
     with Context(TRACK_MATCH_STATS=0):
       for i in range(0, tile_st.real_size()):
         logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
@@ -476,11 +473,19 @@ class Kernel:
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
     upcast_size = prod(s for s in tile_st.shape[self.first_upcast : ])
     local_w, upcast_w = len(str(local_size - 1)), len(str(upcast_size - 1))
+
+    def ansi(t: int) -> str:
+      r, g, b = colorsys.hsv_to_rgb(64 * t / max(1, local_size - 1) / 360.0, 0.65, 0.80)
+      R, G, B = (int(x * 255 + 0.1) for x in (r, g, b))
+      return f"\x1b[48;2;{R};{G};{B}m"
+
     for i, coords in sorted(layout.items()):
-      thread_idxs = tuple(set(cs % local_size for cs in coords))
+      thread_idxs = tuple(sorted(set(cs % local_size for cs in coords)))
       upcast_idx = tuple(set(cs // local_size for cs in coords))[0] # broadcasted upcast dimensions do not reflect in tile
       elems += [f"{ansi(thread_idxs[0]) if tidx == -1 else ansi(5) if tidx in thread_idxs else RESET}T" + \
                 f"({','.join(str(f'{thread_idx:0{local_w}d}') for thread_idx in thread_idxs)})[{upcast_idx:0{upcast_w}d}]{RESET}"]
+      # elems += [[f"{ansi(thread_idxs[0]) if tidx == -1 else ansi(5) if tidx in thread_idxs else RESET}","T" + \
+                # f"({','.join(str(f'{thread_idx:0{local_w}d}') for thread_idx in thread_idxs)})[{upcast_idx:0{upcast_w}d}]",f"{RESET}"]]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
       if width == stride and width * shape <= 32: width *= shape
@@ -489,7 +494,7 @@ class Kernel:
 
     if len(elems) % width != 0: width = 1
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
-    if matrix: print(tabulate(matrix, tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(str(i) for i in range(width))))
+    if matrix: print(tabulate(matrix, tablefmt="plain", showindex=True,  headers=tuple(str(i) for i in range(width))))
     else: print("<< failed to viz tile >>")
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
