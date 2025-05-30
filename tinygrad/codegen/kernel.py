@@ -476,12 +476,12 @@ class Kernel:
     matrix, elems, tidx, width, RESET = None, [], getenv("TIDX", -1), 1, "\x1b[0m"
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
     upcast_size = prod(s for s in tile_st.shape[self.first_upcast : ])
-    local_w  = max(1, int(math.log10(local_size  - 1)) + 1)   # or len(str(local_size  - 1))
-    upcast_w = max(1, int(math.log10(upcast_size - 1)) + 1)   # or len(str(upcast_size - 1))
     for i, coords in sorted(layout.items()):
       ts = tuple(set(cs % local_size for cs in coords))
       us = tuple(set(cs // local_size for cs in coords))
-      elems += [f"{ansi(ts[0]) if tidx == -1 else ansi(5) if tidx in ts else RESET}T({','.join(str(f'{t:0{local_w}d}') for t in ts)})[{us[0]:0{upcast_w}d}]{RESET}"]
+      elems += [f"{ansi(ts[0]) if tidx == -1 else ansi(5) if tidx in ts else RESET}T" + \
+                f"({','.join(str(f'{t:0{len(str(local_size - 1))}d}') for t in ts)})" + \
+                f"[{us[0]:0{len(str(upcast_size - 1))}d}]{RESET}"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
       if width == stride and width * shape <= 32: width *= shape
