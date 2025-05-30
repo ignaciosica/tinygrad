@@ -461,7 +461,6 @@ class Kernel:
     tile_st = ShapeTracker((View.create(shape=st.shape, strides=tile_strides),))
 
     layout: dict = {}
-    # print(f"{uop.st_arg} {uop.st_arg.size} {uop.st_arg.real_size()}\n{st} {st.size} {st.real_size()}\n{tile_st} {tile_st.size} {tile_st.real_size()}")
     with Context(TRACK_MATCH_STATS=0):
       for i in range(0, tile_st.real_size()):
         logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
