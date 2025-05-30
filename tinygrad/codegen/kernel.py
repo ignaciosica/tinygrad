@@ -480,7 +480,7 @@ class Kernel:
       elems += [f"T({','.join(str(f'{thread_idx:0{local_w}d}') for thread_idx in thread_idxs)})[{upcast_idx:0{upcast_w}d}]"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
-      if width == stride and width * shape <= 32: width *= shape
+      if width == stride and width * shape <= getenv("VIZ_TILE_MAX_WIDTH", 32): width *= shape
       else: break
     if buf.op is Ops.DEFINE_LOCAL: width = 32 * 4 // buf.dtype.itemsize
 
