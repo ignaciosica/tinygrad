@@ -470,14 +470,14 @@ class Kernel:
         tile_idx, tile_idx_valid = tile_st.to_indexed_uops(logical_coords)
         if idx_valid.arg and tile_idx_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
-    matrix, elems, width = None, [], 1
+    matrix, elems, width, tidx = None, [], 1, getenv("TIDX", -1)
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
     upcast_size = prod(s for s in tile_st.shape[self.first_upcast :])
     local_w, upcast_w = len(str(local_size - 1)), len(str(upcast_size - 1))
 
     def ansi(t: int) -> str:
       _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
-      return f"\x1b[38;5;{17 + 36 * _R + 6 * _G + _B}m{t:0{local_w}d}\x1b[0m"
+      return f"\x1b[38;5;{17 + 36 * _R + 6 * _G + _B}m{t:0{local_w}d}\x1b[0m" if tidx == -1 or tidx == t else f"{t:0{local_w}d}"
 
     for i, coords in sorted(layout.items()):
       thread_idxs = tuple(sorted(set(cs % local_size for cs in coords)))
