@@ -470,8 +470,7 @@ class Kernel:
       logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
       idx, idx_valid = st.to_indexed_uops(logical_coords)
       tile_idx, tile_valid = tile_st.to_indexed_uops(logical_coords)
-      if idx_valid.arg and tile_valid.arg:
-        layout.setdefault(idx.arg, []).append(tile_idx.arg)
+      if idx_valid.arg and tile_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
     matrix, elems, tidx, width, RESET = None, [], getenv("TIDX", -1), 1, "\x1b[0m"
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
@@ -486,8 +485,7 @@ class Kernel:
     if buf.op is Ops.DEFINE_LOCAL: width = 32 * 4 // buf.dtype.itemsize
 
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
-    if matrix: print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width))))
-    else: print("Failed to viz tile")
+    if matrix: print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(str(i) for i in range(width))))
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
