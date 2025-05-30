@@ -489,7 +489,8 @@ class Kernel:
 
     if len(elems) % width != 0: width = 1
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
-    if matrix: print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(str(i) for i in range(width))))
+    if matrix: print(tabulate(matrix, tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(str(i) for i in range(width))))
+    else: print("<< failed to viz tile >>")
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
