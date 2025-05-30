@@ -453,8 +453,8 @@ class Kernel:
       _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
       return f"\x1b[38;5;0m\x1b[48;5;{17 + 36 * _R + 6 * _G + _B}m"
 
-    print(f"Buf [{(buf := uop.src[0]).arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
-    st = uop.st_arg
+    st, buf = uop.st_arg, uop.src[0].src[0]
+    print(f"Buf [{buf.arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
     st = st.shrink(tuple((0, 1) if i < self.global_dims else (0, s) for i, s in enumerate(st.shape)))  # shrink global dims
     st = st.shrink(tuple((0, 1) if self.first_reduce <= i < self.first_upcast else (0, s) for i, s in enumerate(st.shape)))  # shrink reduce dims
     st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i, s in enumerate(st.real_strides(True))))  # noqa:E501 shrink broadcasted upcast dims
@@ -464,8 +464,8 @@ class Kernel:
     tile_st = ShapeTracker((View.create(shape=st.shape, strides=tile_strides),))
 
     layout: dict = {}
-    # print(f"{uop.st_arg.size=} {uop.st_arg.real_size()=} {st.size=} {st.real_size()=} {tile_st.size=} {tile_st.real_size()=}")
-    # print(f"{uop.st_arg}\n{st}\n{tile_st}")
+    print(f"{uop.st_arg}\n{st}\n{tile_st}")
+    print(f"{uop.st_arg.size=} {uop.st_arg.real_size()=} {st.size=} {st.real_size()=} {tile_st.size=} {tile_st.real_size()=}")
     with Context(TRACK_MATCH_STATS=0):
       for i in range(0, tile_st.real_size()):
         logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
@@ -475,16 +475,20 @@ class Kernel:
 
     matrix, elems, tidx, width, RESET = None, [], getenv("TIDX", -1), 1, "\x1b[0m"
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
+    upcast_size = prod(s for s in tile_st.shape[self.first_upcast : ])
+    local_w  = max(1, int(math.log10(local_size  - 1)) + 1)   # or len(str(local_size  - 1))
+    upcast_w = max(1, int(math.log10(upcast_size - 1)) + 1)   # or len(str(upcast_size - 1))
     for i, coords in sorted(layout.items()):
       ts = tuple(set(cs % local_size for cs in coords))
       us = tuple(set(cs // local_size for cs in coords))
-      elems += [f"{ansi(ts[0]) if tidx == -1 else ansi(5) if tidx in ts else RESET}T({','.join(str(f'{t:02d}') for t in ts)})[{us[0]:02d}]{RESET}"]
+      elems += [f"{ansi(ts[0]) if tidx == -1 else ansi(5) if tidx in ts else RESET}T({','.join(str(f'{t:0{local_w}d}') for t in ts)})[{us[0]:0{upcast_w}d}]{RESET}"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
       if width == stride and width * shape <= 32: width *= shape
       else: break
     if buf.op is Ops.DEFINE_LOCAL: width = 32 * 4 // buf.dtype.itemsize
 
+    if len(elems) % width != 0: width = 1
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
     if matrix: print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(str(i) for i in range(width))))
 
