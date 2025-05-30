@@ -1,5 +1,5 @@
 from __future__ import annotations
-import itertools, functools, math, colorsys, operator
+import itertools, functools, math, operator
 from dataclasses import dataclass
 from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
@@ -469,23 +469,15 @@ class Kernel:
         tile_idx, tile_valid = tile_st.to_indexed_uops(logical_coords)
         if idx_valid.arg and tile_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
-    matrix, elems, tidx, width, RESET = None, [], getenv("TIDX", -1), 1, "\x1b[0m"
+    matrix, elems, width = None, [], 1,
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
     upcast_size = prod(s for s in tile_st.shape[self.first_upcast : ])
     local_w, upcast_w = len(str(local_size - 1)), len(str(upcast_size - 1))
 
-    def ansi(t: int) -> str:
-      r, g, b = colorsys.hsv_to_rgb(64 * t / max(1, local_size - 1) / 360.0, 0.65, 0.80)
-      R, G, B = (int(x * 255 + 0.1) for x in (r, g, b))
-      return f"\x1b[48;2;{R};{G};{B}m"
-
     for i, coords in sorted(layout.items()):
       thread_idxs = tuple(sorted(set(cs % local_size for cs in coords)))
       upcast_idx = tuple(set(cs // local_size for cs in coords))[0] # broadcasted upcast dimensions do not reflect in tile
-      elems += [f"{ansi(thread_idxs[0]) if tidx == -1 else ansi(5) if tidx in thread_idxs else RESET}T" + \
-                f"({','.join(str(f'{thread_idx:0{local_w}d}') for thread_idx in thread_idxs)})[{upcast_idx:0{upcast_w}d}]{RESET}"]
-      # elems += [[f"{ansi(thread_idxs[0]) if tidx == -1 else ansi(5) if tidx in thread_idxs else RESET}","T" + \
-                # f"({','.join(str(f'{thread_idx:0{local_w}d}') for thread_idx in thread_idxs)})[{upcast_idx:0{upcast_w}d}]",f"{RESET}"]]
+      elems += [f"T({','.join(str(f'{thread_idx:0{local_w}d}') for thread_idx in thread_idxs)})[{upcast_idx:0{upcast_w}d}]"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
       if width == stride and width * shape <= 32: width *= shape
