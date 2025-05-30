@@ -457,7 +457,7 @@ class Kernel:
     print(f"Buf [{buf.arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
     st = st.shrink(tuple((0, 1) if i < self.global_dims else (0, s) for i, s in enumerate(st.shape)))  # shrink global dims
     st = st.shrink(tuple((0, 1) if self.first_reduce <= i < self.first_upcast else (0, s) for i, s in enumerate(st.shape)))  # shrink reduce dims
-    st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i, s in enumerate(st.real_strides(True))))  # noqa:E501 shrink broadcasted upcast dims
+    # st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i, s in enumerate(st.real_strides(True))))  # noqa:E501 shrink broadcasted upcast dims
     st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i, s in enumerate(st.shape)))  # expand local dims
 
     tile_strides = canonicalize_strides(st.shape, tuple(itertools.accumulate(st.shape, operator.mul, initial=1)))
@@ -477,10 +477,12 @@ class Kernel:
     upcast_size = prod(s for s in tile_st.shape[self.first_upcast : ])
     local_w, upcast_w = len(str(local_size - 1)), len(str(upcast_size - 1))
     for i, coords in sorted(layout.items()):
-      ts = tuple(set(cs % local_size for cs in coords))
-      us = tuple(set(cs // local_size for cs in coords))
-      elems += [f"{ansi(ts[0]) if tidx == -1 else ansi(5) if tidx in ts else RESET}T" + \
-                f"({','.join(str(f'{t:0{local_w}d}') for t in ts)})[{us[0]:0{upcast_w}d}]{RESET}"]
+      thread_idxs = tuple(set(cs % local_size for cs in coords))
+      upcast_idxs = tuple(set(cs // local_size for cs in coords)) # broadcasted upcast dimensions do not reflect in tile
+      elems += [f"{ansi(thread_idxs[0]) if tidx == -1 else ansi(5) if tidx in thread_idxs else RESET}T" + \
+                f"({','.join(str(f'{thread_idx:0{local_w}d}') for thread_idx in thread_idxs)})" + \
+                f"[{','.join(str(f'{upcast_idx:0{upcast_w}d}') for upcast_idx in upcast_idxs)}]{RESET}"]
+                # f"[{upcast_idx:0{upcast_w}d}]{RESET}"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
       if width == stride and width * shape <= 32: width *= shape
