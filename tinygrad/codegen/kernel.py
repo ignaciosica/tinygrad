@@ -1,5 +1,5 @@
 from __future__ import annotations
-import itertools, functools, math, operator
+import itertools, functools, math, operator, colorsys
 from dataclasses import dataclass
 from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
@@ -451,7 +451,7 @@ class Kernel:
     from tabulate import tabulate
 
     st, buf = uop.st_arg, uop.src[0].src[0]
-    print(f"Buf [{buf.arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
+    print(f"\nBuf [{buf.arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
     # shrink global, reduce and broadcasted upcast dims and expand local dims
     st = st.shrink(tuple((0, 1) if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) else (0, s) for i, s in enumerate(st.shape)))
     st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i, s in enumerate(st.real_strides(True))))
@@ -475,10 +475,14 @@ class Kernel:
     upcast_size = prod(s for s in tile_st.shape[self.first_upcast :])
     local_w, upcast_w = len(str(local_size - 1)), len(str(upcast_size - 1))
 
+    def ansi(t: int) -> str:
+      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
+      return f"\x1b[38;5;{17 + 36 * _R + 6 * _G + _B}m{t:0{local_w}d}\x1b[0m"
+
     for i, coords in sorted(layout.items()):
       thread_idxs = tuple(sorted(set(cs % local_size for cs in coords)))
       upcast_idx = tuple(set(cs // local_size for cs in coords))[0]  # broadcasted upcast dimensions do not reflect in tile
-      elems += [f"T({','.join(str(f'{thread_idx:0{local_w}d}') for thread_idx in thread_idxs)})[{upcast_idx:0{upcast_w}d}]"]
+      elems += [f"T({','.join(ansi(thread_idx) for thread_idx in thread_idxs)})\nV[{upcast_idx:0{upcast_w}d}]"]
 
     for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
       if width == stride and width * shape <= getenv("VIZ_TILE_MAX_WIDTH", 32): width *= shape
@@ -487,7 +491,7 @@ class Kernel:
 
     if len(elems) % width != 0: width = 1
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
-    print(tabulate(matrix, tablefmt="plain") if matrix else "<< failed to viz tile >>")
+    print(tabulate(matrix, tablefmt="simple_grid") if matrix else "<< failed to viz tile >>")
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
