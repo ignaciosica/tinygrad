@@ -486,8 +486,7 @@ class Kernel:
 
     if len(elems) % width != 0: width = 1
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
-    if matrix: print(tabulate(matrix, tablefmt="plain", showindex=True,  headers=tuple(str(i) for i in range(width))))
-    else: print("<< failed to viz tile >>")
+    print(tabulate(matrix, tablefmt="plain") if matrix else "<< failed to viz tile >>")
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
@@ -589,8 +588,7 @@ class Kernel:
               str(st) if DEBUG >= 4 else "")
       print(self.applied_opts)
       if DEBUG >= 5: print(modified_ast)
-      if getenv("VIZ_TILE"):
-        for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
+      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
     # verify AST matches the spec after applying opts
     if __debug__: type_verify(list(modified_ast.toposort()))
     # TODO: sadly modified_ast doesn't pass the shape spec because of how group_for_reduces constructs UOps, there's probably a way to fix this
