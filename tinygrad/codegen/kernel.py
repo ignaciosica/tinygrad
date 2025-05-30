@@ -455,10 +455,10 @@ class Kernel:
 
     print(f"Buf [{(buf := uop.src[0]).arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
     st = uop.st_arg
-    st = st.shrink(tuple((0, 1) if i < self.global_dims else (0, s) for i, s in enumerate(st.shape)))  # noqa:E501 shrink global dims
-    st = st.shrink(tuple((0, 1) if self.first_reduce <= i < self.first_upcast else (0, s) for i, s in enumerate(st.shape)))  # noqa:E501 shrink reduce dims
+    st = st.shrink(tuple((0, 1) if i < self.global_dims else (0, s) for i, s in enumerate(st.shape)))  # shrink global dims
+    st = st.shrink(tuple((0, 1) if self.first_reduce <= i < self.first_upcast else (0, s) for i, s in enumerate(st.shape)))  # shrink reduce dims
     st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i, s in enumerate(st.real_strides(True))))  # noqa:E501 shrink broadcasted upcast dims
-    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i, s in enumerate(st.shape)))  # noqa:E501 expand local dims
+    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i, s in enumerate(st.shape)))  # expand local dims
 
     tile_strides = canonicalize_strides(st.shape, tuple(itertools.accumulate(st.shape, operator.mul, initial=1)))
     tile_st = ShapeTracker((View.create(shape=st.shape, strides=tile_strides),))
@@ -486,8 +486,8 @@ class Kernel:
     if buf.op is Ops.DEFINE_LOCAL: width = 32 * 4 // buf.dtype.itemsize
 
     matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
-    print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width))))
-    del layout
+    if matrix: print(tabulate(matrix or [elems], tablefmt="simple_grid", maxcolwidths=11, showindex=True, headers=tuple(i for i in range(width))))
+    else: print("Failed to viz tile")
 
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
