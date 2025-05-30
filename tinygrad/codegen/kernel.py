@@ -452,21 +452,23 @@ class Kernel:
 
     st, buf = uop.st_arg, uop.src[0].src[0]
     print(f"Buf [{buf.arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
-    st = st.shrink(tuple((0, 1) if i < self.global_dims else (0, s) for i, s in enumerate(st.shape)))  # shrink global dims
-    st = st.shrink(tuple((0, 1) if self.first_reduce <= i < self.first_upcast else (0, s) for i, s in enumerate(st.shape)))  # shrink reduce dims
-    st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i, s in enumerate(st.real_strides(True))))  # noqa:E501 shrink broadcasted upcast dims
-    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i, s in enumerate(st.shape)))  # expand local dims
+    # shrink global, reduce and broadcasted upcast dims and expand local dims
+    st = st.shrink(tuple((0, 1) if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) else (0, s) for i, s in enumerate(st.shape)))
+    st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i, s in enumerate(st.real_strides(True))))
+    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i, s in enumerate(st.shape)))
 
-    tile_strides = canonicalize_strides(st.shape, tuple(itertools.accumulate(st.shape, operator.mul, initial=1)))
-    tile_st = ShapeTracker((View.create(shape=st.shape, strides=tile_strides),))
+    # thread and upcast indices increment in col-major order
+    colmajor_strides = canonicalize_strides(st.shape, tuple(itertools.accumulate(st.shape, operator.mul, initial=1)))
+    tile_st = ShapeTracker((View.create(shape=st.shape, strides=colmajor_strides),))
 
     layout: dict = {}
+    print(f"{uop.st_arg} {uop.st_arg.size} {uop.st_arg.real_size()}\n{st} {st.size} {st.real_size()}\n{tile_st} {tile_st.size} {tile_st.real_size()}")
     with Context(TRACK_MATCH_STATS=0):
       for i in range(0, tile_st.real_size()):
         logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
         idx, idx_valid = st.to_indexed_uops(logical_coords)
-        tile_idx, tile_valid = tile_st.to_indexed_uops(logical_coords)
-        if idx_valid.arg and tile_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
+        tile_idx, tile_idx_valid = tile_st.to_indexed_uops(logical_coords)
+        if idx_valid.arg and tile_idx_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
 
     matrix, elems, width = None, [], 1
     local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
