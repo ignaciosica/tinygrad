@@ -455,7 +455,7 @@ class Kernel:
     # shrink global, reduce and broadcasted upcast dims and expand local dims
     st = st.shrink(tuple((0, 1) if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) else (0, s) for i, s in enumerate(st.shape)))
     st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i, s in enumerate(st.real_strides(True))))
-    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.local_dims else s for i, s in enumerate(st.shape)))
+    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.first_reduce else s for i, s in enumerate(st.shape)))
 
     # thread and upcast indices increment in col-major order
     colmajor_strides = canonicalize_strides(st.shape, tuple(itertools.accumulate(st.shape, operator.mul, initial=1)))
