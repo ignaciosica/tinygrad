@@ -1,19 +1,19 @@
 from __future__ import annotations
-import itertools, functools, math
+import itertools, functools, math, operator, colorsys
 from dataclasses import dataclass
 from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
 
 from tinygrad.uop.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, track_rewrites, print_uops
-from tinygrad.uop.ops import PatternMatcher, smax
+from tinygrad.uop.ops import PatternMatcher, smax, sint_to_uop
 from tinygrad.uop.spec import type_verify, ast_spec
 from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec, Opt, OptOps
 from tinygrad.dtype import ImageDType
 from tinygrad.helpers import all_same, colored, ansilen, dedup, getenv, prod, round_up, all_int, to_function_name, unwrap
-from tinygrad.helpers import DEBUG, TC_SELECT, TC_OPT, AMX
+from tinygrad.helpers import DEBUG, TC_SELECT, TC_OPT, AMX, Context
 from tinygrad.shape.shapetracker import ShapeTracker
-from tinygrad.shape.view import strides_for_shape
+from tinygrad.shape.view import strides_for_shape, View, unravel, canonicalize_strides
 from tinygrad.codegen.lowerer import get_contraction
 from tinygrad.engine.grouper import view_left
 from tinygrad.codegen import full_rewrite
@@ -447,6 +447,54 @@ class Kernel:
     num = f"n{Kernel.kernel_cnt[function_name]-1}" if Kernel.kernel_cnt[function_name] > 1 else ""
     return name + colored(num, 'BLACK')
 
+  def viz_tile(self, uop: UOp):
+    from tabulate import tabulate
+
+    st, buf = uop.st_arg, uop.src[0].src[0]
+    print(f"\nBuf [{buf.arg}] (op: {'st' if uop.op is Ops.STORE else 'ld'} {'global' if buf.op is Ops.DEFINE_GLOBAL else 'shared'})")
+    # shrink global, reduce and broadcasted upcast dims and expand local dims
+    st = st.shrink(tuple((0, 1) if i < self.global_dims or (self.first_reduce <= i < self.first_upcast) else (0, s) for i, s in enumerate(st.shape)))
+    st = st.shrink(tuple((0, 1) if (self.first_upcast <= i and s == 0) else (0, st.shape[i]) for i, s in enumerate(st.real_strides(True))))
+    st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.first_reduce else s for i, s in enumerate(st.shape)))
+
+    # thread and upcast indices increment in col-major order
+    colmajor_strides = canonicalize_strides(st.shape, tuple(itertools.accumulate(st.shape, operator.mul, initial=1)))
+    tile_st = ShapeTracker((View.create(shape=st.shape, strides=colmajor_strides),))
+
+    layout: dict = {}
+    # print(f"{uop.st_arg}{uop.st_arg.size} {uop.st_arg.real_size()}\n{st}{st.size} {st.real_size()}\n{tile_st}{tile_st.size} {tile_st.real_size()}")
+    with Context(TRACK_MATCH_STATS=0):
+      for i in range(0, tile_st.real_size()):
+        logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(tile_st.shape, i))
+        idx, idx_valid = st.to_indexed_uops(logical_coords)
+        tile_idx, tile_idx_valid = tile_st.to_indexed_uops(logical_coords)
+        if idx_valid.arg and tile_idx_valid.arg: layout.setdefault(idx.arg, []).append(tile_idx.arg)
+
+    matrix, elems, width, tidx = None, [], 1, getenv("VIZ_TILE_TIDX", -1)
+    local_size = prod(s for s in tile_st.shape[self.global_dims : self.first_reduce])
+    upcast_size = prod(s for s in tile_st.shape[self.first_upcast :])
+    local_w, upcast_w = len(str(local_size - 1)), len(str(upcast_size - 1))
+
+    def ansi(t: int) -> str:
+      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / 32, 0.65, 0.80))
+      return f"\x1b[38;5;{17 + 36 * _R + 6 * _G + _B}m{t:0{local_w}d}\x1b[0m" if tidx == -1 or tidx == t else f"{t:0{local_w}d}"
+
+    for i, coords in sorted(layout.items()):
+      thread_idxs = tuple(sorted(set(cs % local_size for cs in coords)))
+      upcast_idx = tuple(set(cs // local_size for cs in coords))[0]
+      elems += [f"T({','.join((f'{chr(10)}  ' if i > 0 and i % 4 == 0 else '') + ansi(thread_idx) for i,thread_idx in enumerate(thread_idxs))})\n" + \
+                f"V[{upcast_idx:0{upcast_w}d}]"]
+
+    for stride, shape in sorted((stride, shape) for stride, shape in zip(st.real_strides(True), st.shape) if stride != 0):
+      if width == stride and width * shape <= getenv("VIZ_TILE_MAX_WIDTH", 32): width *= shape
+      else: break
+    if buf.op is Ops.DEFINE_LOCAL: width = 32 * 4 // buf.dtype.itemsize # override width to visualize smem banks
+    if len(elems) % width != 0: width = 1 # fallback to width 1 for some cases of padding
+
+    matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
+    if matrix: print(tabulate(matrix, tablefmt="simple_grid", showindex=True, headers=tuple(str(i) for i in range(width))))
+    else: print("<< failed to viz tile >>")
+
   def get_optimized_ast(self, name_override:Optional[str]=None) -> UOp:
     @functools.cache
     def fixup_ast(op:UOp) -> UOp:
@@ -547,6 +595,8 @@ class Kernel:
               str(st) if DEBUG >= 4 else "")
       print(self.applied_opts)
       if DEBUG >= 5: print(modified_ast)
+      if getenv("VIZ_TILE"):
+        for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE}]): self.viz_tile(buf)
     # verify AST matches the spec after applying opts
     if __debug__: type_verify(list(modified_ast.toposort()))
     # TODO: sadly modified_ast doesn't pass the shape spec because of how group_for_reduces constructs UOps, there's probably a way to fix this
