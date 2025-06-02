@@ -314,6 +314,7 @@ class Kernel:
     if not self.opts.tensor_cores: return False
     try: # check TC first and apply hand-coded opts if successful
       self.apply_opt(Opt(OptOps.TC, axis, (tc_select, tc_opt, use_tensor_cores)))
+      if getenv("stco", 1): return True
 
       if (tc_opts:=self.tensor_core_opts) is not None:
         if extra_opts is not None: self.apply_opts(extra_opts)
@@ -595,7 +596,9 @@ class Kernel:
               str(st) if DEBUG >= 4 else "")
       print(self.applied_opts)
       if DEBUG >= 5: print(modified_ast)
-      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE} and getenv("VIZ_TILE")]): self.viz_tile(buf)
+      for buf in dedup([x for x in modified_ast.toposort() if x.op in {Ops.LOAD,Ops.STORE} and getenv("VIZ_TILE")]):
+        self.viz_tile(buf)
+        buf.st_arg.viz()
     # verify AST matches the spec after applying opts
     if __debug__: type_verify(list(modified_ast.toposort()))
     # TODO: sadly modified_ast doesn't pass the shape spec because of how group_for_reduces constructs UOps, there's probably a way to fix this

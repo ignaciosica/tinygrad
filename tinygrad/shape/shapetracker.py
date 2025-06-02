@@ -1,7 +1,7 @@
 # ShapeTracker allows movement operations to a buffer that don't require a copy to be made.
 from __future__ import annotations
 from dataclasses import dataclass
-import functools
+import functools, colorsys
 from typing import Optional, Callable
 from tinygrad.helpers import merge_dicts, getenv
 from tinygrad.shape.view import View, strides_for_shape, unravel
@@ -135,6 +135,35 @@ class ShapeTracker:
     return ShapeTracker(self.views + (View.create(new_shape), ))
 
   def mop(self, op, arg): return mops[op](self, arg)
+
+  def viz(self):
+    from tabulate import tabulate
+    layout: dict = {}
+    with Context(TRACK_MATCH_STATS=0):
+      for i in range(0, self.size):
+        logical_coords: tuple[UOp, ...] = tuple(sint_to_uop(c) for c in unravel(self.shape, i))
+        idx, idx_valid = self.to_indexed_uops(logical_coords)
+        if idx_valid.arg: layout.setdefault(idx.arg, []).append(i)
+
+    matrix, elems, width, w, tidx = None, [], 1, len(str(self.size - 1)), getenv("VIZ_TILE_TIDX", -1)
+    def ansi(t: int) -> str:
+      _R, _G, _B = (int(x * 5 + 0.5) for x in colorsys.hsv_to_rgb(t / (self.size - 1), 0.65, 0.80))
+      return f"\x1b[38;5;{17 + 36 * _R + 6 * _G + _B}m{t:0{w}d}\x1b[0m" if tidx == -1 or tidx == t else f"{t:0{w}d}"
+
+    for i in range(max(layout.keys()) + 1):
+      if i not in layout: elems += [""]
+      else:
+        idxs = tuple(sorted(set(idx for idx in layout[i])))
+        elems += [f"{','.join((f'{chr(10)}' if i > 0 and i % 4 == 0 else '') + ansi(idx) for i,idx in enumerate(idxs))}"]
+
+    for stride, shape in sorted((stride, shape) for stride, shape in zip(self.real_strides(True), self.shape) if stride != 0):
+      if width == stride and width * shape <= getenv("VIZ_TILE_MAX_WIDTH", 32): width *= shape
+      else: break
+    if len(elems) % width != 0: width = 1 # fallback to width 1 for some cases of padding
+
+    matrix = [elems[i : i + width] for i in range(0, len(elems), width)]
+    if matrix: print(tabulate(matrix, tablefmt="simple_grid", showindex=True, headers=tuple(f"{i:02d}" for i in range(width))))
+    else: print("<< failed to viz tile >>")
 
 mops: dict[Ops, Callable] = {Ops.RESHAPE: ShapeTracker.reshape, Ops.PERMUTE: ShapeTracker.permute, Ops.EXPAND: ShapeTracker.expand,
                              Ops.SHRINK: ShapeTracker.shrink, Ops.FLIP: ShapeTracker.flip, Ops.PAD: ShapeTracker.pad}
