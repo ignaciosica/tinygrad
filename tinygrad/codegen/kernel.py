@@ -431,7 +431,7 @@ class Kernel:
     elif opt.op is OptOps.LDS:
       check(0 <= axis < len(self.bufs) and not self.lds[axis], f"invalid lds {axis=}")
       check(self.group_for_reduces == 0, "can't apply lds with group/grouptop")
-      buf_st = next(st for st, buf in zip(self.sts, self.bufs) if buf.src[0].arg == axis)
+      buf_st = next(st for st, buf in zip(self.sts, self.bufs) if buf.src[0].base.arg == axis)
       check(all(not buf_st.axis_is_masked(i) for i in range(len(buf_st.shape))), "can't apply lds with masked axis")
       self.smem_usage += prod(sz for i,(sz,st) in enumerate(zip(buf_st.shape, buf_st.real_strides()))
                               if st != 0 and ((self.global_dims <= i < self.first_reduce) or self.first_upcast <= i))
@@ -545,10 +545,10 @@ class Kernel:
 
   def apply_lds(self, ast) -> UOp:
     def transform(ctx:Kernel, global_access:UOp):
-      buf, kernel = global_access.src[0], ctx
+      buf, kernel = global_access.src[0].base, ctx
       if buf.op is not Ops.DEFINE_GLOBAL or not kernel.lds[buf.arg] or buf.tag == "applied_lds": return None
 
-      global_st: ShapeTracker = global_access.src[1].arg
+      global_st: ShapeTracker = global_access.st_arg
       shape: list[sint] = []
       for i, st in enumerate(global_st.real_strides()):
         shape.append(global_st.shape[i] if i >=  kernel.global_dims and st != 0 and (i < kernel.first_reduce or i >= kernel.first_upcast) else 1)
@@ -556,13 +556,13 @@ class Kernel:
 
       local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")
       if global_access.op == Ops.LOAD:
-        global_access = global_access.replace(src=(buf.replace(tag="applied_lds"), global_st.to_uop()))
-        local_store = UOp.store(local_buffer, store_st.to_uop(), global_access)
-        return UOp(Ops.LOAD, global_access.dtype, (local_buffer, load_st.to_uop(), local_store))
+        global_access = global_access.replace(src=(buf.replace(tag="applied_lds").view(global_st),))
+        local_store = UOp.store(local_buffer.view(store_st), global_access)
+        return UOp(Ops.LOAD, global_access.dtype, (local_buffer.view(load_st), local_store))
       if global_access.op == Ops.STORE:
-        local_store = UOp.store(local_buffer, store_st.to_uop(), global_access.src[2])
-        local_load = UOp(Ops.LOAD, local_buffer.dtype.base, (local_buffer, load_st.to_uop(), local_store))
-        return global_access.replace(src=(buf.replace(tag="applied_lds"), global_st.to_uop(), local_load))
+        local_store = UOp.store(local_buffer.view(store_st), global_access.src[1])
+        local_load = UOp(Ops.LOAD, local_buffer.dtype.base, (local_buffer.view(load_st), local_store))
+        return global_access.replace(src=(buf.replace(tag="applied_lds").view(global_st), local_load))
 
     return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), transform)]), ctx=self)
 
