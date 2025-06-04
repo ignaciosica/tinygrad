@@ -32,18 +32,20 @@ def get_rewrites_for_renderer(opts:Renderer, linearizer:bool=True) -> list[Rewri
 def _get_rewrites_for_renderer(opts:Renderer, linearizer:bool, _QUANTIZE, _DEVECTORIZE, _TRANSCENDENTAL) -> list[RewriteStep]:
   # ** lowerer (rewrite_shapetracker_with_index) **
   ret: list[RewriteStep] = []
-  if _QUANTIZE and opts.device in {"CPU", "DSP"}: ret.append(RewriteStep(pm_quant, name="quantize"))
+  # if _QUANTIZE and opts.device in {"CPU", "DSP"}: ret.append(RewriteStep(pm_quant, name="quantize"))
   ret.append(RewriteStep(pm_lowerer, lambda ast: get_index(ast, opts), name="lowerer"))
 
   # ** expander (expand_rewrite) **
-  ret.append(RewriteStep(sym+migrate_indexing, name="initial symbolic"))
+  # ret.append(RewriteStep(sym+migrate_indexing, name="initial symbolic"))
+  ret.append(RewriteStep(sym, name="initial symbolic"))
 
   # ignore (for masked stores)
-  ret.append(RewriteStep(pm_store_ignore, name="store_ignore"))
-  ret.append(RewriteStep(pm_move_ignore, name="move_ignore"))
+  # ret.append(RewriteStep(pm_store_ignore, name="store_ignore"))
+  # ret.append(RewriteStep(pm_move_ignore, name="move_ignore"))
 
   # expand + remove surviving ignores
-  ret.append(RewriteStep(pm_delete_ignore+sym+expander, name="expander"))
+  # ret.append(RewriteStep(pm_delete_ignore+sym+expander, name="expander"))
+  ret.append(RewriteStep(sym+expander, name="expander"))
 
   # ** devectorizer (full_graph_rewrite) **
   # remove reduce
