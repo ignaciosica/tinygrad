@@ -36,7 +36,8 @@ def _get_rewrites_for_renderer(opts:Renderer, linearizer:bool, _QUANTIZE, _DEVEC
   ret.append(RewriteStep(pm_lowerer, lambda ast: get_index(ast, opts), name="lowerer"))
 
   # ** expander (expand_rewrite) **
-  ret.append(RewriteStep(sym+migrate_indexing, name="initial symbolic"))
+  # ret.append(RewriteStep(sym+migrate_indexing, name="initial symbolic"))
+  ret.append(RewriteStep(sym, name="initial symbolic"))
 
   # ignore (for masked stores)
   ret.append(RewriteStep(pm_store_ignore, name="store_ignore"))
