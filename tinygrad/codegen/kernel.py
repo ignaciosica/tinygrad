@@ -314,6 +314,7 @@ class Kernel:
     if not self.opts.tensor_cores: return False
     try: # check TC first and apply hand-coded opts if successful
       self.apply_opt(Opt(OptOps.TC, axis, (tc_select, tc_opt, use_tensor_cores)))
+      if getenv('skp', 1): return True
 
       if (tc_opts:=self.tensor_core_opts) is not None:
         if extra_opts is not None: self.apply_opts(extra_opts)
@@ -481,20 +482,21 @@ class Kernel:
             return ShapeTracker.from_shape(shape).permute(tuple(permaxis))
 
           srcs = list((ret.src[0] if ret.src[0].op is not Ops.CAST else ret.src[0].src[0]).src)
+          tc_reduce_axes = tuple(tcd + ax for ax, _ in tc.get_reduce_axes())
           for i, (src, swizzle) in enumerate(zip(srcs, tc.swizzle)):
             src_st = (src if src.op is Ops.LOAD else src.src[0]).st_arg
             if swizzle: srcs[i] = src.view(get_tc_swizzle_st(src_st.shape, *swizzle))
 
             if self.use_tensor_cores == 3:  # for TC=3, emulate the warp addressing with locals
               local_shape = tuple(1 if st == 0 or i < wd or (i >= self.first_reduce and i < tcd) else src_st.shape[i] \
-                                  for i,st in enumerate(src_st.real_strides()))
+                                  for i,st in enumerate(src_st.real_strides(True)))
               st = store_st = ShapeTracker.from_shape(local_shape)
               local_buffer = UOp(Ops.DEFINE_LOCAL, tc.dtype_in.ptr(size=st.real_size(), local=True), (), f"temp{i}")
               if swizzle: store_st = get_tc_swizzle_st(store_st.shape, *swizzle)
-              local_store = UOp.store(local_buffer.view(store_st), srcs[i])
+              local_store = UOp.store(local_buffer.view(store_st), srcs[i], arg=tc_reduce_axes)
+              # local_store = UOp(Ops.STORE, dtypes.void, (local_buffer.view(store_st), local_store))
               srcs[i] = UOp(Ops.LOAD, tc.dtype_in, (local_buffer.view(st), local_store))
 
-          tc_reduce_axes = tuple(tcd + ax for ax, _ in tc.get_reduce_axes())
           if self.use_tensor_cores == 1: # real WMMA, use CONTRACT/UNROLL to get the vectorization right
             tc_upcast_axes = (get_upcast_axes(0), get_upcast_axes(1), get_upcast_axes(2))
             wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, self.opts.device, tc.threads, tc_upcast_axes, tc_reduce_axes)
