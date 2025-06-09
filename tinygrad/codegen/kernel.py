@@ -10,7 +10,7 @@ from tinygrad.uop.spec import type_verify, ast_spec
 from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec, Opt, OptOps
 from tinygrad.dtype import ImageDType
-from tinygrad.helpers import all_same, colored, ansilen, dedup, getenv, prod, round_up, all_int, to_function_name, unwrap
+from tinygrad.helpers import all_same, colored, ansilen, dedup, getenv, prod, round_up, all_int, to_function_name, unwrap, get_single_element
 from tinygrad.helpers import DEBUG, TC_SELECT, TC_OPT, AMX
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import strides_for_shape
@@ -431,7 +431,7 @@ class Kernel:
     elif opt.op is OptOps.LDS:
       check(0 <= axis < len(self.bufs) and not self.lds[axis], f"invalid lds {axis=}")
       check(self.group_for_reduces == 0, "can't apply lds with group/grouptop")
-      buf_st = next(st for st, buf in zip(self.sts, self.bufs) if buf.src[0].base.arg == axis)
+      buf_st = get_single_element([st for st, buf in zip(self.sts, self.bufs) if buf.src[0].base.arg == axis])
       check(all(not buf_st.axis_is_masked(i) for i in range(len(buf_st.shape))), "can't apply lds with masked axis")
       self.smem_usage += prod(sz for i,(sz,st) in enumerate(zip(buf_st.shape, buf_st.real_strides()))
                               if st != 0 and ((self.global_dims <= i < self.first_reduce) or self.first_upcast <= i))
