@@ -149,8 +149,8 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
       if ix.op is Ops.UNROLL and sz != 1: contract_axis += ((i, cast(int, sz)),)
       if ix.op is Ops.UNROLL and sz == 1: exclude_axis += (i,)
     contract_sz = prod(s for _,s in contract_axis)
-    contract = UOp(Ops.CONTRACT, buf.dtype.base.vec(contract_sz), (x.src[1],), contract_axis) if contract_axis else x.src[1]
-    return UOp(Ops.STORE, dtypes.void, (buf.index(idx, valid), contract), arg=tuple(exclude_axis))
+    new_src = UOp(Ops.CONTRACT, buf.dtype.base.vec(contract_sz), (x.src[1],), contract_axis) if contract_axis else x.src[1]
+    return UOp(Ops.STORE, dtypes.void, (buf.index(idx, valid), new_src), arg=tuple(exclude_axis) if exclude_axis is not None else None)
   # NOTE: only store the local reduceop in the threads that are actually doing the reduce
   if cast(PtrDType, buf.dtype).local and x.src[1].op is Ops.REDUCE:
     reduce_input = x.src[1].src[0]
