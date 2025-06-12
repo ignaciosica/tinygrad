@@ -432,7 +432,6 @@ class Kernel:
       check(0 <= axis < len(self.bufs) and not self.lds[axis], f"invalid lds {axis=}")
       check(self.group_for_reduces == 0, "can't apply lds with group/grouptop")
       buf_st = get_single_element([st for st, buf in zip(self.sts, self.bufs) if buf.src[0].base.arg == axis])
-      check(all(not buf_st.axis_is_masked(i) for i in range(len(buf_st.shape))), "can't apply lds with masked axis")
       self.smem_usage += prod(sz for i,(sz,st) in enumerate(zip(buf_st.shape, buf_st.real_strides()))
                               if st != 0 and ((self.global_dims <= i < self.first_reduce) or self.first_upcast <= i))
       check(self.smem_usage <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {self.smem_usage}, max {self.opts.shared_max}")
@@ -501,7 +500,7 @@ class Kernel:
 
             if self.use_tensor_cores == 3:  # for TC=3, emulate the warp addressing with locals
               local_shape = tuple(1 if st == 0 or i < wd or (i >= self.first_reduce and i < tcd) else src_st.shape[i] \
-                                  for i,st in enumerate(src_st.real_strides()))
+                                  for i,st in enumerate(src_st.real_strides(True)))
               st = store_st = ShapeTracker.from_shape(local_shape)
               local_buffer = UOp(Ops.DEFINE_LOCAL, tc.dtype_in.ptr(size=st.real_size(), local=True), (), f"temp{i}")
               if swizzle: store_st = get_tc_swizzle_st(store_st.shape, *swizzle)
@@ -550,8 +549,9 @@ class Kernel:
 
       global_st: ShapeTracker = global_access.st_arg
       shape: list[sint] = []
-      for i, st in enumerate(global_st.real_strides()):
-        shape.append(global_st.shape[i] if i >=  kernel.global_dims and st != 0 and (i < kernel.first_reduce or i >= kernel.first_upcast) else 1)
+      for i, st in enumerate(global_st.real_strides(True)):
+        if i < ctx.global_dims or ctx.first_reduce <= i < ctx.first_upcast or st == 0: shape.append(1)
+        else: shape.append(global_st.shape[i])
       store_st = load_st = ShapeTracker.from_shape(tuple(shape))
 
       local_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"lds{buf.arg}")

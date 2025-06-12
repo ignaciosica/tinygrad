@@ -6,7 +6,7 @@ from tinygrad.helpers import DEVECTORIZE, time_to_str, VALIDATE_WITH_CPU
 from tinygrad.uop.ops import Ops, PatternMatcher, UOp, UPat, Variable, sym_infer
 from tinygrad.device import Device, Buffer
 from tinygrad.renderer import Renderer, ProgramSpec, Estimates
-from tinygrad.codegen.kernel import Kernel
+from tinygrad.codegen.kernel import Kernel, Opt, OptOps
 from tinygrad.codegen.heuristic import hand_coded_optimizations
 from tinygrad.engine.schedule import ScheduleItem
 
@@ -17,6 +17,9 @@ def get_kernel(renderer:Renderer, ast:UOp) -> Kernel:
   k = Kernel(ast, opts=renderer)
   if not NOOPT:
     if not k.apply_tensor_cores(getenv("TC", 1)): k.apply_opts(hand_coded_optimizations(k))
+    try:
+      for buf in range(6): k.apply_opt(Opt(OptOps.LDS, buf, None))
+    except Exception as e: print(e)
     if BEAM >= 1:
       from tinygrad.engine.search import beam_search, bufs_from_lin
       kb = Kernel(ast, opts=renderer)
