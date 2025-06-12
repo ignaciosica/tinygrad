@@ -83,10 +83,12 @@ def get_grouped_dims(prefix, dims:tuple[sint, ...], max_sizes:tuple[int, ...]|No
 class IndexContext:
   idxs: list[UOp]
   ridxs: list[UOp]
+  has_reduce: bool
 
 def get_index(ast:UOp, opts:Renderer) -> IndexContext:
   ki = ast.arg if isinstance(ast.arg, KernelInfo) else KernelInfo()
   # NOTE: assumes the shape is <global dims> <local dims> <group_for_reduces> <reduces> <upcasts/unrolls>
+  has_reduce = any(x.op in (Ops.REDUCE_AXIS, Ops.WMMA) for x in ast.toposort())
   full_shape = ast.full_shape
   first_upcasted = len(full_shape)-ki.upcasted
   # if there's no reduce, this is first_upcasted. assumes reduces are at the end
@@ -122,7 +124,7 @@ def get_index(ast:UOp, opts:Renderer) -> IndexContext:
   for a in range(first_reduce, first_reduce+group_for_reduces):
     ridxs[a] = UOp(Ops.RANGE, dtypes.int, (sint_to_uop(full_shape[a]),), 1000+a)
 
-  return IndexContext(idxs, ridxs)
+  return IndexContext(idxs, ridxs, has_reduce)
 
 # ***** lowering (given index) *****
 
@@ -142,6 +144,10 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
   if x.op is Ops.LOAD:
     barrier = (UOp(Ops.BARRIER, dtypes.void, (x.src[1],)),) if buf.op is Ops.DEFINE_LOCAL else ()
     return UOp(Ops.LOAD, x.dtype, (buf.index(idx, valid),) + barrier)
+  exclude_axis:tuple[int, ...] = ()
+  if cast(PtrDType, buf.dtype).local and ctx.has_reduce:
+    for i,(ix,sz) in enumerate(zip(ctx.idxs, unwrap(x.st).shape)):
+      if ix.op is Ops.UNROLL and sz == 1: exclude_axis += (i,)
   # NOTE: only store the local reduceop in the threads that are actually doing the reduce
   if cast(PtrDType, buf.dtype).local and x.src[1].op is Ops.REDUCE:
     reduce_input = x.src[1].src[0]
@@ -152,7 +158,8 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
   if (not cast(PtrDType, buf.dtype).local) or store_back:
     for oidx, ridx in zip(ctx.idxs, ctx.ridxs):
       if oidx is not ridx: valid = valid * oidx.eq(0)
-  return UOp(Ops.STORE, dtypes.void, (buf.index(idx, valid), x.src[1]))
+  new_arg = exclude_axis if len(exclude_axis) > 0 else None
+  return UOp(Ops.STORE, dtypes.void, (buf.index(idx, valid), x.src[1]), arg=new_arg)
 
 def lower_const(x:UOp):
   assert all(v.mask is None for v in unwrap(x.st).views), f"VIEW in CONST/DEFINE_VAR source must be unmasked, got {x.st}"
