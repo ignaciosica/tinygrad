@@ -314,6 +314,7 @@ class Kernel:
     if not self.opts.tensor_cores: return False
     try: # check TC first and apply hand-coded opts if successful
       self.apply_opt(Opt(OptOps.TC, axis, (tc_select, tc_opt, use_tensor_cores)))
+      if getenv("SKIP", 0): return True
 
       if (tc_opts:=self.tensor_core_opts) is not None:
         if extra_opts is not None: self.apply_opts(extra_opts)
@@ -487,8 +488,9 @@ class Kernel:
 
             if self.use_tensor_cores == 3:  # for TC=3, emulate the warp addressing with locals
               local_shape = tuple(1 if st == 0 or i < wd or (i >= self.first_reduce and i < tcd) else src_st.shape[i] \
-                                  for i,st in enumerate(src_st.real_strides()))
+                                  for i,st in enumerate(src_st.real_strides(True)))
               st = store_st = ShapeTracker.from_shape(local_shape)
+              st = st.expand(tuple(self.full_shape[i] if self.global_dims <= i < self.first_reduce else s for i, s in enumerate(st.shape)))
               local_buffer = UOp(Ops.DEFINE_LOCAL, tc.dtype_in.ptr(size=st.real_size(), local=True), (), f"temp{i}")
               if swizzle: store_st = get_tc_swizzle_st(store_st.shape, *swizzle)
               local_store = UOp.store(local_buffer.view(store_st), srcs[i])

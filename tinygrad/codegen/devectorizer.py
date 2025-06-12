@@ -71,6 +71,10 @@ def expand_index(buf:UOp, vec:UOp, mask:UOp|None=None):
   # generate the individual indexes
   midx = graph_rewrite(UOp.sink(*[buf.index(vec.gep(i), mask.gep(i) if mask is not None else None) for i in range(vec.dtype.count)]),
                        symbolic_flat+load_store_indexing, name=f"index_buf_{buf.arg}")
+  if getenv("DISABLE_INDEX_GROUPING", 0):
+    ptrdtype = cast(PtrDType, buf.dtype)
+    post_cat = UOp(Ops.PTRCAT, ptrdtype.base.ptr(size=ptrdtype.size, local=ptrdtype.local).vec(vec.dtype.count),tuple(src for src in midx.src))
+    return post_cat.gep(tuple(range(vec.dtype.count)))
   # extract all the relevant offsets
   offsets_rootsrc: defaultdict[Any, dict[int, list[int]]] = defaultdict(dict)
   for i in range(vec.dtype.count):
