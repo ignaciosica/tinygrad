@@ -18,7 +18,9 @@ def get_kernel(renderer:Renderer, ast:UOp) -> Kernel:
   if not NOOPT:
     if not k.apply_tensor_cores(getenv("TC", 1)): k.apply_opts(hand_coded_optimizations(k))
     try:
+      print("try applying lds")
       for buf in range(6): k.apply_opt(Opt(OptOps.LDS, buf, None))
+      # k.apply_opt(Opt(OptOps.LDS, 1, None))
     except Exception as e: print(e)
     if BEAM >= 1:
       from tinygrad.engine.search import beam_search, bufs_from_lin

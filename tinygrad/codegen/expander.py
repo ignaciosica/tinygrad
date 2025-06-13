@@ -1,7 +1,7 @@
 # this converts a lowerer program into a vectorized program
 
 import functools, itertools, operator
-from tinygrad.helpers import AMX, dedup, flatten, all_same, prod
+from tinygrad.helpers import AMX, dedup, flatten, all_same, prod, get_single_element
 from tinygrad.uop.ops import UOp, Ops, UPat, PatternMatcher, GroupOp
 
 def _expand_arg_to_idx(args:tuple[tuple[int, int], ...], rpk:dict[int, int]) -> int:
@@ -61,7 +61,8 @@ def do_expand(root:UOp):
         # repeat the arg
         new_srcs.append(src.broadcast(expand_sz))
 
-  new_arg = root.arg
+  if root.op is Ops.STORE and root.arg: new_arg = None
+  else: new_arg = root.arg
   if root.op is Ops.GEP:
     assert root.dtype.count == 1
     # is this right?
@@ -101,7 +102,7 @@ expander = PatternMatcher([
     lambda ex,x,y: UOp(Ops.UNROLL, ex.dtype, tuple((x+y).gep(i) for i in range(256 if AMX else 8)), ex.arg)),
 ])
 
-def create_gate(root:UOp) -> UOp|None:
+def create_gate_store(root:UOp) -> UOp|None:
   @functools.cache
   def _gate_srcs(u:UOp, gate:UOp) -> UOp:
     if u.op is Ops.BARRIER: return u
@@ -112,9 +113,37 @@ def create_gate(root:UOp) -> UOp|None:
   if idx.op is Ops.CAST: idx = idx.src[0]
   return None if idx.op is not Ops.INDEX or len(idx.src) == 2 or (ret:=_gate_srcs(root, idx.src[2])) is root else ret
 
+# new rule for load from local, traverse back through mem access to collect gate from parent global load, might fix other issue too, would be crazy
+# NOTE: this is wrong! image the case where shared mem is swizzled or threads load collaberatelly into it? this break things, like padded TC=3 won't
+# work anymore.
+def create_gate_load(root: UOp) -> UOp | None:
+  if root.tag == "create_gate": return None
+  buf: UOp = root.src[0].src[0]
+  if buf.op is not Ops.DEFINE_LOCAL:
+    return None
+  # global_load = get_single_element([x for x in root.toposort() if x.op is Ops.LOAD and x.src[0].src[0].op is Ops.DEFINE_GLOBAL])
+  loads = [x for x in root.toposort() if x.op is Ops.LOAD and x.src[0].src[0].op is Ops.DEFINE_GLOBAL]
+  if len(loads) != 1: return None
+  global_load = get_single_element(loads)
+  # global_load = [x for x in root.toposort() if x.op is Ops.LOAD and x.src[0].src[0].op is Ops.DEFINE_GLOBAL]
+  global_index = global_load.src[0]
+  if len(global_index.src) == 2:
+    return None
+
+  load_index = root.src[0]
+  if len(load_index.src) == 2:
+    new_index = load_index.replace(src=load_index.src + (global_index.src[2],))
+  else:
+    # new_index = load_index.replace(src=load_index.src[:2] + (load_index.src[2] & global_index.src[2],))
+    new_index = load_index.replace(src=load_index.src[:2] + (global_index.src[2],))
+  return root.replace(src=(new_index,) + root.src[1:], tag="create_gate")
+
+
 migrate_indexing = PatternMatcher([
   # create gate MUST BE BEFORE expander
-  (UPat(Ops.STORE, name="root"), create_gate),
+  (UPat(Ops.STORE, name="root"), create_gate_store),
+  # retrieve gate MUST BE BEFORE expander
+  (UPat(Ops.LOAD, name="root"), create_gate_load),
 ])
 
 # **** IGNORE support ****
