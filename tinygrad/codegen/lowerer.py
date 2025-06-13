@@ -142,6 +142,15 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
   if x.op is Ops.LOAD:
     barrier = (UOp(Ops.BARRIER, dtypes.void, (x.src[1],)),) if buf.op is Ops.DEFINE_LOCAL else ()
     return UOp(Ops.LOAD, x.dtype, (buf.index(idx, valid),) + barrier)
+  if cast(PtrDType, buf.dtype).local:
+    contract_axis:tuple[tuple[int, int], ...] = ()
+    exclude_axis:tuple[int, ...] = ()
+    for i,(ix,sz) in enumerate(zip(ctx.idxs, unwrap(x.st).shape)):
+      if ix.op is Ops.UNROLL and sz != 1: contract_axis += ((i, cast(int, sz)),)
+      if ix.op is Ops.UNROLL and sz == 1: exclude_axis += (i,)
+    contract_sz = prod(s for _,s in contract_axis)
+    new_src = UOp(Ops.CONTRACT, buf.dtype.base.vec(contract_sz), (x.src[1],), contract_axis) if contract_axis else x.src[1]
+    return UOp(Ops.STORE, dtypes.void, (buf.index(idx, valid), new_src), arg=tuple(exclude_axis) if exclude_axis is not None else None)
   # NOTE: only store the local reduceop in the threads that are actually doing the reduce
   if cast(PtrDType, buf.dtype).local and x.src[1].op is Ops.REDUCE:
     reduce_input = x.src[1].src[0]
