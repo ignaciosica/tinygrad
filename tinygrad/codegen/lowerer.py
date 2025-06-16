@@ -142,6 +142,9 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
   if x.op is Ops.LOAD:
     barrier = (UOp(Ops.BARRIER, dtypes.void, (x.src[1],)),) if buf.op is Ops.DEFINE_LOCAL else ()
     return UOp(Ops.LOAD, x.dtype, (buf.index(idx, valid),) + barrier)
+  exclude_axis:tuple[int, ...] = ()
+  for i,(ix,sz) in enumerate(zip(ctx.idxs, unwrap(x.st).shape)):
+    if ix.op is Ops.UNROLL and sz == 1: exclude_axis += (i,)
   # NOTE: only store the local reduceop in the threads that are actually doing the reduce
   if cast(PtrDType, buf.dtype).local and x.src[1].op is Ops.REDUCE:
     reduce_input = x.src[1].src[0]
@@ -152,7 +155,7 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
   if (not cast(PtrDType, buf.dtype).local) or store_back:
     for oidx, ridx in zip(ctx.idxs, ctx.ridxs):
       if oidx is not ridx: valid = valid * oidx.eq(0)
-  return UOp(Ops.STORE, dtypes.void, (buf.index(idx, valid), x.src[1]))
+  return UOp(Ops.STORE, dtypes.void, (buf.index(idx, valid), x.src[1]), arg=exclude_axis)
 
 def lower_const(x:UOp):
   assert all(v.mask is None for v in unwrap(x.st).views), f"VIEW in CONST/DEFINE_VAR source must be unmasked, got {x.st}"
