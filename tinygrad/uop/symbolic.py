@@ -183,6 +183,7 @@ def div_and_mod_folding(x: UOp, y: UOp, which: Literal[Ops.MOD, Ops.IDIV], split
   return rem//(c//gcd)+quo
 
 def gep_through_wmma(gep:UOp, wmma:UOp):
+  if wmma.tag == "wmma_vec": return None
   out_sz = prod(x[1] for x in wmma.arg[6][-1])
   wmma_idxs = gep.arg[::out_sz]
   for i in range(out_sz):
