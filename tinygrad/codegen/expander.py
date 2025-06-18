@@ -22,7 +22,8 @@ def do_expand(root:UOp):
   expands = [x for x in root.src if x.op is Ops.UNROLL]
   if len(expands) == 0: return None
   # NOTE: we 0 out the reduce axis for WMMA. in theory they should all be the same, but is this always correct?
-  exclude_args = tuple(dedup(root.arg[-1] + tuple(y[0] for y in flatten(root.arg[-2])))) if root.op is Ops.WMMA else ()
+  # exclude_args = tuple(dedup(root.arg[-1] + tuple(y[0] for y in flatten(root.arg[-2])))) if root.op is Ops.WMMA else ()
+  exclude_args = ()
   if all_same(expands_args:=[x.arg for x in expands]) and len(exclude_args) == 0:
     # if there's only one expand arg, it's okay to use it (optimization)
     expand_args = expands[0].arg

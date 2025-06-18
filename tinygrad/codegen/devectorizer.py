@@ -266,12 +266,12 @@ correct_load_store = PatternMatcher([
 # TODO: there's a lot shared with gep_through_wmma here
 def no_vectorized_wmma(wmma:UOp):
   out_sz = prod(x[1] for x in wmma.arg[6][-1])
-  if wmma.dtype.count == out_sz: return None
+  if wmma.dtype.count == out_sz or wmma.tag == "wmma_vec": return None
   tsrcs = []
   for s,sz in zip(wmma.src, wmma.arg[6]):
     ssz = prod(x[1] for x in sz)
     tsrcs.append([s.gep(tuple(range(grp, grp+ssz))) for grp in range(0, s.dtype.count, ssz)])
-  wmmas = [UOp(Ops.WMMA, wmma.dtype.scalar().vec(out_sz), tsrc, wmma.arg) for tsrc in zip(*tsrcs)]
+  wmmas = [UOp(Ops.WMMA, wmma.dtype.scalar().vec(out_sz), tsrc, wmma.arg, tag="wmma_vec") for tsrc in zip(*tsrcs)]
   wmma_ex = flatten([[e.gep(i) for i in range(out_sz)] for e in wmmas])
   return UOp(Ops.VECTORIZE, wmma.dtype, tuple(wmma_ex))
 
