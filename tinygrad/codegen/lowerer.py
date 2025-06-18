@@ -138,15 +138,19 @@ def lower_reduce_axis(ctx: IndexContext, x: UOp):
   return UOp(Ops.REDUCE, x.dtype, (ret,)+tuple(reduce_range), alu_op)
 
 def lower_load(ctx: IndexContext, x: UOp, buf: UOp):
-  idx, valid = x.st_arg.to_indexed_uops(ctx.ridxs if buf.op is Ops.DEFINE_LOCAL else ctx.idxs)
-  barrier = (UOp(Ops.BARRIER, dtypes.void, (x.src[1],)),) if buf.op is Ops.DEFINE_LOCAL else ()
+  idx, valid = x.st_arg.to_indexed_uops(ctx.idxs)
+  return UOp(x.op, x.dtype, (buf.index(idx, valid),))
+
+def lower_local_load(ctx: IndexContext, x: UOp, buf: UOp):
+  idx, valid = x.st_arg.to_indexed_uops(ctx.ridxs)
+  barrier = (UOp(Ops.BARRIER, dtypes.void, (x.src[1],)),)
   return UOp(Ops.LOAD, x.dtype, (buf.index(idx, valid),) + barrier)
 
-def lower_global_store(ctx: IndexContext, x: UOp, buf: UOp):
+def lower_store(ctx: IndexContext, x: UOp, buf: UOp):
   idx, valid = x.st_arg.to_indexed_uops(ctx.idxs)
   for oidx, ridx in zip(ctx.idxs, ctx.ridxs):
     if oidx is not ridx: valid = valid * oidx.eq(0)
-  return UOp(Ops.STORE, dtypes.void, (buf.index(idx, valid), x.src[1]))
+  return UOp(x.op, x.dtype, (buf.index(idx, valid), x.src[1]))
 
 def lower_local_store(ctx: IndexContext, x: UOp, buf: UOp):
   idx, valid = x.st_arg.to_indexed_uops(ctx.idxs)
@@ -171,9 +175,10 @@ pm_lowerer = PatternMatcher([
   (UPat((Ops.CONST, Ops.DEFINE_VAR), src=(UPat(Ops.VIEW),), name="x"), lower_const),
   (UPat(Ops.VALID, src=(UPat(Ops.VIEW),), name="x"), lambda ctx,x: x.st_arg.to_indexed_uops(ctx.idxs)[1]),
   # rewrite LOAD/STORE VIEW to LOAD/STORE with indexed
-  (UPat(Ops.LOAD, src=(UPat.var("buf").view(),), allow_any_len=True, name="x"), lower_load),
+  (UPat(Ops.LOAD, src=(UPat(Ops.DEFINE_GLOBAL, name="buf").view(),), allow_any_len=True, name="x"), lower_load),
+  (UPat(Ops.LOAD,  src=(UPat(Ops.DEFINE_LOCAL, name="buf").view(),), allow_any_len=True, name="x"), lower_local_load),
+  (UPat(Ops.STORE, src=(UPat(Ops.DEFINE_GLOBAL, name="buf").view(),), allow_any_len=True, name="x"), lower_store),
   (UPat(Ops.STORE, src=(UPat(Ops.DEFINE_LOCAL, name="buf").view(),), allow_any_len=True, name="x"), lower_local_store),
-  (UPat(Ops.STORE, src=(UPat(Ops.DEFINE_GLOBAL, name="buf").view(),), allow_any_len=True, name="x"), lower_global_store),
   (UPat(Ops.INDEX, src=(UPat.var("b"), UPat.var("idx"), UPat.const(dtypes.bool, True))), lambda b, idx: b.index(idx)),
 ])
 
