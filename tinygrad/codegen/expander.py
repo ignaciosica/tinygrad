@@ -108,6 +108,7 @@ def create_gate(root:UOp) -> UOp|None:
     return u if (replace_source:=tuple(_gate_srcs(x, gate) for x in u.src)) == u.src else UOp(u.op, u.dtype, replace_source, u.arg)
   idx = root.src[0]
   if idx.op is Ops.CAST: idx = idx.src[0]
+  if idx.src[0].op is not Ops.DEFINE_GLOBAL: return None
   return None if idx.op is not Ops.INDEX or len(idx.src) == 2 or (ret:=_gate_srcs(root, idx.src[2])) is root else ret
 
 migrate_indexing = PatternMatcher([
