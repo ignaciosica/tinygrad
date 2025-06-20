@@ -565,11 +565,11 @@ class Kernel:
         smem_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"smem{buf.arg}")
 
         if global_access.op is Ops.LOAD:
-          smem_store = smem_buffer.view(store_st).store(global_access, tag="store")
+          smem_store = smem_buffer.view(store_st).store(global_access)
           return smem_buffer.view(load_st).load(smem_store, tag="smem")
 
         if global_access.op is Ops.STORE:
-          smem_store = smem_buffer.view(store_st).store(global_access.src[1], tag="store")
+          smem_store = smem_buffer.view(store_st).store(global_access.src[1])
           smem_load = smem_buffer.view(load_st).load(smem_store, tag="smem")
           return global_access.replace(src=(global_access.src[0], smem_load))
 
