@@ -72,6 +72,9 @@ class Kernel:
     self.tensor_core_opts: Optional[TensorCoreOptions] = None
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
+    global_buffers = set(buf.src[0].base.arg for buf in self.bufs)
+    self.smem_promotion: list[bool] = [False] * len(global_buffers)
+    self.smem_usage: int = 0
 
     # group simplifies
     self.simplify_ones()
@@ -91,6 +94,7 @@ class Kernel:
     ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals = \
       self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals
     ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
+    ret.smem_promotion, ret.smem_usage = self.smem_promotion[:], self.smem_usage
 
     return ret
 
@@ -326,6 +330,18 @@ class Kernel:
     except KernelOptError:
       return False
 
+  def get_smem_buffer_shapetracker(self, buf_st:ShapeTracker) -> ShapeTracker:
+    shape: list[sint] = []
+
+    for i, st in enumerate(buf_st.real_strides(True)):
+      if i < self.global_dims: shape.append(1)
+      elif self.first_reduce <= i < self.first_reduce + self.group_for_reduces: shape.append(buf_st.shape[i])
+      elif self.first_reduce <= i < self.first_upcast: shape.append(1)
+      elif st == 0: shape.append(1)
+      else: shape.append(buf_st.shape[i])
+
+    return ShapeTracker.from_shape(tuple(shape))
+
   def real_axis(self, opt:Opt):
     if opt.axis is None: return -1
     if opt.op is OptOps.UNROLL: return self.first_reduce+opt.axis
@@ -348,7 +364,9 @@ class Kernel:
       return
 
     axis = self.real_axis(opt)
-    check(axis < len(self.full_shape), "invalid axis")
+    if opt.op is not OptOps.PROMOTE_SMEM:
+      if opt.op != OptOps.SWAP: check(not any(self.smem_promotion), f"can't reshape after SMEM_BUFFER promotion {self.applied_opts=} {opt=}")
+      check(axis < len(self.full_shape), "invalid axis")
 
     if opt.op is OptOps.SWAP: amt = cast(int, opt.arg)  # arg is an axis in the SWAPs
     elif opt.arg is not None:
@@ -419,6 +437,19 @@ class Kernel:
           self.sts[i] = st.pad(((0,0),) * axis + ((0,ru),) + ((0,0),) * (len(st.shape)-axis-1))
           padded = True
       check(padded, "nothing was padded")
+    elif opt.op is OptOps.PROMOTE_SMEM:
+      check(0 <= axis < len(self.smem_promotion) and not self.smem_promotion[axis], f"invalid buffer selection for smem promotion ({axis})")
+      # TODO: explicit check for single access
+      buf_st = get_single_element([st for st, buf in zip(self.sts, self.bufs) if buf.src[0].base.arg == axis])
+      smem_buffer_st = self.get_smem_buffer_shapetracker(buf_st)
+      check(self.smem_usage + smem_buffer_st.real_size() <= self.opts.shared_max, f"smem memory use exceeds max memory size ({self.opts.shared_max})")
+
+      # TODO: remove checks
+      # check(self.group_for_reduces == 0, "can't apply lds with group/grouptop")
+      check(all(not buf_st.axis_is_masked(i) for i in range(len(buf_st.shape))), "can't apply lds with masked axis")
+
+      self.smem_usage += smem_buffer_st.real_size()
+      self.smem_promotion[axis] = True
 
     if append_opt: self.applied_opts.append(opt)
     if self.simplify_ones() and self.tensor_core_opts:
@@ -524,6 +555,27 @@ class Kernel:
     fixed_ast = fixup_ast(self.ast)
     del fixup_ast
     return graph_rewrite(fixed_ast, view_left, name="fixup optimized AST")
+  
+  def promote_buffers(self, ast) -> UOp:
+    def promote(ctx: Kernel, global_access: UOp):
+      buf, kernel = global_access.src[0].base, ctx
+      if buf.op is Ops.DEFINE_GLOBAL and kernel.smem_promotion[buf.arg] and global_access.tag != "promoted":
+        global_access = global_access.replace(tag="promoted")
+        store_st = load_st = kernel.get_smem_buffer_shapetracker(global_access.st_arg)
+        smem_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"smem{buf.arg}")
+
+        if global_access.op is Ops.LOAD:
+          smem_store = smem_buffer.view(store_st).store(global_access, tag="store")
+          return smem_buffer.view(load_st).load(smem_store, tag="smem")
+
+        if global_access.op is Ops.STORE:
+          smem_store = smem_buffer.view(store_st).store(global_access.src[1], tag="store")
+          smem_load = smem_buffer.view(load_st).load(smem_store, tag="smem")
+          return global_access.replace(src=(global_access.src[0], smem_load))
+
+      return None
+
+    return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), promote)]), ctx=self)
 
   # TODO: update the tests and delete these methods
 

@@ -113,14 +113,14 @@ def lower_reduce_axis(ctx: IndexContext, x: UOp):
   return UOp(Ops.REDUCE, x.dtype, (ret,)+tuple(reduce_range), alu_op)
 
 def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
-  idx, valid = x.st_arg.to_indexed_uops(ctx.ridxs if x.op is Ops.LOAD and buf.op is Ops.DEFINE_LOCAL else ctx.idxs)
+  idx, valid = x.st_arg.to_indexed_uops(ctx.ridxs if x.op is Ops.LOAD and buf.op is Ops.DEFINE_LOCAL and x.tag != "smem" else ctx.idxs)
   if x.op is Ops.LOAD:
     barrier = (UOp(Ops.BARRIER, dtypes.void, (x.src[1],)),) if buf.op is Ops.DEFINE_LOCAL else ()
-    return UOp(Ops.LOAD, x.dtype, (buf.index(idx, valid),) + barrier)
+    return UOp(Ops.LOAD, x.dtype, (buf.index(idx, valid),) + barrier, tag=x.tag)
   # NOTE: only store the local reduceop in the threads that are actually doing the reduce
   if cast(PtrDType, buf.dtype).local and x.src[1].op is Ops.REDUCE:
     reduce_input = x.src[1].src[0]
-    store_back = reduce_input.op is Ops.LOAD and cast(PtrDType, reduce_input.src[0].dtype).local
+    store_back = reduce_input.op is Ops.LOAD and cast(PtrDType, reduce_input.src[0].dtype).local and reduce_input.tag != "smem"
   else: store_back = False
   if (not cast(PtrDType, buf.dtype).local) or store_back:
     for oidx, ridx in zip(ctx.idxs, ctx.ridxs):
