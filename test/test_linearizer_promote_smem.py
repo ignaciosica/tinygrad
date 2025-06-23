@@ -4,7 +4,7 @@ import torch
 import unittest
 from dataclasses import replace
 
-from tinygrad.codegen.kernel import Opt, OptOps, KernelOptError, Kernel
+from tinygrad.opt.kernel import Opt, OptOps, KernelOptError, Kernel
 from tinygrad.uop.ops import Ops
 from tinygrad.device import Device
 from tinygrad.tensor import Tensor
@@ -25,7 +25,7 @@ def helper_lds_allclose(r:Tensor, desired:np.ndarray, opts:list[Opt]|None=None, 
   CompiledRunner(replace(k.to_program(), device=Device.DEFAULT)).exec(bufs)
 
   np.testing.assert_allclose(bufs[0].numpy().reshape(r.shape), desired, atol=atol, rtol=rtol)
-  local_bufs = [uop for uop in k.uops if uop.op is Ops.DEFINE_LOCAL]
+  local_bufs = [uop for uop in k.uops if uop.op is Ops.DEFINE_LOCAL and uop.arg[:4] == "smem"]
   global_bufs = [uop for uop in k.uops if uop.op is Ops.DEFINE_GLOBAL]
 
   assert k.smem_usage == sum([sz for _, sz in desired_bufs_sizes]), f"{k.smem_usage=} != {sum([sz for _, sz in desired_bufs_sizes])=}"
@@ -135,6 +135,13 @@ class TestLDS(unittest.TestCase):
                         Opt(OptOps.UPCAST, 0, 8),
                         Opt(OptOps.UPCAST, 0, 16)]
     helper_lds_matmul(opts=full_upcast_opts, desired_bufs_sizes=[(0,1024),(1,64),(2,16)])
+
+  def test_lds_group(self):
+    basic_upcast_opts = [Opt(OptOps.GROUP, 0, 2)]
+    helper_lds_matmul(opts=basic_upcast_opts, desired_bufs_sizes=[(0,1),(1,2),(2,2)])
+
+    multi_upcast_opts = [Opt(OptOps.GROUPTOP, 0, 2)]
+    helper_lds_matmul(opts=multi_upcast_opts, desired_bufs_sizes=[(0,1),(1,2),(2,2)])
 
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   def test_lds_tc(self):
