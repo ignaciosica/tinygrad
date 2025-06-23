@@ -123,8 +123,6 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
     # NOTE: store back into the buffer if you are loading from the same buffer you are storing into (buffer from group for reduce)
     store_back = reduce_input.op is Ops.LOAD and cast(PtrDType, reduce_input.src[0].dtype).local and buf in reduce_input.toposort()
   else: store_back = False
-  # NOTE: If we're storing the reduced value back into each thread, need to zero-out the reduced axes
-  if store_back: idx, _ = x.st_arg.to_indexed_uops([u.const_like(0) if u in x.src[1].src else u for u in ctx.idxs])
   if buf.op is Ops.DEFINE_GLOBAL or store_back:
     for oidx, ridx in zip(ctx.idxs, ctx.ridxs):
       if oidx is not ridx: valid = valid * oidx.eq(0)
