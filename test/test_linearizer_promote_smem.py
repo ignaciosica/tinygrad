@@ -25,7 +25,7 @@ def helper_lds_allclose(r:Tensor, desired:np.ndarray, opts:list[Opt]|None=None, 
   CompiledRunner(replace(k.to_program(), device=Device.DEFAULT)).exec(bufs)
 
   np.testing.assert_allclose(bufs[0].numpy().reshape(r.shape), desired, atol=atol, rtol=rtol)
-  local_bufs = [uop for uop in k.uops if uop.op is Ops.DEFINE_LOCAL and uop.arg[:4] == "smem"]
+  local_bufs = [uop for uop in k.uops if uop.op is Ops.DEFINE_LOCAL and "smem" in uop.arg]
   global_bufs = [uop for uop in k.uops if uop.op is Ops.DEFINE_GLOBAL]
 
   assert k.smem_usage == sum([sz for _, sz in desired_bufs_sizes]), f"{k.smem_usage=} != {sum([sz for _, sz in desired_bufs_sizes])=}"
