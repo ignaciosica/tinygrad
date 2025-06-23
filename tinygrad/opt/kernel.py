@@ -161,6 +161,16 @@ class Kernel:
     if pad: ret += ' '*(pad-ansilen(ret))
     return ret
 
+  def get_smem_buffer_shape(self, buf_st:ShapeTracker) -> tuple[sint, ...]:
+    shape: list[sint] = []
+
+    for i, st in enumerate(buf_st.real_strides()):
+      if self.first_reduce <= i < self.first_reduce + self.group_for_reduces: shape.append(buf_st.shape[i])
+      elif i < self.global_dims or self.first_reduce <= i < self.first_upcast or st == 0: shape.append(1)
+      else: shape.append(buf_st.shape[i])
+
+    return tuple(shape)
+
   # ******************** base simplifiers ********************
 
   # apply reshape and permute to all shapetrackers
@@ -330,18 +340,6 @@ class Kernel:
     except KernelOptError:
       return False
 
-  def get_smem_buffer_shapetracker(self, buf_st:ShapeTracker) -> ShapeTracker:
-    shape: list[sint] = []
-
-    for i, st in enumerate(buf_st.real_strides(True)):
-      if i < self.global_dims: shape.append(1)
-      elif self.first_reduce <= i < self.first_reduce + self.group_for_reduces: shape.append(buf_st.shape[i])
-      elif self.first_reduce <= i < self.first_upcast: shape.append(1)
-      elif st == 0: shape.append(1)
-      else: shape.append(buf_st.shape[i])
-
-    return ShapeTracker.from_shape(tuple(shape))
-
   def real_axis(self, opt:Opt):
     if opt.axis is None: return -1
     if opt.op is OptOps.UNROLL: return self.first_reduce+opt.axis
@@ -441,11 +439,11 @@ class Kernel:
       check(0 <= axis < len(self.smem_promotion) and not self.smem_promotion[axis], f"invalid buffer selection for smem promotion ({axis})")
       # TODO: explicit check for single access
       buf_st = get_single_element([st for st, buf in zip(self.sts, self.bufs) if buf.src[0].base.arg == axis])
-      smem_buffer_st = self.get_smem_buffer_shapetracker(buf_st)
+      smem_buffer_shape = self.get_smem_buffer_shape(buf_st)
+      smem_buffer_st = ShapeTracker.from_shape(smem_buffer_shape)
       check(self.smem_usage + smem_buffer_st.real_size() <= self.opts.shared_max, f"smem memory use exceeds max memory size ({self.opts.shared_max})")
 
       # TODO: remove checks
-      # check(self.group_for_reduces == 0, "can't apply lds with group/grouptop")
       check(all(not buf_st.axis_is_masked(i) for i in range(len(buf_st.shape))), "can't apply lds with masked axis")
 
       self.smem_usage += smem_buffer_st.real_size()
