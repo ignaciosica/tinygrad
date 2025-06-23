@@ -120,6 +120,7 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
   # NOTE: only store the local reduceop in the threads that are actually doing the reduce
   if cast(PtrDType, buf.dtype).local and x.src[1].op is Ops.REDUCE:
     reduce_input = x.src[1].src[0]
+    # NOTE: store back into the buffer if you are loading from the same buffer you are storing into (buffer from group for reduce)
     store_back = reduce_input.op is Ops.LOAD and cast(PtrDType, reduce_input.src[0].dtype).local and buf in reduce_input.toposort()
   else: store_back = False
   # NOTE: If we're storing the reduced value back into each thread, need to zero-out the reduced axes
