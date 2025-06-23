@@ -136,6 +136,7 @@ class TestLDS(unittest.TestCase):
                         Opt(OptOps.UPCAST, 0, 16)]
     helper_lds_matmul(opts=full_upcast_opts, desired_bufs_sizes=[(0,1024),(1,64),(2,16)])
 
+  @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
   def test_lds_group(self):
     basic_upcast_opts = [Opt(OptOps.GROUP, 0, 2)]
     helper_lds_matmul(opts=basic_upcast_opts, desired_bufs_sizes=[(0,1),(1,2),(2,2)])
