@@ -2071,6 +2071,10 @@ class TestKernelOpts(unittest.TestCase):
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.tensor_cores, "test requires tensor cores")
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_local, "test requires locals")
   @unittest.skipUnless(Device[Device.DEFAULT].renderer.has_shared, "test requires shared memory")
+  # NOTE: the METAL test is broken, likely due to a compiler bug. passes on CI with -O0 and with default opt level locally on M3
+  # passing CI with O0 https://github.com/ignaciosica/tinygrad/actions/runs/15834340421/job/44634346045?pr=212#step:4:1
+  # failing CI with default O level https://github.com/ignaciosica/tinygrad/actions/runs/15834340421/job/44634346045?pr=212#step:4:155
+  @unittest.skipIf(CI and Device.DEFAULT == "METAL", "broken for METAL")
   @unittest.skipIf(CI and Device.DEFAULT in {"AMD"}, "AMD CI doesn't support multiple sync threads yet")
   def test_tensor_core_emulation_opts_group(self):
     N = 128
