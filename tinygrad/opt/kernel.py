@@ -526,14 +526,3 @@ class Kernel:
     fixed_ast = fixup_ast(self.ast)
     del fixup_ast
     return graph_rewrite(fixed_ast, view_left, name="fixup optimized AST")
-
-  # TODO: update the tests and delete these methods
-
-  def linearize(self):
-    self.to_program()
-    return self
-  def to_program(self, name_override:Optional[str]=None) -> ProgramSpec:
-    from tinygrad.engine.realize import get_program
-    ret = get_program(self.get_optimized_ast(name_override), self.opts)
-    self.uops = ret.uops
-    return ret
