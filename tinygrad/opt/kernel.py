@@ -4,12 +4,13 @@ from dataclasses import dataclass
 from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
 
-from tinygrad.uop.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, smax
+from tinygrad.uop.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, smax, PatternMatcher, UPat
 from tinygrad.uop.spec import type_verify, ast_spec
 from tinygrad.device import Device
 from tinygrad.renderer import Renderer, TensorCore, ProgramSpec, Opt, OptOps
 from tinygrad.dtype import ImageDType
-from tinygrad.helpers import all_same, colored, ansilen, dedup, prod, round_up, all_int, to_function_name, unwrap, DEBUG, TC_SELECT, TC_OPT, AMX
+from tinygrad.helpers import all_same, colored, ansilen, dedup, prod, round_up, all_int, to_function_name, unwrap, get_single_element
+from tinygrad.helpers import DEBUG, TC_SELECT, TC_OPT, AMX
 from tinygrad.shape.shapetracker import ShapeTracker
 from tinygrad.shape.view import strides_for_shape, get_contraction
 from tinygrad.kernelize.kernelize import view_left
@@ -554,6 +555,28 @@ class Kernel:
     del fixup_ast
     return graph_rewrite(fixed_ast, view_left, name="fixup optimized AST")
 
+  def promote_buffers(self, ast) -> UOp:
+    def promote(ctx: Kernel, global_access: UOp):
+      buf, kernel = global_access.src[0].base, ctx
+      if buf.op is Ops.DEFINE_GLOBAL and kernel.smem_promotion[buf.arg] and global_access.tag != "promoted":
+        global_access = global_access.replace(tag="promoted")
+        smem_buffer_shape = kernel.get_smem_buffer_shape(global_access.st_arg)
+        store_st = load_st = ShapeTracker.from_shape(smem_buffer_shape)
+        smem_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"smem{buf.arg}")
+
+        if global_access.op is Ops.LOAD:
+          smem_store = smem_buffer.view(store_st).store(global_access)
+          return smem_buffer.view(load_st).load(smem_store)
+
+        if global_access.op is Ops.STORE:
+          smem_store = smem_buffer.view(store_st).store(global_access.src[1])
+          smem_load = smem_buffer.view(load_st).load(smem_store)
+          return global_access.replace(src=(global_access.src[0], smem_load))
+
+      return None
+
+    return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), promote)]), ctx=self)
+
   # TODO: update the tests and delete these methods
 
   def linearize(self):
@@ -561,6 +584,8 @@ class Kernel:
     return self
   def to_program(self, name_override:Optional[str]=None) -> ProgramSpec:
     from tinygrad.engine.realize import get_program
-    ret = get_program(self.get_optimized_ast(name_override), self.opts)
+    ast = self.get_optimized_ast(name_override)
+    if any(self.smem_promotion): ast = self.promote_buffers(ast)
+    ret = get_program(ast, self.opts)
     self.uops = ret.uops
     return ret
