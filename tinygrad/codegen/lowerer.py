@@ -118,11 +118,7 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
     barrier = (UOp(Ops.BARRIER, dtypes.void, (x.src[1],)),) if buf.op is Ops.DEFINE_LOCAL else ()
     return UOp(Ops.LOAD, x.dtype, (buf.index(idx, valid),) + barrier)
   # NOTE: only store the local reduceop in the threads that are actually doing the reduce
-  if buf.op is Ops.DEFINE_LOCAL and x.src[1].op is Ops.REDUCE:
-    reduce_input = x.src[1].src[0]
-    # NOTE: store back into the buffer if you are loading from the same buffer you are storing into (buffer from group for reduce)
-    store_back = reduce_input.op is Ops.LOAD and cast(PtrDType, reduce_input.src[0].dtype).local # and buf in reduce_input.toposort()
-  else: store_back = False
+  store_back = buf.op is Ops.DEFINE_LOCAL and (reduce:=x.src[1]).op is Ops.REDUCE and (load:=reduce.src[0]).op is Ops.LOAD and buf in load.toposort()
   if buf.op is Ops.DEFINE_GLOBAL or store_back:
     for oidx, ridx in zip(ctx.idxs, ctx.ridxs):
       if oidx is not ridx: valid = valid * oidx.eq(0)
