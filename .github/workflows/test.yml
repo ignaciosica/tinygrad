@@ -753,6 +753,8 @@ jobs:
         cuda: 'true'
         ocelot: 'true'
         llvm: 'true'
+    - name: Failing Kernel
+      run: DEBUG=4 python3 -m pytest -n=auto test/test_linearizer.py::TestKernelOpts::test_tensor_core_opts_group -s
     - name: Run real world test
       run: METAL=1 python -m pytest -n=auto test/models/test_real_world.py --durations=20
     - name: Test models (Metal)
