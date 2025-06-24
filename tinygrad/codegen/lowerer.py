@@ -120,7 +120,7 @@ def lower_load_store(ctx: IndexContext, x: UOp, buf: UOp):
   # NOTE: only store the local reduceop in the threads that are actually doing the reduce
   if buf.op is Ops.DEFINE_LOCAL and x.src[1].op is Ops.REDUCE:
     reduce_input = x.src[1].src[0]
-    store_back = reduce_input.op is Ops.LOAD and cast(PtrDType, reduce_input.src[0].dtype).local and buf in reduce_input.toposort()
+    store_back = reduce_input.op is Ops.LOAD and buf in reduce_input.toposort()
   else: store_back = False
   if buf.op is Ops.DEFINE_GLOBAL or store_back:
     for oidx, ridx in zip(ctx.idxs, ctx.ridxs):
