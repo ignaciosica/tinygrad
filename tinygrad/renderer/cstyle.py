@@ -290,7 +290,10 @@ class MetalRenderer(CStyleLanguage):
   buffer_prefix = "device "
   smem_prefix = "threadgroup __attribute__((aligned(16))) "
   arg_int_prefix = "constant int&"
-  barrier = "threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);" # noqa :E501
+  barrier = """
+  threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
+    simdgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
+  """ # noqa :E501
   float4 = "float4"
   code_for_workitem = {"g": lambda x: f"gid.{chr(120+int(x))}", "l": lambda x: f"lid.{chr(120+int(x))}"}
   # uint3 used for gid/lid - TODO: this should probably be `ushort3 lid [[thread_position_in_threadgroup]]`
@@ -318,7 +321,10 @@ class MetalRenderer(CStyleLanguage):
   simdgroup_{self.render_dtype(arg[2])}8x8 mat_a, mat_b; simdgroup_{self.render_dtype(arg[3])}8x8 mat_c;
   mat_a.thread_elements()[0] = a[0]; mat_b.thread_elements()[0] = b[0]; mat_c.thread_elements()[0] = c[0];
   mat_a.thread_elements()[1] = a[1]; mat_b.thread_elements()[1] = b[1]; mat_c.thread_elements()[1] = c[1];
-  simdgroup_multiply_accumulate(mat_c, mat_a, mat_b, mat_c);\n  return {dtype_out}(mat_c.thread_elements()[0], mat_c.thread_elements()[1]);\n}}""")
+  simdgroup_multiply_accumulate(mat_c, mat_a, mat_b, mat_c);\n  {dtype_out} ret = {dtype_out}(mat_c.thread_elements()[0], mat_c.thread_elements()[1]);
+  threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
+    simdgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
+  return ret;\n}}""")
     return super().render_kernel(function_name, kernel, bufs, uops, prefix)
 
 _nms = "xyzwabcdefghijkl"
