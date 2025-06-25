@@ -2060,12 +2060,12 @@ class TestKernelOpts(unittest.TestCase):
     atol, rtol = 0.25, 0.01
     helper_linearizer_opt(r, [
       [Opt(OptOps.GROUP, 0, 2)],
-      # [Opt(OptOps.GROUPTOP, 0, 4)],
-      # [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.GROUP, 0, 2)],
-      # [Opt(OptOps.LOCAL, 0, 4), Opt(OptOps.GROUP, 0, 2)],
-      # [Opt(OptOps.UNROLL, 0, 4), Opt(OptOps.GROUP, 0, 2)],
-      # [Opt(OptOps.UPCAST, 0, 2), Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.GROUP, 0, 2)],
-      # [Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.GROUPTOP, 0, 8), Opt(OptOps.UNROLL, 0, 2), Opt(OptOps.UPCAST, 1, 2)],
+      [Opt(OptOps.GROUPTOP, 0, 4)],
+      [Opt(OptOps.UPCAST, 0, 4), Opt(OptOps.GROUP, 0, 2)],
+      [Opt(OptOps.LOCAL, 0, 4), Opt(OptOps.GROUP, 0, 2)],
+      [Opt(OptOps.UNROLL, 0, 4), Opt(OptOps.GROUP, 0, 2)],
+      [Opt(OptOps.UPCAST, 0, 2), Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.GROUP, 0, 2)],
+      [Opt(OptOps.LOCAL, 0, 2), Opt(OptOps.GROUPTOP, 0, 8), Opt(OptOps.UNROLL, 0, 2), Opt(OptOps.UPCAST, 1, 2)],
     ], apply_tc=True, atol=atol, rtol=rtol)
 
   def test_padto_matmul(self):
