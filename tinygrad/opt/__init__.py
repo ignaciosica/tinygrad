@@ -1,6 +1,6 @@
 # opt opinionatedly transforms an ast into an optimized ast using either heuristics or beam search
 
-from tinygrad.opt.kernel import Kernel, Opt, OptOps
+from tinygrad.opt.kernel import Kernel
 from tinygrad.opt.heuristic import hand_coded_optimizations
 from tinygrad.uop.ops import UOp
 from tinygrad.helpers import NOOPT, BEAM, USE_TC, getenv
