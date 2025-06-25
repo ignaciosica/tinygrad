@@ -73,7 +73,7 @@ class Kernel:
     self.tensor_core_opts: Optional[TensorCoreOptions] = None
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
-    self.smem_promotion: list[bool] = [False] * len(set(x for x in self.ast.toposort() if x.op is Ops.DEFINE_GLOBAL))
+    self.smem_promotion: dict[int, bool] = {x.arg: False for x in self.ast.toposort() if x.op is Ops.DEFINE_GLOBAL}
     self.smem_usage: int = 0
 
     # group simplifies
@@ -94,7 +94,7 @@ class Kernel:
     ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals = \
       self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals
     ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
-    ret.smem_promotion, ret.smem_usage = self.smem_promotion[:], self.smem_usage
+    ret.smem_promotion, ret.smem_usage = self.smem_promotion.copy(), self.smem_usage
 
     return ret
 
@@ -360,7 +360,7 @@ class Kernel:
 
     axis = self.real_axis(opt)
     if opt.op is not OptOps.PROMOTE_SMEM:
-      if opt.op != OptOps.SWAP: check(not any(self.smem_promotion), f"can't reshape after SMEM_BUFFER promotion {self.applied_opts=} {opt=}")
+      if opt.op != OptOps.SWAP: check(not any(self.smem_promotion.values()), f"can't reshape after SMEM_BUFFER promotion {self.applied_opts=} {opt=}")
       check(axis < len(self.full_shape), "invalid axis")
 
     if opt.op is OptOps.SWAP: amt = cast(int, opt.arg)  # arg is an axis in the SWAPs
@@ -433,7 +433,7 @@ class Kernel:
           padded = True
       check(padded, "nothing was padded")
     elif opt.op is OptOps.PROMOTE_SMEM:
-      check(0 <= axis < len(self.smem_promotion) and not self.smem_promotion[axis], f"invalid buffer selection for smem promotion ({axis})")
+      check(axis in self.smem_promotion and not self.smem_promotion[axis], f"invalid buffer selection for smem promotion ({axis})")
       buffer, buffer_st = get_single_element([(buf, st) for buf, st in zip(self.bufs, self.sts) if buf.src[0].base.arg == axis])
       smem_buffer_st = self.get_smem_buffer_shapetracker(buffer_st)
       check(self.smem_usage + smem_buffer_st.real_size() * buffer.dtype.itemsize <= self.opts.shared_max, "smem memory use exceeds max memory size")
