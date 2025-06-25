@@ -318,9 +318,13 @@ class MetalRenderer(CStyleLanguage):
     prefix, wmma_args = ["#include <metal_stdlib>","using namespace metal;"], set([uop.arg for uop in uops if uop.op is Ops.WMMA])
     for arg in wmma_args: prefix.append(
   f"""{(dtype_out:=self.render_dtype(arg[3].vec(2)))} __{arg[0]}({(dtype_in:=self.render_dtype(arg[2].vec(2)))} a, {dtype_in} b, {dtype_out} c){{
+  threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
+    simdgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
   simdgroup_{self.render_dtype(arg[2])}8x8 mat_a, mat_b; simdgroup_{self.render_dtype(arg[3])}8x8 mat_c;
   mat_a.thread_elements()[0] = a[0]; mat_b.thread_elements()[0] = b[0]; mat_c.thread_elements()[0] = c[0];
   mat_a.thread_elements()[1] = a[1]; mat_b.thread_elements()[1] = b[1]; mat_c.thread_elements()[1] = c[1];
+  threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
+    simdgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
   simdgroup_multiply_accumulate(mat_c, mat_a, mat_b, mat_c);\n  {dtype_out} ret = {dtype_out}(mat_c.thread_elements()[0], mat_c.thread_elements()[1]);
   threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
     simdgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);
