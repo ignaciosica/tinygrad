@@ -162,12 +162,12 @@ class Kernel:
     if pad: ret += ' '*(pad-ansilen(ret))
     return ret
 
-  def get_smem_buffer_shape(self, buf_st:ShapeTracker) -> tuple[sint, ...]:
+  def get_smem_buffer_shapetracker(self, buf_st:ShapeTracker) -> ShapeTracker:
     shape: list[sint] = []
     for i, st in enumerate(buf_st.real_strides()):
       if i < self.global_dims or self.first_reduce <= i < self.first_upcast or st == 0: shape.append(1)
       else: shape.append(buf_st.shape[i])
-    return tuple(shape)
+    return ShapeTracker.from_shape(tuple(shape))
 
   # ******************** base simplifiers ********************
 
@@ -437,8 +437,7 @@ class Kernel:
       check(0 <= axis < len(self.smem_promotion) and not self.smem_promotion[axis], f"invalid buffer selection for smem promotion ({axis})")
       # TODO: explicit check for single access
       buf_st = get_single_element([st for st, buf in zip(self.sts, self.bufs) if buf.src[0].base.arg == axis])
-      smem_buffer_shape = self.get_smem_buffer_shape(buf_st)
-      smem_buffer_st = ShapeTracker.from_shape(smem_buffer_shape)
+      smem_buffer_st = self.get_smem_buffer_shapetracker(buf_st)
       # TODO: shared_max is in bytes, multiply real_size by buf dtype size
       check(self.smem_usage + smem_buffer_st.real_size() <= self.opts.shared_max, f"smem memory use exceeds max memory size ({self.opts.shared_max})")
 
@@ -559,8 +558,7 @@ class Kernel:
       buf, kernel = global_access.src[0].base, ctx
       if buf.op is Ops.DEFINE_GLOBAL and kernel.smem_promotion[buf.arg] and global_access.tag != "promoted":
         global_access = global_access.replace(tag="promoted")
-        smem_buffer_shape = kernel.get_smem_buffer_shape(global_access.st_arg)
-        store_st = load_st = ShapeTracker.from_shape(smem_buffer_shape)
+        store_st = load_st = kernel.get_smem_buffer_shapetracker(global_access.st_arg)
         smem_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"smem{buf.arg}")
 
         if global_access.op is Ops.LOAD:
