@@ -290,7 +290,7 @@ class MetalRenderer(CStyleLanguage):
   buffer_prefix = "device "
   smem_prefix = "threadgroup __attribute__((aligned(16))) "
   arg_int_prefix = "constant int&"
-  barrier = "threadgroup_barrier(mem_flags::mem_threadgroup);"
+  barrier = "threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_object_data | mem_flags::mem_threadgroup_imageblock);" # noqa :E501
   float4 = "float4"
   code_for_workitem = {"g": lambda x: f"gid.{chr(120+int(x))}", "l": lambda x: f"lid.{chr(120+int(x))}"}
   # uint3 used for gid/lid - TODO: this should probably be `ushort3 lid [[thread_position_in_threadgroup]]`
