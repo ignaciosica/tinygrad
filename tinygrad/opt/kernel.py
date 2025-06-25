@@ -73,8 +73,7 @@ class Kernel:
     self.tensor_core_opts: Optional[TensorCoreOptions] = None
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
-    global_buffers = set(buf.src[0].base.arg for buf in self.bufs)
-    self.smem_promotion: list[bool] = [False] * len(global_buffers)
+    self.smem_promotion: list[bool] = [False] * len(set(x for x in self.ast.toposort() if x.op is Ops.DEFINE_GLOBAL))
     self.smem_usage: int = 0
 
     # group simplifies
