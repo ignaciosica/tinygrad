@@ -22,11 +22,6 @@ def get_optimized_ast(ast:UOp, renderer:Renderer) -> UOp:
   if ast.arg is not None and ast.arg.opts_to_apply is not None: k.apply_opts(ast.arg.opts_to_apply)
   elif not NOOPT:
     if not k.apply_tensor_cores(USE_TC.value): k.apply_opts(hand_coded_optimizations(k))
-    if getenv("SMEM", 0):
-      for buf in range(5):
-        try:
-          k.apply_opt(Opt(OptOps.PROMOTE_SMEM, buf, None))
-        except Exception as e: print(e)
     if BEAM >= 1:
       from tinygrad.opt.search import beam_search, bufs_from_lin
       kb = Kernel(ast, opts=renderer)
