@@ -437,10 +437,8 @@ class Kernel:
       buffer, buffer_st = get_single_element([(buf, st) for buf, st in zip(self.bufs, self.sts) if buf.src[0].base.arg == axis])
       smem_buffer_st = self.get_smem_buffer_shapetracker(buffer_st)
       check(self.smem_usage + smem_buffer_st.real_size() * buffer.dtype.itemsize <= self.opts.shared_max, "smem memory use exceeds max memory size")
-
-      # TODO: remove checks
-      check(self.group_for_reduces == 0, "can't apply lds with group/grouptop")
-      check(all(not buffer_st.axis_is_masked(i) for i in range(len(buffer_st.shape))), "can't apply lds with masked axis")
+      check(self.group_for_reduces == 0, "can't apply lds with group/grouptop") # TODO: support group/grouptop
+      check(all(not buffer_st.axis_is_masked(i) for i in range(len(buffer_st.shape))), "can't apply lds with masked axis") # TODO: support masked axis
 
       self.smem_usage += smem_buffer_st.real_size() * buffer.dtype.itemsize
       self.smem_promotion[axis] = True
