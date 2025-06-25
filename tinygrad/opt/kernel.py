@@ -439,7 +439,6 @@ class Kernel:
       check(self.smem_usage + smem_buffer_st.real_size() * buffer.dtype.itemsize <= self.opts.shared_max, "smem memory use exceeds max memory size")
       check(self.group_for_reduces == 0, "can't apply lds with group/grouptop") # TODO: support group/grouptop
       check(all(not buffer_st.axis_is_masked(i) for i in range(len(buffer_st.shape))), "can't apply lds with masked axis") # TODO: support masked axis
-
       self.smem_usage += smem_buffer_st.real_size() * buffer.dtype.itemsize
       self.smem_promotion[axis] = True
 
