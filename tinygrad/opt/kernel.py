@@ -551,29 +551,9 @@ class Kernel:
       return ret
     fixed_ast = fixup_ast(self.ast)
     del fixup_ast
-    return graph_rewrite(fixed_ast, view_left, name="fixup optimized AST")
-
-  def promote_buffers(self, ast) -> UOp:
-    def promote(ctx: Kernel, global_access: UOp):
-      buf, kernel = global_access.src[0].base, ctx
-      if buf.op is Ops.DEFINE_GLOBAL and kernel.smem_promotion[buf.arg] and global_access.tag != "promoted":
-        global_access = global_access.replace(tag="promoted")
-        store_st = load_st = kernel.get_smem_buffer_shapetracker(global_access.st_arg)
-        smem_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"smem{buf.arg}")
-
-        if global_access.op is Ops.LOAD:
-          smem_store = smem_buffer.view(store_st).store(global_access)
-          return smem_buffer.view(load_st).load(smem_store)
-
-        if global_access.op is Ops.STORE:
-          smem_store = smem_buffer.view(store_st).store(global_access.src[1])
-          smem_load = smem_buffer.view(load_st).load(smem_store)
-          return global_access.replace(src=(global_access.src[0], smem_load))
-
-      return None
-
-    return graph_rewrite(ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), promote)]), ctx=self)
-
+    fixed_ast = graph_rewrite(fixed_ast, view_left, name="fixup optimized AST")
+    fixed_ast = graph_rewrite(fixed_ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), promote)]), ctx=self)
+    return fixed_ast
   # TODO: update the tests and delete these methods
 
   def linearize(self):
@@ -584,3 +564,21 @@ class Kernel:
     ret = get_program(self.get_optimized_ast(name_override), self.opts)
     self.uops = ret.uops
     return ret
+
+def promote(ctx: Kernel, global_access: UOp):
+  buf, kernel = global_access.src[0].base, ctx
+  if buf.op is Ops.DEFINE_GLOBAL and kernel.smem_promotion[buf.arg] and global_access.tag != "promoted":
+    global_access = global_access.replace(tag="promoted")
+    store_st = load_st = kernel.get_smem_buffer_shapetracker(global_access.st_arg)
+    smem_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"smem{buf.arg}")
+
+    if global_access.op is Ops.LOAD:
+      smem_store = smem_buffer.view(store_st).store(global_access)
+      return smem_buffer.view(load_st).load(smem_store)
+
+    if global_access.op is Ops.STORE:
+      smem_store = smem_buffer.view(store_st).store(global_access.src[1])
+      smem_load = smem_buffer.view(load_st).load(smem_store)
+      return global_access.replace(src=(global_access.src[0], smem_load))
+
+  return None
