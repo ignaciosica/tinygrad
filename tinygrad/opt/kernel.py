@@ -73,7 +73,7 @@ class Kernel:
     self.tensor_core_opts: Optional[TensorCoreOptions] = None
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
-    self.smem_promotion: dict[int, bool] = {x.arg: False for x in self.ast.toposort() if x.op is Ops.DEFINE_GLOBAL}
+    self.smem_promotion: dict[int, bool] = {x.arg: False for x in self.membufs}
     self.smem_usage: int = 0
 
     # group simplifies
@@ -434,7 +434,7 @@ class Kernel:
       check(padded, "nothing was padded")
     elif opt.op is OptOps.PROMOTE_SMEM:
       check(axis in self.smem_promotion and not self.smem_promotion[axis], f"invalid buffer selection for smem promotion ({axis})")
-      buffer, buffer_st = get_single_element([(buf, st) for buf, st in zip(self.bufs, self.sts) if buf.src[0].base.arg == axis])
+      buffer, buffer_st = get_single_element([(buf, st) for buf, st in zip(self.membufs, self.sts) if buf.arg == axis])
       smem_buffer_st = self.get_smem_buffer_shapetracker(buffer_st)
       check(self.smem_usage + smem_buffer_st.real_size() * buffer.dtype.itemsize <= self.opts.shared_max, "smem memory use exceeds max memory size")
       check(self.group_for_reduces == 0, "can't apply lds with group/grouptop") # TODO: support group/grouptop
@@ -547,8 +547,11 @@ class Kernel:
     fixed_ast = fixup_ast(self.ast)
     del fixup_ast
     fixed_ast = graph_rewrite(fixed_ast, view_left, name="fixup optimized AST")
-    fixed_ast = graph_rewrite(fixed_ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), promote)]), ctx=self)
+    if any(self.smem_promotion.values()):
+      fixed_ast = graph_rewrite(fixed_ast, PatternMatcher([(UPat((Ops.LOAD, Ops.STORE), name="global_access"), promote)]), ctx=self, name="smem promotion")
+
     return fixed_ast
+
   # TODO: update the tests and delete these methods
 
   def linearize(self):
@@ -561,11 +564,11 @@ class Kernel:
     return ret
 
 def promote(ctx: Kernel, global_access: UOp):
-  buf, kernel = global_access.src[0].base, ctx
-  if buf.op is Ops.DEFINE_GLOBAL and kernel.smem_promotion[buf.arg] and global_access.tag != "promoted":
+  buffer, kernel = global_access.src[0].base, ctx
+  if buffer.op is Ops.DEFINE_GLOBAL and kernel.smem_promotion[buffer.arg] and global_access.tag != "promoted":
     global_access = global_access.replace(tag="promoted")
     store_st = load_st = kernel.get_smem_buffer_shapetracker(global_access.st_arg)
-    smem_buffer = UOp(Ops.DEFINE_LOCAL, buf.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"smem{buf.arg}")
+    smem_buffer = UOp(Ops.DEFINE_LOCAL, buffer.dtype.base.ptr(size=store_st.real_size(), local=True), (), f"smem{buffer.arg}")
 
     if global_access.op is Ops.LOAD:
       smem_store = smem_buffer.view(store_st).store(global_access)
