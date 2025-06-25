@@ -434,17 +434,15 @@ class Kernel:
       check(padded, "nothing was padded")
     elif opt.op is OptOps.PROMOTE_SMEM:
       check(0 <= axis < len(self.smem_promotion) and not self.smem_promotion[axis], f"invalid buffer selection for smem promotion ({axis})")
-      # TODO: explicit check for single access
-      buf_st = get_single_element([st for st, buf in zip(self.sts, self.bufs) if buf.src[0].base.arg == axis])
-      smem_buffer_st = self.get_smem_buffer_shapetracker(buf_st)
-      # TODO: shared_max is in bytes, multiply real_size by buf dtype size
-      check(self.smem_usage + smem_buffer_st.real_size() <= self.opts.shared_max, f"smem memory use exceeds max memory size ({self.opts.shared_max})")
+      buffer, buffer_st = get_single_element([(buf, st) for buf, st in zip(self.bufs, self.sts) if buf.src[0].base.arg == axis])
+      smem_buffer_st = self.get_smem_buffer_shapetracker(buffer_st)
+      check(self.smem_usage + smem_buffer_st.real_size() * buffer.dtype.itemsize <= self.opts.shared_max, "smem memory use exceeds max memory size")
 
       # TODO: remove checks
       check(self.group_for_reduces == 0, "can't apply lds with group/grouptop")
-      check(all(not buf_st.axis_is_masked(i) for i in range(len(buf_st.shape))), "can't apply lds with masked axis")
+      check(all(not buffer_st.axis_is_masked(i) for i in range(len(buffer_st.shape))), "can't apply lds with masked axis")
 
-      self.smem_usage += smem_buffer_st.real_size()
+      self.smem_usage += smem_buffer_st.real_size() * buffer.dtype.itemsize
       self.smem_promotion[axis] = True
 
     if append_opt: self.applied_opts.append(opt)
