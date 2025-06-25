@@ -164,12 +164,9 @@ class Kernel:
 
   def get_smem_buffer_shape(self, buf_st:ShapeTracker) -> tuple[sint, ...]:
     shape: list[sint] = []
-
     for i, st in enumerate(buf_st.real_strides()):
-      if self.first_reduce <= i < self.first_reduce + self.group_for_reduces: shape.append(buf_st.shape[i])
-      elif i < self.global_dims or self.first_reduce <= i < self.first_upcast or st == 0: shape.append(1)
+      if i < self.global_dims or self.first_reduce <= i < self.first_upcast or st == 0: shape.append(1)
       else: shape.append(buf_st.shape[i])
-
     return tuple(shape)
 
   # ******************** base simplifiers ********************
@@ -442,9 +439,11 @@ class Kernel:
       buf_st = get_single_element([st for st, buf in zip(self.sts, self.bufs) if buf.src[0].base.arg == axis])
       smem_buffer_shape = self.get_smem_buffer_shape(buf_st)
       smem_buffer_st = ShapeTracker.from_shape(smem_buffer_shape)
+      # TODO: shared_max is in bytes, multiply real_size by buf dtype size
       check(self.smem_usage + smem_buffer_st.real_size() <= self.opts.shared_max, f"smem memory use exceeds max memory size ({self.opts.shared_max})")
 
       # TODO: remove checks
+      check(self.group_for_reduces == 0, "can't apply lds with group/grouptop")
       check(all(not buf_st.axis_is_masked(i) for i in range(len(buf_st.shape))), "can't apply lds with masked axis")
 
       self.smem_usage += smem_buffer_st.real_size()
@@ -543,7 +542,7 @@ class Kernel:
             (1,) * (self.shape_len - self.upcasted - self.group_for_reduces - self.first_reduce) + tuple([x[0] for x in self.upcasted_axis(0)])
           st = ShapeTracker.from_shape(local_shape)
           local_size = st.real_size()
-          local_buffer = UOp(Ops.DEFINE_LOCAL, op.dtype.ptr(local_size, local=True), (), f"group{self.reduceops.index(op)}")
+          local_buffer = UOp(Ops.DEFINE_LOCAL, op.dtype.ptr(local_size, local=True), (), f"temp{self.reduceops.index(op)}")
           local_load = UOp(Ops.LOAD, op.dtype, (local_buffer.view(st), UOp.store(local_buffer.view(st), ret)))
           grouped_reduce = UOp(Ops.REDUCE_AXIS, op.dtype, (local_load,), arg=(op.arg[0], grouped_axes))
           if op is self.reduceops[-1]: return grouped_reduce
@@ -584,8 +583,6 @@ class Kernel:
     return self
   def to_program(self, name_override:Optional[str]=None) -> ProgramSpec:
     from tinygrad.engine.realize import get_program
-    ast = self.get_optimized_ast(name_override)
-    if any(self.smem_promotion): ast = self.promote_buffers(ast)
-    ret = get_program(ast, self.opts)
+    ret = get_program(self.get_optimized_ast(name_override), self.opts)
     self.uops = ret.uops
     return ret
