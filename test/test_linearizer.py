@@ -924,10 +924,9 @@ class TestLinearizer(unittest.TestCase):
     b = ast_const(DT, 1, ST.arg.shape) + VAL
 
     store = UOp(Ops.STORE, src=(g0.view(ST.arg), (a+b)))
-    sink = UOp(Ops.SINK, src=(store,))
-    lin = Kernel(sink)
-    lin.linearize()
-    assert len(lin.uops) <= 10, "too many uops"
+    sink = UOp(Ops.SINK, src=(store,), KernelInfo(opts_to_apply=tuple()))
+    program = get_program(sink, Device[Device.DEFAULT].renderer)
+    assert len(program.uops) <= 10, "too many uops"
 
   def test_upcast_cse(self):
     # when upcasting, within a subtree, there may be common expressions.
@@ -973,11 +972,13 @@ class TestLinearizer(unittest.TestCase):
   def test_upcast_with_locals(self):
     x, y = Tensor.rand(1,128), Tensor.rand(128, 128)
     r = (x@y).relu()
-    k = Kernel(r.schedule()[-1].ast)
-    k.apply_opts([Opt(op=OptOps.GROUP, axis=0, arg=8), Opt(op=OptOps.LOCAL, axis=0, arg=4), Opt(op=OptOps.UPCAST, axis=0, arg=4)])
-    k.linearize()
 
-    stores = [u for u in k.uops if u.op is Ops.STORE]
+    ast = r.schedule()[-1].ast
+    opts_to_apply = [Opt(op=OptOps.GROUP, axis=0, arg=8), Opt(op=OptOps.LOCAL, axis=0, arg=4), Opt(op=OptOps.UPCAST, axis=0, arg=4)]
+    ast = ast.replace(arg=KernelInfo(opts_to_apply=tuple(opts_to_apply)))
+    program = get_program(ast, Device[Device.DEFAULT].renderer)
+
+    stores = [u for u in program.uops if u.op is Ops.STORE]
 
     # the first store is to lds and can be upcasted
     assert stores[0].src[-1].dtype == dtypes.float.vec(4)
@@ -1001,16 +1002,21 @@ class TestLinearizer(unittest.TestCase):
       (dtypes.bool, dtypes.int), (dtypes.int16, dtypes.int), (dtypes.float16, dtypes.float), (dtypes.bfloat16, dtypes.float)):
       if is_dtype_supported(tensor_dtype) and is_dtype_supported(acc_dtype):
         a = Tensor([1, 2, 3], dtype=tensor_dtype).sum()
-        k = Kernel(a.schedule()[-1].ast)
-        k.linearize()
-        local = [uop for uop in k.uops if uop.op is Ops.DEFINE_ACC]
+
+        ast = a.schedule()[-1].ast
+        ast = ast.replace(arg=KernelInfo(opts_to_apply=tuple()))
+        program = get_program(ast, Device[Device.DEFAULT].renderer)
+
+        local = [uop for uop in program.uops if uop.op is Ops.DEFINE_ACC]
         assert local[0].dtype == acc_dtype
 
   def test_arg_acc_dtype(self):
     def helper_arg_acc_dtype(c: Tensor, expected_dtype:DType):
-      k = Kernel(c.schedule()[-1].ast)
-      k.linearize()
-      local = [uop for uop in k.uops if uop.op is Ops.DEFINE_ACC]
+      ast = c.schedule()[-1].ast
+      ast = ast.replace(arg=KernelInfo(opts_to_apply=tuple()))
+      program = get_program(ast, Device[Device.DEFAULT].renderer)
+
+      local = [uop for uop in program.uops if uop.op is Ops.DEFINE_ACC]
       assert local[0].dtype == expected_dtype
 
     tests = (
@@ -1053,11 +1059,12 @@ class TestLinearizer(unittest.TestCase):
       a, b = Tensor.rand(m, k, dtype=tc.dtype_in), Tensor.rand(k, n, dtype=tc.dtype_in)
       r = a.matmul(b, dtype=tc.dtype_out)
       sched = r.schedule()
+
       realized_ast = sched[-1].ast
-      kernel = Kernel(realized_ast)
-      kernel.apply_tensor_cores(1, axis=0, tc_select=-1, tc_opt=2)
-      kernel.linearize()
-      prg = kernel.to_program()
+      opts_to_apply = [Opt(OptOps.TC, 0, (-1, 2, 1))]
+      realized_ast = realized_ast.replace(arg=KernelInfo(opts_to_apply=tuple(opts_to_apply)))
+      prg = get_program(realized_ast, Device[Device.DEFAULT].renderer)
+
       if Device.DEFAULT == "LLVM":
         assert "0x201000" in prg.src
       elif Device.DEFAULT == "AMD" and getenv("AMD_LLVM", 0):
@@ -1118,13 +1125,13 @@ class TestLinearizer(unittest.TestCase):
         c = a.conv2d(b, padding=1, dtype=tc.dtype_out)
         realized_ast, real_bufs = helper_realized_ast(c)
 
-        k = Kernel(realized_ast)
-        k.apply_tensor_cores(1, axis=axis, tc_opt=2)
-        k.linearize()
-        assert len([uop for uop in k.uops if uop.op is Ops.WMMA]) > 0, "tensor core not triggered"
-        assert len([x for x in k.applied_opts if x.op is OptOps.TC]) == 1, "tensor core opt not included"
+        opts_to_apply = [Opt(OptOps.TC, axis, (-1, 2, 1))]
+        realized_ast = realized_ast.replace(arg=KernelInfo(opts_to_apply=tuple(opts_to_apply)))
+        prg = get_program(realized_ast, Device[Device.DEFAULT].renderer)
 
-        prg = CompiledRunner(k.to_program())
+        assert len([uop for uop in prg.uops if uop.op is Ops.WMMA]) > 0, "tensor core not triggered"
+        assert len([x for x in prg.applied_opts if x.op is OptOps.TC]) == 1, "tensor core opt not included"
+
         # TODO: support this even if numpy doesn't
         if _to_np_dtype(real_bufs[0].dtype) is None: continue
         real_bufs[0].copyin(np.zeros((real_bufs[0].size, ), dtype=_to_np_dtype(real_bufs[0].dtype)).data) # Zero to check that all values are filled
