@@ -928,7 +928,7 @@ jobs:
           python -c "from tinygrad import Device; assert Device.DEFAULT == '${{ matrix.backend }}'.upper(), Device.DEFAULT"
           DEBUG=4 python3 test/test_tiny.py TestTiny.test_plus
       - name: Run pytest (${{ matrix.backend }})
-        run: python3 -m pytest -n=auto test/ --ignore=test/models --ignore=test/unit --durations=20
+        run: python3 -m pytest -n=auto test/ --ignore=test/models --ignore=test/unit --durations=20 -v
       - name: Run process replay tests
         uses: ./.github/actions/process-replay
       - name: Run macOS-specific unit test
