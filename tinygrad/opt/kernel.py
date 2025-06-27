@@ -62,6 +62,7 @@ class Kernel:
     self.applied_opts: list[Opt] = []
     self.group_for_reduces: int = 0
     self.upcasted: int = 0
+    self.unrolled: int = 0
     self.local_dims: int = 0
     self.tensor_core: Optional[TensorCore] = None
     self.tensor_core_opts: Optional[TensorCoreOptions] = None
@@ -98,17 +99,28 @@ class Kernel:
   def membufs(self) -> list[UOp]: return dedup([x.src[0].base for x in self.bufs if x.op in {Ops.LOAD, Ops.STORE}])
 
   def upcasted_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
-    upcasted_shape, upcasted_stride = self.sts[i].shape[self.first_upcast:], self.sts[i].real_strides()[self.first_upcast:]
+    upcasted_shape = self.sts[i].shape[self.first_upcast:self.first_reduce]
+    upcasted_stride = self.sts[i].real_strides()[self.first_upcast:self.first_reduce]
+
     assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
-    return list(zip(upcasted_shape, upcasted_stride,
-                    [x!=y for x,y in zip(self.sts[0].shape[self.first_upcast:], self.full_shape[self.first_upcast:])]))
+    return list(zip(upcasted_shape, upcasted_stride, [False] * self.upcasted))
+
+  def unrolled_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
+    unrolled_shape = self.sts[i].shape[self.first_unroll:]
+    unrolled_stride = self.sts[i].real_strides()[self.first_unroll:]
+
+    assert all_int(unrolled_shape), f"cannot unroll a symbolic amount {unrolled_shape=}"
+    return list(zip(unrolled_shape, unrolled_stride, [True] * self.unrolled))
 
   @property
   def first_reduce(self) -> int:
-    return [resolve(x!=y) for x,y in zip(self.sts[0].shape[:self.first_upcast]+(0,), self.full_shape[:self.first_upcast]+(1,))].index(True)
+    return [resolve(x!=y) for x,y in zip(self.sts[0].shape+(0,), self.full_shape+(1,))].index(True)
 
   @property
-  def first_upcast(self) -> int: return self.shape_len-self.upcasted
+  def first_upcast(self) -> int: return self.first_reduce-self.upcasted
+
+  @property
+  def first_unroll(self) -> int: return self.shape_len-self.unrolled
 
   @property
   def reduceop(self) -> UOp|None: return self.reduceops[0] if len(self.reduceops) > 0 else None
@@ -120,7 +132,8 @@ class Kernel:
   def full_shape(self) -> tuple[sint, ...]: return self.sts[-1].shape
 
   @property
-  def full_unupcasted_shape(self) -> tuple[sint, ...]: return self.full_shape[:self.first_upcast]
+  def full_unupcasted_shape(self) -> tuple[sint, ...]:
+    return self.full_shape[:self.first_upcast] + (1,) * self.upcasted + self.full_shape[self.first_reduce:self.first_unroll] + (1,) * self.unrolled
 
   @property
   def shape_len(self) -> int: return len(self.sts[0].shape)
