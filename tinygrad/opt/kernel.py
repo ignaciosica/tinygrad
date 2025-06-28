@@ -139,7 +139,7 @@ class Kernel:
   def shape_len(self) -> int: return len(self.sts[0].shape)
 
   @property
-  def global_dims(self) -> int: return self.first_reduce-self.local_dims
+  def global_dims(self) -> int: return self.first_upcast-self.local_dims
 
   # there's eight chunks of the shape
   # blue   -- global dims
@@ -157,11 +157,13 @@ class Kernel:
     colors += ["cyan"] * self.local_dims
     # between first_reduce and first_reduce + group_for_reduces, they are late upcasted (green)
     colors += ["green"] * self.group_for_reduces
-    # between first_reduce + group_for_reduces and upcasted, they are reduce (red)
-    colors += ["red"] * (self.first_upcast - (self.first_reduce + self.group_for_reduces))
+    # after local dimensions, there are upcasted
+    colors += ["yellow"] * self.upcasted
+    # between upcasted and unrolled, they are reduce (red)
+    colors += ["red"] * (self.shape_len - self.unrolled - self.first_reduce)
     # upcasted dimensions are reduce (magenta) or normal (yellow)
-    colors += ["magenta" if self.full_shape[i] != self.sts[0].shape[i] else "yellow" for i in range(self.first_upcast, self.shape_len)]
-    assert len(colors) == self.shape_len, "colors size mismatch"
+    colors += ["magenta"] * self.unrolled
+    # assert len(colors) == self.shape_len, "colors size mismatch"
     return colors
 
   def colored_shape(self, pad:Optional[int]=None, dense=False) -> str:
@@ -180,8 +182,12 @@ class Kernel:
 
   # drops the final dimension
   def upcast(self):
-    check(self.full_shape[-1] != 1, "can't upcast a dimension with size 1")
+    check(self.full_shape[:self.first_reduce][-1] != 1, "can't upcast a dimension with size 1")
     self.upcasted += 1
+
+  def unroll(self):
+    check(self.full_shape[-1] != 1, "can't unroll a dimension with size 1")
+    self.unrolled += 1
 
   # axis : the axis to pull from
   # amount : the amount to take
@@ -384,17 +390,17 @@ class Kernel:
       # it's disabled for now since it makes BEAM slow for little gain
       check(self.opts.has_local, "target does not support local")
       check(axis < self.global_dims, "local is for globals")
-      self.shift_to(axis, amt, insert_before=self.first_reduce)
+      self.shift_to(axis, amt, insert_before=self.first_upcast)
       self.local_dims += 1
     elif opt.op in {OptOps.GROUP, OptOps.GROUPTOP}:   # green
       check(self.opts.has_local and self.opts.has_shared, "target does not support local or shared mem")
       check(self.first_reduce + self.group_for_reduces <= axis < self.first_upcast, "must be reduce axis to group")
       check(not self.tensor_core, "can't group with tensor cores")
       check(len(reduce_axes:=[i for r in self.reduceops for i in r.axis_arg]) == len(set(reduce_axes)), "can't group with parallel reduces")
-      self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.first_reduce + self.group_for_reduces)
+      self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.first_upcast + self.group_for_reduces)
       self.group_for_reduces += 1
     elif opt.op is OptOps.UNROLL:                     # purple
-      check(axis < self.first_upcast, "can't upcasted already upcasted")
+      check(self.first_reduce <= axis < self.shape_len - self.unrolled, "can't upcasted already upcasted")
       check(amt <= 32, "don't unroll more than 32")
       # TODO: fix upcast_count to put purples before yellows. broken because of METAL tensor cores
       #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.upcasted:], self.output_shape[-self.upcasted:])) if self.upcasted else 0
@@ -402,12 +408,12 @@ class Kernel:
       if self.full_shape[axis] == amt and axis == self.first_reduce: self.local_dims += 1 # first_reduce will ++, so offset loss in simplify_ones
       if self.full_shape[axis] == amt and axis < self.first_reduce+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
-      self.upcast()
+      self.unroll()
     elif opt.op is OptOps.UPCAST:                     # yellow
       check(axis < self.first_reduce, "upcast is for non-reduce")
       check(not (self.tensor_core and self.global_dims <= axis < self.global_dims+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
       check((self.opts is not None and self.opts.device == "DSP") or amt <= 16, "don't upcast more than 16")
-      self.shift_to(axis, amt, insert_before=None)
+      self.shift_to(axis, amt, insert_before=self.first_reduce)
       self.upcast()
     elif opt.op is OptOps.NOLOCALS:
       check(self.opts.has_local and not self.dont_use_locals, "NOLOCALS is meaningless if target does not support local or already not using locals")
@@ -470,7 +476,7 @@ class Kernel:
         # NOTE: should group_for_reduces be added to the local_dims?
         return ret.replace(arg = KernelInfo(ret.arg.name if ret.arg is not None else self.name if name_override is None else name_override,
                                             self.global_dims if self.opts.has_local else 0, self.local_dims+self.group_for_reduces,
-                                            self.upcasted, self.dont_use_locals, tuple(self.applied_opts)))
+                                            self.upcasted, self.unrolled, self.dont_use_locals, tuple(self.applied_opts)))
       if op.op is Ops.REDUCE_AXIS:
         reduce_idx = len(self.bufs) + self.reduceops.index(op) * 2
 
