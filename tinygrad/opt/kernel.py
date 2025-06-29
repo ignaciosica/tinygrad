@@ -139,15 +139,13 @@ class Kernel:
   @property
   def shape_len(self) -> int: return len(self.output_shape)
 
-  # there's eight chunks of the shape
+  # there's six chunks of the shape
   # blue   -- global dims
   # cyan   -- local dims (warp ones first)
-  #  *** self.first_reduce
-  # green  -- reduce-local dims
+  # green  -- reduce - local dims
+  # yellow -- upcasted dimensions
   # red    -- reduce loops
-  #  *** self.upcasted
   # purple -- reduce upcasted
-  # yellow -- normal upcasted dimensions
   def colors(self) -> list[str]:
     colors = ["blue" if not self.dont_use_locals else "BLUE"] * self.axes["global"]
     colors += ["cyan"] * self.axes["local"]
@@ -372,26 +370,24 @@ class Kernel:
       # NOTE: LLVM/CPU can use locals too, but they are treated the same as globals (still helpful for L1 cache)
       # it's disabled for now since it makes BEAM slow for little gain
       check(self.opts.has_local, "target does not support local")
-      check(axis < self.global_dims, "local is for globals")
-      self.shift_to(axis, amt, insert_before=self.first_reduce)
-      self.local_dims += 1
+      check(axis < self.axes["global"], "local is for globals")
+      self.shift_to(axis, amt, insert_before=self.get_first("group"))
       self.axes["local"] += 1
     elif opt.op in {OptOps.GROUP, OptOps.GROUPTOP}:   # green
       check(self.opts.has_local and self.opts.has_shared, "target does not support local or shared mem")
-      check(self.first_reduce + self.group_for_reduces <= axis < self.first_upcast, "must be reduce axis to group")
+      check(self.axes["reduce"] > 0 and self.get_first("reduce") <= axis < self.get_first("unroll"), "must be reduce axis to group")
       check(not self.tensor_core, "can't group with tensor cores")
       check(len(reduce_axes:=[i for r in self.reduceops for i in r.axis_arg]) == len(set(reduce_axes)), "can't group with parallel reduces")
-      self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.first_reduce + self.group_for_reduces)
-      self.group_for_reduces += 1
+      self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.get_first("reduce"))
       self.axes["group"] += 1
     elif opt.op is OptOps.UNROLL:                     # purple
-      check(axis < self.first_upcast, "can't upcasted already upcasted")
+      check(self.axes["reduce"] > 0 and self.get_first("reduce") <= axis < self.get_first("unroll"), "must be reduce axis to group")
       check(amt <= 32, "don't unroll more than 32")
       # TODO: fix upcast_count to put purples before yellows. broken because of METAL tensor cores
       #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.upcasted:], self.output_shape[-self.upcasted:])) if self.upcasted else 0
       #self.shift_to(axis, amt, insert_before=None if upcast_count == 0 else self.shape_len-upcast_count)
-      if self.full_shape[axis] == amt and axis == self.first_reduce: self.local_dims += 1 # first_reduce will ++, so offset loss in simplify_ones
-      if self.full_shape[axis] == amt and axis < self.first_reduce+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
+      # if self.full_shape[axis] == amt and axis == self.first_reduce: self.local_dims += 1 # first_reduce will ++, so offset loss in simplify_ones
+      # if self.full_shape[axis] == amt and axis < self.first_reduce+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
       self.axes["unroll"] += 1
