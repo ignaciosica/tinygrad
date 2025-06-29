@@ -4,7 +4,7 @@ from collections import OrderedDict
 from typing import cast
 from tinygrad.dtype import dtypes, PtrDType
 from tinygrad.uop.ops import KernelInfo, UOp, Ops, PatternMatcher, UPat, sint_to_uop
-from tinygrad.helpers import prod, partition, flatten
+from tinygrad.helpers import prod, partition, flatten, get_first
 
 # ***** indexing *****
 
@@ -12,13 +12,6 @@ from tinygrad.helpers import prod, partition, flatten
 class IndexContext:
   idxs: list[UOp]
   ridxs: list[UOp]
-
-def get_first(axes, axis_name) -> int:
-  start_position = 0
-  for name, size in axes.items():
-    if name == axis_name: return start_position
-    start_position += size
-  raise ValueError(f"axis name not found in axes ({axis_name})")
 
 def get_index(ast: UOp) -> IndexContext:
   ki = ast.arg if isinstance(ast.arg, KernelInfo) else KernelInfo()

@@ -75,6 +75,12 @@ def get_child(obj, key):
   return obj
 def word_wrap(x, wrap=80): return x if len(x) <= wrap or '\n' in x[0:wrap] else (x[0:wrap] + "\n" + word_wrap(x[wrap:], wrap))
 def pluralize(st:str, cnt:int): return f"{cnt} {st}"+('' if cnt == 1 else 's')
+def get_first(axes, axis_name) -> int:
+  start_position = 0
+  for name, size in axes.items():
+    if name == axis_name: return start_position
+    start_position += size
+  raise ValueError(f"name not found in axes ({axis_name})")
 
 class LazySeq(Generic[T]): # NOTE: Mapping requires __iter__ and __len__, Sequence requires supporting __len__ and slicing in __getitem__
   def __init__(self, gen:Callable[[int], T]): self.gen = gen
