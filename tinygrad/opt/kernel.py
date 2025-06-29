@@ -373,19 +373,20 @@ class Kernel:
       check(self.axes["reduce"] > 0 and self.get_first("reduce") <= axis < self.get_first("unroll"), "must be reduce axis to group")
       check(not self.tensor_core, "can't group with tensor cores")
       check(len(reduce_axes:=[i for r in self.reduceops for i in r.axis_arg]) == len(set(reduce_axes)), "can't group with parallel reduces")
-      self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.get_first("reduce"))
+      self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.get_first("upcast"))
       self.axes["group"] += 1
     elif opt.op is OptOps.UNROLL:                     # purple
-      unroll_reduce = self.axes["reduce"] > 0 and self.get_first("reduce") <= axis < self.get_first("unroll")
-      unroll_group = self.axes["group"] > 0 and self.get_first("group") <= axis < self.get_first("upcast")
-      check(unroll_reduce or unroll_group, "must be reduce axis to group")
+      unroll_group = self.axes["group"] > 0 and axis < self.axes["group"] # and self.get_first("group") <= axis < self.get_first("upcast")
+      unroll_reduce = self.axes["reduce"] > 0 and axis - self.axes["group"] < self.axes["reduce"] # self.get_first("reduce") <= axis - self.axes["group"] < self.get_first("unroll")
+      check(unroll_group or unroll_reduce, "must be reduce axis to group")
       check(amt <= 32, "don't unroll more than 32")
       # TODO: fix upcast_count to put purples before yellows. broken because of METAL tensor cores
       #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.upcasted:], self.output_shape[-self.upcasted:])) if self.upcasted else 0
       #self.shift_to(axis, amt, insert_before=None if upcast_count == 0 else self.shape_len-upcast_count)
       # if self.full_shape[axis] == amt and axis == self.first_reduce: self.local_dims += 1 # first_reduce will ++, so offset loss in simplify_ones
       # if self.full_shape[axis] == amt and axis < self.first_reduce+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
-      self.shift_to(axis, amt, insert_before=None)
+      axis = axis + self.get_first("group") if unroll_group else (self.get_first("reduce") - self.axes["group"])
+      self.shift_to(axis, amt, insert_before=self.get_first("upcast") if unroll_group else None)
       self.axes["unroll"] += 1
       # self.upcast()
     elif opt.op is OptOps.UPCAST:                     # yellow
