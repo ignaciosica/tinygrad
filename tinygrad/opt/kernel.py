@@ -103,13 +103,9 @@ class Kernel:
 
   def get_first(self, axis_name) -> int:
     start_position = 0
-
     for name, size in self.axes.items():
-      print(name, size)
-      if name == axis_name:
-        return start_position
+      if name == axis_name: return start_position
       start_position += size
-
     raise KernelOptError(f"invalid axis name {axis_name}")
 
   @property
@@ -467,7 +463,7 @@ class Kernel:
       if op.op is Ops.SINK:
         # NOTE: should group_for_reduces be added to the local_dims?
         return ret.replace(arg = KernelInfo(ret.arg.name if ret.arg is not None else self.name if name_override is None else name_override,
-                                            0, 0, 0, self.dont_use_locals, tuple(self.applied_opts), axes=self.axes))
+                                            self.axes["global"], self.axes["local"], self.axes["group"], self.dont_use_locals, tuple(self.applied_opts), axes=tuple(self.axes.items())))
       if op.op is Ops.REDUCE_AXIS:
         reduce_idx = len(self.bufs) + self.reduceops.index(op) * 2
 
