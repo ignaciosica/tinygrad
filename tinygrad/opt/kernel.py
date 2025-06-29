@@ -1,7 +1,7 @@
 from __future__ import annotations
 import itertools, functools, math
 from dataclasses import dataclass
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from typing import Optional, cast, Final, Callable, Sequence
 
 from tinygrad.uop.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, smax
@@ -60,22 +60,26 @@ class Kernel:
 
     # parameters for optimization
     self.applied_opts: list[Opt] = []
-    self.group_for_reduces: int = 0
-    self.upcasted: int = 0
-    self.local_dims: int = 0
+    # self.group_for_reduces: int = 0
+    # self.upcasted: int = 0
+    # self.local_dims: int = 0
     self.tensor_core: Optional[TensorCore] = None
     self.tensor_core_opts: Optional[TensorCoreOptions] = None
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
 
     # group simplifies
-    self.simplify_ones()
-    self.simplify_merge_adjacent()
+    # self.simplify_ones()
+    # self.simplify_merge_adjacent()
 
     # confirm all reduce axes are at the end
     final_reduces = [i for i,(s,n) in enumerate(zip(self.full_shape, self.output_shape)) if resolve(s != n)]
     if final_reduces != list(range(len(self.full_shape)-len(final_reduces), len(self.full_shape))):
       raise RuntimeError(f"reduces are not at the end of the shape {self.full_shape} -> {self.output_shape}")
+
+    reduce_dims = len(final_reduces)
+    global_dims = len(self.full_shape) - reduce_dims
+    self.axes = OrderedDict([("global", global_dims), ("local", 0), ("group", 0), ("upcast", 0), ("reduce", reduce_dims), ("unroll", 0)])
 
   def copy(self):
     ret = type(self).__new__(type(self))
@@ -92,23 +96,36 @@ class Kernel:
       self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals
     ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
 
+    ret.axes = self.axes.copy()
+
     return ret
+
+  def get_first(self, axis_name) -> int:
+    start_position = 0
+
+    for name, size in self.axes.items():
+      print(name, size)
+      if name == axis_name:
+        return start_position
+      start_position += size
+
+    raise KernelOptError(f"invalid axis name {axis_name}")
 
   @property
   def membufs(self) -> list[UOp]: return dedup([x.src[0].base for x in self.bufs if x.op in {Ops.LOAD, Ops.STORE}])
 
   def upcasted_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
-    upcasted_shape, upcasted_stride = self.sts[i].shape[self.first_upcast:], self.sts[i].real_strides()[self.first_upcast:]
+    first_upcast = self.get_first("upcast")
+    first_reduce = self.get_first("reduce")
+    upcasted_shape, upcasted_stride = self.sts[i].shape[first_upcast:first_reduce], self.sts[i].real_strides()[first_upcast:first_reduce]
     assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
-    return list(zip(upcasted_shape, upcasted_stride,
-                    [x!=y for x,y in zip(self.sts[0].shape[self.first_upcast:], self.full_shape[self.first_upcast:])]))
+    return list(zip(upcasted_shape, upcasted_stride, [False] * (first_reduce - first_upcast)))
 
-  @property
-  def first_reduce(self) -> int:
-    return [resolve(x!=y) for x,y in zip(self.sts[0].shape[:self.first_upcast]+(0,), self.full_shape[:self.first_upcast]+(1,))].index(True)
-
-  @property
-  def first_upcast(self) -> int: return self.shape_len-self.upcasted
+  def unrolled_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
+    first_unroll = self.get_first("upcast")
+    upcasted_shape, upcasted_stride = self.sts[i].shape[first_unroll:], self.sts[i].real_strides()[first_unroll:]
+    assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
+    return list(zip(upcasted_shape, upcasted_stride, [True] * (self.shape_len - first_unroll)))
 
   @property
   def reduceop(self) -> UOp|None: return self.reduceops[0] if len(self.reduceops) > 0 else None
@@ -120,13 +137,7 @@ class Kernel:
   def full_shape(self) -> tuple[sint, ...]: return self.sts[-1].shape
 
   @property
-  def full_unupcasted_shape(self) -> tuple[sint, ...]: return self.full_shape[:self.first_upcast]
-
-  @property
-  def shape_len(self) -> int: return len(self.sts[0].shape)
-
-  @property
-  def global_dims(self) -> int: return self.first_reduce-self.local_dims
+  def shape_len(self) -> int: return len(self.output_shape)
 
   # there's eight chunks of the shape
   # blue   -- global dims
@@ -138,16 +149,12 @@ class Kernel:
   # purple -- reduce upcasted
   # yellow -- normal upcasted dimensions
   def colors(self) -> list[str]:
-    # first non local non reduce dims are global (blue)
-    colors = ["blue"] * self.global_dims if not self.dont_use_locals else ["BLUE"] * self.global_dims
-    # after global are local_dims; warp ones used in tensor cores must be closest to first_reduce (cyan)
-    colors += ["cyan"] * self.local_dims
-    # between first_reduce and first_reduce + group_for_reduces, they are late upcasted (green)
-    colors += ["green"] * self.group_for_reduces
-    # between first_reduce + group_for_reduces and upcasted, they are reduce (red)
-    colors += ["red"] * (self.first_upcast - (self.first_reduce + self.group_for_reduces))
-    # upcasted dimensions are reduce (magenta) or normal (yellow)
-    colors += ["magenta" if self.full_shape[i] != self.sts[0].shape[i] else "yellow" for i in range(self.first_upcast, self.shape_len)]
+    colors = ["blue" if not self.dont_use_locals else "BLUE"] * self.axes["global"]
+    colors += ["cyan"] * self.axes["local"]
+    colors += ["green"] * self.axes["group"]
+    colors += ["green"] * self.axes["upcast"]
+    colors += ["red"] * self.axes["reduce"]
+    colors += ["magenta"] * self.axes["unroll"]
     assert len(colors) == self.shape_len, "colors size mismatch"
     return colors
 
@@ -165,11 +172,6 @@ class Kernel:
     def permute(st:ShapeTracker): return st.permute(tuple(axis)) if axis is not None else st
     self.sts = [permute(reshape(st)) for st in self.sts]
 
-  # drops the final dimension
-  def upcast(self):
-    check(self.full_shape[-1] != 1, "can't upcast a dimension with size 1")
-    self.upcasted += 1
-
   # axis : the axis to pull from
   # amount : the amount to take
   # top : if you want to pull that amount from the top
@@ -184,52 +186,52 @@ class Kernel:
 
   # ******************** complex simplifiers ********************
 
-  def simplify_ones(self) -> bool:
-    # remove places where the shape is all ones
-    # TODO: this should be factored in to multi shape stride
-    if self.shape_len == 0: return False
-    all_ones = [s==1 for s in self.full_shape]
-    self.local_dims -= sum(all_ones[self.first_reduce-self.local_dims:self.first_reduce])
-    self.upcasted -= sum(all_ones[self.first_upcast:]) # TODO: no necessary since upcasted axis can't be un-upcasted
-    self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
-    return any(all_ones)
+  # def simplify_ones(self) -> bool:
+  #   # remove places where the shape is all ones
+  #   # TODO: this should be factored in to multi shape stride
+  #   if self.shape_len == 0: return False
+  #   all_ones = [s==1 for s in self.full_shape]
+  #   self.local_dims -= sum(all_ones[self.first_reduce-self.local_dims:self.first_reduce])
+  #   self.upcasted -= sum(all_ones[self.first_upcast:]) # TODO: no necessary since upcasted axis can't be un-upcasted
+  #   self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
+  #   return any(all_ones)
 
-  def simplify_merge_adjacent(self):
-    if self.shape_len == 0: return
-    shapes, strides = [x.shape for x in self.sts], [x.real_strides() for x in self.sts]
+  # def simplify_merge_adjacent(self):
+  #   if self.shape_len == 0: return
+  #   shapes, strides = [x.shape for x in self.sts], [x.real_strides() for x in self.sts]
 
-    # if it's an image, insert fake strides such that this fusion doesn't happen across image axes
-    if isinstance(self.membufs[0].dtype, ImageDType):
-      base_shape = self.membufs[0].dtype.shape
-      if shape_idx_groups := get_contraction(self.output_shape, base_shape):
-        special_strides: tuple[sint, ...] = tuple()
-        for i,g in enumerate(shape_idx_groups):
-          shape_piece = tuple(self.output_shape[x] for x in g)
-          assert prod(shape_piece) == base_shape[i], f"get_contraction was wrong? {shape_piece} != {base_shape[i]}"
-          special_strides += strides_for_shape(shape_piece)
-        # adding the fake image shape
-        shapes.append(self.output_shape)
-        strides.append(special_strides)
+  #   # if it's an image, insert fake strides such that this fusion doesn't happen across image axes
+  #   if isinstance(self.membufs[0].dtype, ImageDType):
+  #     base_shape = self.membufs[0].dtype.shape
+  #     if shape_idx_groups := get_contraction(self.output_shape, base_shape):
+  #       special_strides: tuple[sint, ...] = tuple()
+  #       for i,g in enumerate(shape_idx_groups):
+  #         shape_piece = tuple(self.output_shape[x] for x in g)
+  #         assert prod(shape_piece) == base_shape[i], f"get_contraction was wrong? {shape_piece} != {base_shape[i]}"
+  #         special_strides += strides_for_shape(shape_piece)
+  #       # adding the fake image shape
+  #       shapes.append(self.output_shape)
+  #       strides.append(special_strides)
 
-    # merge dimensions if we can, multi _merge_dims
-    # NOTE: this does not always preserve the reduce dimension
-    # TODO: move this into shapetracker, with tests!
-    # TODO: how does this work with multi-reduce?
-    rets = [[(s[0], st[0])] for s,st in zip(shapes, strides)]
-    for i in range(1, len(shapes[0])):
-      can_merge = []
-      for s,st,ret in zip(shapes, strides, rets):
-        # TODO: added the always mergeability of 1s, is this right? if so, add to shapetracker in the 1 case
-        si, sti, last_st = s[i], st[i], ret[-1][1]
-        can_merge.append((sti is not None) and ((sti != 0 and last_st == si*sti) or (sti == 0 and last_st == 0)))
-      # more can merge than this
-      mergeable = all(can_merge) and i != self.first_reduce
-      for j,(s,st) in enumerate(zip(shapes, strides)):
-        if mergeable: rets[j][-1] = (rets[j][-1][0] * s[i], st[i])
-        else: rets[j].append((s[i], st[i]))
+  #   # merge dimensions if we can, multi _merge_dims
+  #   # NOTE: this does not always preserve the reduce dimension
+  #   # TODO: move this into shapetracker, with tests!
+  #   # TODO: how does this work with multi-reduce?
+  #   rets = [[(s[0], st[0])] for s,st in zip(shapes, strides)]
+  #   for i in range(1, len(shapes[0])):
+  #     can_merge = []
+  #     for s,st,ret in zip(shapes, strides, rets):
+  #       # TODO: added the always mergeability of 1s, is this right? if so, add to shapetracker in the 1 case
+  #       si, sti, last_st = s[i], st[i], ret[-1][1]
+  #       can_merge.append((sti is not None) and ((sti != 0 and last_st == si*sti) or (sti == 0 and last_st == 0)))
+  #     # more can merge than this
+  #     mergeable = all(can_merge) and i != self.first_reduce
+  #     for j,(s,st) in enumerate(zip(shapes, strides)):
+  #       if mergeable: rets[j][-1] = (rets[j][-1][0] * s[i], st[i])
+  #       else: rets[j].append((s[i], st[i]))
 
-    # do the reshapes
-    for i,x in enumerate(rets[:len(self.sts)]): self.sts[i] = self.sts[i].reshape(tuple([y[0] for y in x]))
+  #   # do the reshapes
+  #   for i,x in enumerate(rets[:len(self.sts)]): self.sts[i] = self.sts[i].reshape(tuple([y[0] for y in x]))
 
   # ******************** high level optimizers ********************
 
@@ -373,6 +375,7 @@ class Kernel:
       check(axis < self.global_dims, "local is for globals")
       self.shift_to(axis, amt, insert_before=self.first_reduce)
       self.local_dims += 1
+      self.axes["local"] += 1
     elif opt.op in {OptOps.GROUP, OptOps.GROUPTOP}:   # green
       check(self.opts.has_local and self.opts.has_shared, "target does not support local or shared mem")
       check(self.first_reduce + self.group_for_reduces <= axis < self.first_upcast, "must be reduce axis to group")
@@ -380,6 +383,7 @@ class Kernel:
       check(len(reduce_axes:=[i for r in self.reduceops for i in r.axis_arg]) == len(set(reduce_axes)), "can't group with parallel reduces")
       self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.first_reduce + self.group_for_reduces)
       self.group_for_reduces += 1
+      self.axes["group"] += 1
     elif opt.op is OptOps.UNROLL:                     # purple
       check(axis < self.first_upcast, "can't upcasted already upcasted")
       check(amt <= 32, "don't unroll more than 32")
@@ -390,11 +394,14 @@ class Kernel:
       if self.full_shape[axis] == amt and axis < self.first_reduce+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
+      self.axes["unroll"] += 1
     elif opt.op is OptOps.UPCAST:                     # yellow
       check(axis < self.first_reduce, "upcast is for non-reduce")
       check(not (self.tensor_core and self.global_dims <= axis < self.global_dims+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
       check((self.opts is not None and self.opts.device == "DSP") or amt <= 16, "don't upcast more than 16")
       self.shift_to(axis, amt, insert_before=None)
+      check(self.full_shape[-1] != 1, "can't upcast a dimension with size 1")
+      self.axes["upcast"] += 1
       self.upcast()
     elif opt.op is OptOps.NOLOCALS:
       check(self.opts.has_local and not self.dont_use_locals, "NOLOCALS is meaningless if target does not support local or already not using locals")
@@ -421,8 +428,8 @@ class Kernel:
       check(padded, "nothing was padded")
 
     if append_opt: self.applied_opts.append(opt)
-    if self.simplify_ones() and self.tensor_core_opts:
-      self.tensor_core_opts.fix_axes(axis) # fix up axes in TC opts if required after simplify_ones()
+    # if self.simplify_ones() and self.tensor_core_opts:
+    #   self.tensor_core_opts.fix_axes(axis) # fix up axes in TC opts if required after simplify_ones()
 
   def apply_opts(self, opts:Sequence[Opt]) -> Kernel:
     for opt in opts: self.apply_opt(opt)
