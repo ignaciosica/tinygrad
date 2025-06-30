@@ -465,8 +465,8 @@ class Kernel:
 
         def reduced_axes(start, stop):
           return tuple(i for i in range(start, stop) if resolve(self.sts[reduce_idx].shape[i] != self.sts[reduce_idx + 1].shape[i]))
-        axes = reduced_axes(self.get_offset("reduce") + self.axes["group"], self.shape_len)
-        grouped_axes = reduced_axes(self.get_offset("reduce"), self.get_offset("reduce") + self.axes["group"])
+        axes = reduced_axes(self.get_offset("reduce"), self.shape_len)
+        grouped_axes = reduced_axes(self.get_offset("group"), self.get_offset("reduce"))
 
         if (tc := self.tensor_core) and (self.use_tensor_cores == 1 or self.use_tensor_cores == 3):
           wd, tcd = self.axes["global"], self.get_offset("upcast")
@@ -513,8 +513,8 @@ class Kernel:
         if self.axes["group"] and grouped_axes:
           local_shape = (1,) * self.axes["global"] + self.full_shape[self.axes["global"]:self.axes["global"]+self.axes["local"]] + \
             tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
-              for i in range(self.get_offset("reduce"), self.get_offset("reduce")+self.axes["group"])]) + \
-            (1,) * (self.shape_len - self.axes["upcast"] - self.axes["group"] - self.get_offset("reduce")) + tuple([x[0] for x in self.upcasted_axis(0)])
+              for i in range(self.get_offset("group"), self.get_offset("reduce"))]) + \
+            (1,) * (self.shape_len - self.axes["upcast"] - self.get_offset("reduce")) + tuple([x[0] for x in self.upcasted_axis(0)])
           st = ShapeTracker.from_shape(local_shape)
           local_size = st.real_size()
           local_buffer = UOp(Ops.DEFINE_LOCAL, op.dtype.ptr(local_size, local=True), (), f"temp{self.reduceops.index(op)}")
