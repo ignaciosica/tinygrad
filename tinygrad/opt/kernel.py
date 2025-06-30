@@ -520,7 +520,7 @@ class Kernel:
           local_shape = (1,) * self.axes["global"] + self.full_shape[self.get_offset("local") : self.get_offset("group")] + \
             tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
               for i in range(self.get_offset("group"), self.get_offset("reduce"))]) + \
-            (1,) * (self.shape_len - self.axes["upcast"] - self.get_offset("group")) + tuple([x[0] for x in self.upcasted_axis(0)])
+            (1,) * (self.shape_len - self.axes["upcast"] - self.axes["group"]- self.get_offset("group")) + tuple([x[0] for x in self.upcasted_axis(0)])
           st = ShapeTracker.from_shape(local_shape)
           local_size = st.real_size()
           local_buffer = UOp(Ops.DEFINE_LOCAL, op.dtype.ptr(local_size, local=True), (), f"temp{self.reduceops.index(op)}")
