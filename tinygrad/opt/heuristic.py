@@ -17,10 +17,10 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
     strides0, strides1 = st0.real_strides(), st1.real_strides()
     def has_expanded_axis(shape, strides): return any(resolve(s > 1) and not resolve(st != 0) for s,st in zip(shape,strides))
     if strides0[k.get_offset("reduce")] == 1 and not (has_expanded_axis(st0.shape, strides0) and has_expanded_axis(st1.shape, strides1)):
-      for global_idx in range(k.global_dims):
+      for global_idx in range(k.axes["global"]):
         if k.full_shape[k.get_offset("reduce")]%MV_THREADS_PER_ROW == 0 and k.full_shape[global_idx]%(MV_BLOCKSIZE*MV_ROWS_PER_THREAD) == 0:
           if DEBUG >= 3:
-            print(f"MATVEC: {k.full_shape=} {k.get_offset("reduce")=} {strides0=} {MV_BLOCKSIZE=} {MV_THREADS_PER_ROW=} {MV_ROWS_PER_THREAD=}")
+            print(f"MATVEC: {k.full_shape=} {k.get_offset('reduce')=} {strides0=} {MV_BLOCKSIZE=} {MV_THREADS_PER_ROW=} {MV_ROWS_PER_THREAD=}")
           if MV_THREADS_PER_ROW > 1: k.apply_opt(Opt(OptOps.GROUP, 0, MV_THREADS_PER_ROW))
           if MV_BLOCKSIZE > 1: k.apply_opt(Opt(OptOps.LOCAL, global_idx, MV_BLOCKSIZE))
           if MV_ROWS_PER_THREAD > 1: k.apply_opt(Opt(OptOps.UPCAST, global_idx, MV_ROWS_PER_THREAD))
@@ -92,7 +92,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
   # if last dim is small(ish) and it's a reduce dim, upcast the reduce (loop unrolling). no simplify needed since it's just an upcast.
   if k.get_offset("reduce") < k.get_offset("upcast") and (prod(k.full_shape[k.get_offset("upcast"):]) <= 4 or \
     not any(x!=y for x,y in zip(k.sts[0].shape[k.get_offset("upcast"):], k.full_shape[k.get_offset("upcast"):]))) and \
-      (k.upcasted == 0 or prod(k.full_shape[-k.upcasted:]) < 64):
+      (k.axes["upcast"] == 0 or prod(k.full_shape[-k.axes["upcast"]:]) < 64):
     if isinstance(s:=k.full_unupcasted_shape[-1], int) and s <= 32:  # NOTE: cannot loop unroll symbolic axis
       k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unupcasted_shape)-1-k.get_offset("reduce"), 0))
       # if it's small, upcast a second reduce dimension too
@@ -106,13 +106,13 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
 
   # if nothing at all is upcasted and it's easy to, do an upcast
   for splits in [4]:
-    if k.upcasted == 0 and k.full_unupcasted_shape and k.full_unupcasted_shape[-1] % splits == 0:
+    if k.axes["upcast"] == 0 and k.full_unupcasted_shape and k.full_unupcasted_shape[-1] % splits == 0:
       k.apply_opt(Opt(OptOps.UPCAST, len(k.full_unupcasted_shape)-1, splits))
 
   # **** local groups ****
 
   if k.opts.has_local:
-    if NOLOCALS and k.local_dims == 0 and not k.group_for_reduces:
+    if NOLOCALS and k.axes["local"] == 0 and not k.group_for_reduces:
       k.apply_opt(Opt(OptOps.NOLOCALS))
     else:
       # prioritize making expand axes local

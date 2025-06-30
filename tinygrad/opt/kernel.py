@@ -62,8 +62,6 @@ class Kernel:
     # parameters for optimization
     self.applied_opts: list[Opt] = []
     self.group_for_reduces: int = 0
-    self.upcasted: int = 0
-    self.local_dims: int = 0
     self.tensor_core: Optional[TensorCore] = None
     self.tensor_core_opts: Optional[TensorCoreOptions] = None
     self.use_tensor_cores: int = 0
@@ -94,8 +92,8 @@ class Kernel:
     ret.sts = self.sts[:]
 
     # parameters for optimizations
-    ret.applied_opts, ret.group_for_reduces, ret.upcasted, ret.local_dims, ret.dont_use_locals = \
-      self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals
+    ret.applied_opts, ret.group_for_reduces, ret.dont_use_locals = \
+      self.applied_opts[:], self.group_for_reduces, self.dont_use_locals
     ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
 
     ret.axes = self.axes.copy()
@@ -130,23 +128,20 @@ class Kernel:
   @property
   def shape_len(self) -> int: return len(self.output_shape)
 
-  @property
-  def global_dims(self) -> int: return self.get_offset("reduce")-self.local_dims
-
   # there's eight chunks of the shape
   # blue   -- global dims
   # cyan   -- local dims (warp ones first)
   #  *** self.get_first("reduce")
   # green  -- reduce-local dims
   # red    -- reduce loops
-  #  *** self.upcasted
+  #  *** self.axes["upcast"]
   # purple -- reduce upcasted
   # yellow -- normal upcasted dimensions
   def colors(self) -> list[str]:
     # first non local non reduce dims are global (blue)
-    colors = ["blue"] * self.global_dims if not self.dont_use_locals else ["BLUE"] * self.global_dims
+    colors = ["blue" if not self.dont_use_locals else "BLUE"] * self.axes["global"]
     # after global are local_dims; warp ones used in tensor cores must be closest to first_reduce (cyan)
-    colors += ["cyan"] * self.local_dims
+    colors += ["cyan"] * self.axes["local"]
     # between first_reduce and first_reduce + group_for_reduces, they are late upcasted (green)
     colors += ["green"] * self.group_for_reduces
     # between first_reduce + group_for_reduces and upcasted, they are reduce (red)
@@ -173,7 +168,6 @@ class Kernel:
   # drops the final dimension
   def upcast(self):
     check(self.full_shape[-1] != 1, "can't upcast a dimension with size 1")
-    self.upcasted += 1
     self.axes["upcast"] += 1
 
   # axis : the axis to pull from
@@ -195,8 +189,12 @@ class Kernel:
     # TODO: this should be factored in to multi shape stride
     if self.shape_len == 0: return False
     all_ones = [s==1 for s in self.full_shape]
-    self.local_dims -= sum(all_ones[self.get_offset("reduce")-self.local_dims:self.get_offset("reduce")])
-    self.upcasted -= sum(all_ones[self.get_offset("upcast"):]) # TODO: no necessary since upcasted axis can't be un-upcasted
+
+    self.axes["global"] -= sum(all_ones[: self.get_offset("local")])
+    self.axes["local"] -= sum(all_ones[self.get_offset("local") : self.get_offset("group")])
+    self.axes["group"] -= sum(all_ones[self.get_offset("group") : self.get_offset("reduce")])
+    self.axes["reduce"] -= sum(all_ones[self.get_offset("reduce") : self.get_offset("upcast")])
+
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
     return any(all_ones)
 
@@ -368,7 +366,7 @@ class Kernel:
                                       (self.group_for_reduces and opt.op not in {OptOps.NOLOCALS, OptOps.PADTO})):
       acc_sz = self.reduceop.dtype.itemsize
       upcast_sz = prod([a for a,b in zip(self.full_shape[self.get_offset("upcast"):], self.sts[0].shape[self.get_offset("upcast"):]) if a == b])
-      local_sz = prod(self.full_shape[self.get_offset("reduce")-self.local_dims:self.get_offset("reduce")+self.group_for_reduces])
+      local_sz = prod(self.full_shape[self.get_offset("reduce")-self.axes["local"]:self.get_offset("reduce")+self.group_for_reduces])
       smem_sz = amt*acc_sz*upcast_sz*local_sz
       check(smem_sz <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {smem_sz}, max {self.opts.shared_max}")
 
@@ -376,9 +374,9 @@ class Kernel:
       # NOTE: LLVM/CPU can use locals too, but they are treated the same as globals (still helpful for L1 cache)
       # it's disabled for now since it makes BEAM slow for little gain
       check(self.opts.has_local, "target does not support local")
-      check(axis < self.global_dims, "local is for globals")
+      check(axis < self.axes["global"], "local is for globals")
       self.shift_to(axis, amt, insert_before=self.get_offset("reduce"))
-      self.local_dims += 1
+      self.axes["local"] += 1
     elif opt.op in {OptOps.GROUP, OptOps.GROUPTOP}:   # green
       check(self.opts.has_local and self.opts.has_shared, "target does not support local or shared mem")
       check(self.get_offset("reduce") + self.group_for_reduces <= axis < self.get_offset("upcast"), "must be reduce axis to group")
@@ -390,24 +388,24 @@ class Kernel:
       check(axis < self.get_offset("upcast"), "can't upcasted already upcasted")
       check(amt <= 32, "don't unroll more than 32")
       # TODO: fix upcast_count to put purples before yellows. broken because of METAL tensor cores
-      #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.upcasted:], self.output_shape[-self.upcasted:])) if self.upcasted else 0
+      #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.axes["upcast"]:], self.output_shape[-self.axes["upcast"]:])) if self.axes["upcast"] else 0
       #self.shift_to(axis, amt, insert_before=None if upcast_count == 0 else self.shape_len-upcast_count)
-      if self.full_shape[axis] == amt and axis == self.get_offset("reduce"): self.local_dims += 1 # first_reduce will ++, so offset loss in simplify_ones
+      if self.full_shape[axis] == amt and axis == self.get_offset("reduce"): self.axes["local"] += 1 # first_reduce will ++, so offset loss in simplify_ones
       if self.full_shape[axis] == amt and axis < self.get_offset("reduce")+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
     elif opt.op is OptOps.UPCAST:                     # yellow
       check(axis < self.get_offset("reduce"), "upcast is for non-reduce")
-      check(not (self.tensor_core and self.global_dims <= axis < self.global_dims+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
+      check(not (self.tensor_core and self.axes["global"] <= axis < self.axes["global"]+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
       check((self.opts is not None and self.opts.device == "DSP") or amt <= 16, "don't upcast more than 16")
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
     elif opt.op is OptOps.NOLOCALS:
       check(self.opts.has_local and not self.dont_use_locals, "NOLOCALS is meaningless if target does not support local or already not using locals")
-      check(self.local_dims == 0 and self.group_for_reduces == 0, "can't have no locals with locals")
+      check(self.axes["local"] == 0 and self.group_for_reduces == 0, "can't have no locals with locals")
       self.dont_use_locals = True
     elif opt.op is OptOps.SWAP:
-      check(axis < amt < self.global_dims, f"swap is only for globals with axis < amt, getting {amt=}, {axis=}, {self.global_dims=}")
+      check(axis < amt < self.axes["global"], f"swap is only for globals with axis < amt, getting {amt=}, {axis=}, {self.axes["global"]=}")
       permute = list(range(self.shape_len))
       permute[axis], permute[amt] = permute[amt], permute[axis]
       self.reshape_and_permute(None, tuple(permute))
@@ -462,8 +460,8 @@ class Kernel:
       if op.op is Ops.SINK:
         # NOTE: should group_for_reduces be added to the local_dims?
         return ret.replace(arg = KernelInfo(ret.arg.name if ret.arg is not None else self.name if name_override is None else name_override,
-                                            self.global_dims if self.opts.has_local else 0, self.local_dims+self.group_for_reduces,
-                                            self.upcasted, self.dont_use_locals, tuple(self.applied_opts)))
+                                            self.axes["global"] if self.opts.has_local else 0, self.axes["local"]+self.group_for_reduces,
+                                            self.axes["upcast"], self.dont_use_locals, tuple(self.applied_opts)))
       if op.op is Ops.REDUCE_AXIS:
         reduce_idx = len(self.bufs) + self.reduceops.index(op) * 2
 
@@ -473,7 +471,7 @@ class Kernel:
         grouped_axes = reduced_axes(self.get_offset("reduce"), self.get_offset("reduce") + self.group_for_reduces)
 
         if (tc := self.tensor_core) and (self.use_tensor_cores == 1 or self.use_tensor_cores == 3):
-          wd, tcd = self.global_dims, self.get_offset("upcast")
+          wd, tcd = self.axes["global"], self.get_offset("upcast")
           def get_upcast_axes(buf): # upcast along non-zero dimensions of (tc_reduce + tc_upcast)
             upcast_axes = int(math.log2(tc.elements_per_thread[buf]))
             return tuple((tcd + len(tc.get_reduce_axes()) + len(tc.get_upcast_axes()) - (i+1), 2) for i in range(upcast_axes))
@@ -515,10 +513,10 @@ class Kernel:
 
         ret = ret.replace(arg = (op.arg[0], axes))
         if self.group_for_reduces and grouped_axes:
-          local_shape = (1,) * self.global_dims + self.full_shape[self.global_dims:self.global_dims+self.local_dims] + \
+          local_shape = (1,) * self.axes["global"] + self.full_shape[self.axes["global"]:self.axes["global"]+self.axes["local"]] + \
             tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
               for i in range(self.get_offset("reduce"), self.get_offset("reduce")+self.group_for_reduces)]) + \
-            (1,) * (self.shape_len - self.upcasted - self.group_for_reduces - self.get_offset("reduce")) + tuple([x[0] for x in self.upcasted_axis(0)])
+            (1,) * (self.shape_len - self.axes["upcast"] - self.group_for_reduces - self.get_offset("reduce")) + tuple([x[0] for x in self.upcasted_axis(0)])
           st = ShapeTracker.from_shape(local_shape)
           local_size = st.real_size()
           local_buffer = UOp(Ops.DEFINE_LOCAL, op.dtype.ptr(local_size, local=True), (), f"temp{self.reduceops.index(op)}")
