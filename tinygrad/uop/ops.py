@@ -528,14 +528,21 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
 @dataclass(frozen=True)
 class KernelInfo:
   name: str = "test"            # name of the kernel
-  global_dims: int = 0          # number of global dimensions (this is remapping RANGE to SPECIAL)
-  local_dims: int = 0           # number of local dimensions  (this is remapping RANGE to SPECIAL)
-  upcasted: int = 0             # count that are upcasted     (this is remapping RANGE to UNROLL)
+  # global_dims: int = 0          # number of global dimensions (this is remapping RANGE to SPECIAL)
+  # local_dims: int = 0           # number of local dimensions  (this is remapping RANGE to SPECIAL)
+  # upcasted: int = 0             # count that are upcasted     (this is remapping RANGE to UNROLL)
+  axes: tuple[tuple[str, int], ...] = (("global", 0), ("local", 0), ("reduce", 0), ("upcast", 0))
   dont_use_locals: bool = False # don't use local indexing
   applied_opts: tuple = tuple()
   opts_to_apply: tuple|None = None
   @property
   def function_name(self): return to_function_name(self.name)
+  @property
+  def global_dims(self): return self.axes[0][1]   # number of global dimensions (this is remapping RANGE to SPECIAL)
+  @property
+  def local_dims(self): return self.axes[1][1]    # number of local dimensions  (this is remapping RANGE to SPECIAL)
+  @property
+  def upcasted(self): return self.axes[3][1]      # count that are upcasted     (this is remapping RANGE to UNROLL)
 
 # ******** ops in python ********
 

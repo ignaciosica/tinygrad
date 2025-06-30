@@ -1,7 +1,7 @@
 from __future__ import annotations
 import itertools, functools, math
 from dataclasses import dataclass
-from collections import defaultdict, OrderedDict
+from collections import defaultdict
 from typing import Optional, cast, Final, Callable, Sequence
 
 from tinygrad.uop.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, smax
@@ -68,7 +68,7 @@ class Kernel:
     self.dont_use_locals: bool = False
 
     reduces = [i for i,(s,n) in enumerate(zip(self.full_shape, self.output_shape)) if resolve(s != n)]
-    self.axes = OrderedDict((("global", self.shape_len - len(reduces)), ("local", 0), ("reduce", len(reduces)), ("upcast", 0)))
+    self.axes = {"global": self.shape_len - len(reduces), "local": 0, "reduce": len(reduces), "upcast": 0}
 
     # group simplifies
     self.simplify_ones()
@@ -474,7 +474,7 @@ class Kernel:
         # NOTE: should group_for_reduces be added to the local_dims?
         return ret.replace(arg = KernelInfo(ret.arg.name if ret.arg is not None else self.name if name_override is None else name_override,
                                             self.global_dims if self.opts.has_local else 0, self.local_dims+self.group_for_reduces,
-                                            self.upcasted, self.dont_use_locals, tuple(self.applied_opts)))
+                                            self.upcasted, tuple(self.axes.items()), self.dont_use_locals, tuple(self.applied_opts)))
       if op.op is Ops.REDUCE_AXIS:
         reduce_idx = len(self.bufs) + self.reduceops.index(op) * 2
 
