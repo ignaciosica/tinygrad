@@ -69,6 +69,11 @@ class Kernel:
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
 
+    reduces = [i for i,(s,n) in enumerate(zip(self.full_shape, self.output_shape)) if resolve(s != n)]
+    reduce_dims = len(reduces)
+    global_dims = self.shape_len - reduce_dims
+    self.axes = OrderedDict((("global", global_dims), ("local", 0), ("group", 0), ("reduce", reduce_dims), ("upcast", 0)))
+
     # group simplifies
     self.simplify_ones()
     self.simplify_merge_adjacent()
@@ -77,11 +82,6 @@ class Kernel:
     final_reduces = [i for i,(s,n) in enumerate(zip(self.full_shape, self.output_shape)) if resolve(s != n)]
     if final_reduces != list(range(len(self.full_shape)-len(final_reduces), len(self.full_shape))):
       raise RuntimeError(f"reduces are not at the end of the shape {self.full_shape} -> {self.output_shape}")
-
-    reduce_dims = len(final_reduces)
-    global_dims = self.shape_len - reduce_dims
-    self.axes = OrderedDict((("global", global_dims), ("local", 0), ("group", 0), ("reduce", reduce_dims), ("upcast", 0)))
-    # self.axes = (("global", global_dims), ("local", 0), ("group", 0), ("reduce", reduce_dims), ("upcast", 0))
 
   def copy(self):
     ret = type(self).__new__(type(self))
@@ -102,7 +102,7 @@ class Kernel:
 
     return ret
 
-  def get_offset(self, axis_name) -> int:
+  def get_offset(self, axis_name: str) -> int:
     offsets = (0,) + tuple(itertools.accumulate(sz for sz in self.axes.values()))
     return get_single_element([offset for name, offset in zip(self.axes.keys(), offsets) if name == axis_name])
 
@@ -114,13 +114,6 @@ class Kernel:
     assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
     return list(zip(upcasted_shape, upcasted_stride,
                     [x!=y for x,y in zip(self.sts[0].shape[self.get_offset("upcast"):], self.full_shape[self.get_offset("upcast"):])]))
-
-  @property
-  def first_reduce(self) -> int:
-    return [resolve(x!=y) for x,y in zip(self.sts[0].shape[:self.first_upcast]+(0,), self.full_shape[:self.first_upcast]+(1,))].index(True)
-
-  @property
-  def first_upcast(self) -> int: return self.shape_len-self.upcasted
 
   @property
   def reduceop(self) -> UOp|None: return self.reduceops[0] if len(self.reduceops) > 0 else None
@@ -181,6 +174,7 @@ class Kernel:
   def upcast(self):
     check(self.full_shape[-1] != 1, "can't upcast a dimension with size 1")
     self.upcasted += 1
+    self.axes["upcast"] += 1
 
   # axis : the axis to pull from
   # amount : the amount to take
@@ -201,8 +195,8 @@ class Kernel:
     # TODO: this should be factored in to multi shape stride
     if self.shape_len == 0: return False
     all_ones = [s==1 for s in self.full_shape]
-    self.local_dims -= sum(all_ones[self.first_reduce-self.local_dims:self.first_reduce])
-    self.upcasted -= sum(all_ones[self.first_upcast:]) # TODO: no necessary since upcasted axis can't be un-upcasted
+    self.local_dims -= sum(all_ones[self.get_offset("reduce")-self.local_dims:self.get_offset("reduce")])
+    self.upcasted -= sum(all_ones[self.get_offset("upcast"):]) # TODO: no necessary since upcasted axis can't be un-upcasted
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
     return any(all_ones)
 
@@ -235,7 +229,7 @@ class Kernel:
         si, sti, last_st = s[i], st[i], ret[-1][1]
         can_merge.append((sti is not None) and ((sti != 0 and last_st == si*sti) or (sti == 0 and last_st == 0)))
       # more can merge than this
-      mergeable = all(can_merge) and i != self.first_reduce
+      mergeable = all(can_merge) and i != self.get_offset("reduce")
       for j,(s,st) in enumerate(zip(shapes, strides)):
         if mergeable: rets[j][-1] = (rets[j][-1][0] * s[i], st[i])
         else: rets[j].append((s[i], st[i]))
