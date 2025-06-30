@@ -191,11 +191,15 @@ class Kernel:
     if self.shape_len == 0: return False
     all_ones = [s==1 for s in self.full_shape]
 
-    self.axes["global"] -= sum(all_ones[: self.get_offset("local")])
-    self.axes["local"] -= sum(all_ones[self.get_offset("local") : self.get_offset("group")])
-    self.axes["group"] -= sum(all_ones[self.get_offset("group") : self.get_offset("reduce")])
-    self.axes["reduce"] -= sum(all_ones[self.get_offset("reduce") : self.get_offset("upcast")])
-    # self.axes["upcast"] -= sum(all_ones[self.get_offset("upcast") :])
+    ones_global = sum(all_ones[: self.get_offset("local")])
+    ones_local = sum(all_ones[self.get_offset("local") : self.get_offset("group")])
+    ones_group = sum(all_ones[self.get_offset("group") : self.get_offset("reduce")])
+    ones_reduce = sum(all_ones[self.get_offset("reduce") : self.get_offset("upcast")])
+
+    self.axes["global"] -= ones_global
+    self.axes["local"] -= ones_local
+    self.axes["group"] -= ones_group
+    self.axes["reduce"] -= ones_reduce
 
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
     return any(all_ones)
