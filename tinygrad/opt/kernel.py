@@ -195,11 +195,13 @@ class Kernel:
     ones_local = sum(all_ones[self.get_offset("local") : self.get_offset("group")])
     ones_group = sum(all_ones[self.get_offset("group") : self.get_offset("reduce")])
     ones_reduce = sum(all_ones[self.get_offset("reduce") : self.get_offset("upcast")])
+    ones_upcast = sum(all_ones[self.get_offset("upcast") :])
 
     self.axes["global"] -= ones_global
     self.axes["local"] -= ones_local
     self.axes["group"] -= ones_group
     self.axes["reduce"] -= ones_reduce
+    self.axes["upcast"] -= ones_upcast
 
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
     return any(all_ones)
