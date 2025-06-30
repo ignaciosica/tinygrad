@@ -380,10 +380,10 @@ class Kernel:
       self.axes["local"] += 1
     elif opt.op in {OptOps.GROUP, OptOps.GROUPTOP}:   # green
       check(self.opts.has_local and self.opts.has_shared, "target does not support local or shared mem")
-      check(self.get_offset("reduce") + self.axes["group"] <= axis < self.get_offset("upcast"), "must be reduce axis to group")
+      check(self.get_offset("reduce") <= axis < self.get_offset("upcast"), "must be reduce axis to group")
       check(not self.tensor_core, "can't group with tensor cores")
       check(len(reduce_axes:=[i for r in self.reduceops for i in r.axis_arg]) == len(set(reduce_axes)), "can't group with parallel reduces")
-      self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.get_offset("reduce") + self.axes["group"])
+      self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.get_offset("reduce"))
       self.axes["group"] += 1
     elif opt.op is OptOps.UNROLL:                     # purple
       check(axis < self.get_offset("upcast"), "can't upcasted already upcasted")
@@ -392,7 +392,7 @@ class Kernel:
       #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.axes["upcast"]:], self.output_shape[-self.axes["upcast"]:])) if self.axes["upcast"] else 0
       #self.shift_to(axis, amt, insert_before=None if upcast_count == 0 else self.shape_len-upcast_count)
       if self.full_shape[axis] == amt and axis == self.get_offset("reduce"): self.axes["local"] += 1 # first_reduce will ++, so offset loss in simplify_ones
-      if self.full_shape[axis] == amt and axis < self.get_offset("reduce")+self.axes["group"]: self.axes["group"] -= 1 # fully unrolling a GROUP
+      if self.full_shape[axis] == amt and axis < self.get_offset("reduce"): self.axes["group"] -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
     elif opt.op is OptOps.UPCAST:                     # yellow
