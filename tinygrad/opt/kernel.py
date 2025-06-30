@@ -328,10 +328,10 @@ class Kernel:
     except KernelOptError:
       return False
 
-  def real_axis(self, opt:Opt):
+  def real_axis(self, opt: Opt):
     if opt.axis is None: return -1
-    if opt.op is OptOps.UNROLL: return self.get_offset("group")+opt.axis
-    if opt.op in {OptOps.GROUP, OptOps.GROUPTOP}: return self.get_offset("reduce")+opt.axis
+    if opt.op is OptOps.UNROLL: return self.get_offset("group") + opt.axis
+    if opt.op in {OptOps.GROUP, OptOps.GROUPTOP}: return self.get_offset("reduce") + opt.axis
     return opt.axis
 
   def apply_opt(self, opt:Opt, append_opt:bool=True):
