@@ -68,14 +68,14 @@ class Kernel:
     self.use_tensor_cores: int = 0
     self.dont_use_locals: bool = False
 
-    # group simplifies
-    self.simplify_ones()
-    self.simplify_merge_adjacent()
-
     # confirm all reduce axes are at the end
     final_reduces = [i for i,(s,n) in enumerate(zip(self.full_shape, self.output_shape)) if resolve(s != n)]
     if final_reduces != list(range(len(self.full_shape)-len(final_reduces), len(self.full_shape))):
       raise RuntimeError(f"reduces are not at the end of the shape {self.full_shape} -> {self.output_shape}")
+
+    # group simplifies
+    self.simplify_ones()
+    self.simplify_merge_adjacent()
 
   def copy(self):
     ret = type(self).__new__(type(self))
