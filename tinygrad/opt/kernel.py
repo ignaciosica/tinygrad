@@ -105,18 +105,18 @@ class Kernel:
   @property
   def membufs(self) -> list[UOp]: return dedup([x.src[0].base for x in self.bufs if x.op in {Ops.LOAD, Ops.STORE}])
 
-  def upcasted_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
-    first_upcast = self.get_first("upcast")
-    first_reduce = self.get_first("reduce")
-    upcasted_shape, upcasted_stride = self.sts[i].shape[first_upcast:first_reduce], self.sts[i].real_strides()[first_upcast:first_reduce]
-    assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
-    return list(zip(upcasted_shape, upcasted_stride, [False] * (first_reduce - first_upcast)))
+  # def upcasted_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
+  #   first_upcast = self.get_first("upcast")
+  #   first_reduce = self.get_first("reduce")
+  #   upcasted_shape, upcasted_stride = self.sts[i].shape[first_upcast:first_reduce], self.sts[i].real_strides()[first_upcast:first_reduce]
+  #   assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
+  #   return list(zip(upcasted_shape, upcasted_stride, [True] * (first_reduce - first_upcast)))
 
-  def unrolled_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
-    first_unroll = self.get_first("upcast")
-    upcasted_shape, upcasted_stride = self.sts[i].shape[first_unroll:], self.sts[i].real_strides()[first_unroll:]
-    assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
-    return list(zip(upcasted_shape, upcasted_stride, [True] * (self.shape_len - first_unroll)))
+  # def unrolled_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
+  #   first_unroll = self.get_first("upcast")
+  #   upcasted_shape, upcasted_stride = self.sts[i].shape[first_unroll:], self.sts[i].real_strides()[first_unroll:]
+  #   assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
+  #   return list(zip(upcasted_shape, upcasted_stride, [False] * (self.shape_len - first_unroll)))
 
   def get_first(self, axis_name) -> int: return get_first(self.axes, axis_name)
 
@@ -518,7 +518,8 @@ class Kernel:
           #   tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
           #     for i in range(self.get_first("reduce"), self.first_reduce+self.group_for_reduces)]) + \
           #   (1,) * (self.shape_len - self.upcasted - self.group_for_reduces - self.first_reduce) + tuple([x[0] for x in self.upcasted_axis(0)])
-          local_shape = self.full_shape
+          local_shape = (1,1,4,1)
+          # local_shape = self.full_shape
           st = ShapeTracker.from_shape(local_shape)
           local_size = st.real_size()
           local_buffer = UOp(Ops.DEFINE_LOCAL, op.dtype.ptr(local_size, local=True), (), f"temp{self.reduceops.index(op)}")

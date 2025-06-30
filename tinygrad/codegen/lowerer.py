@@ -39,8 +39,9 @@ def get_index(ast: UOp) -> IndexContext:
 
   ridxs = idxs[:]
 
-  for a in range(get_first(axes, "group"), get_first(axes, "upcast")):
-    ridxs[a] = UOp(Ops.RANGE, dtypes.int, (sint_to_uop(full_shape[a]),), 1000 + a)
+
+  for i, g in enumerate(full_shape[get_first(axes, "group") : get_first(axes, "upcast")], start=get_first(axes, "group")):
+    ridxs[i] = UOp(Ops.RANGE, dtypes.int, (sint_to_uop(g),), 1000 + i)
 
   return IndexContext(idxs, ridxs)
 
