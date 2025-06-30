@@ -195,6 +195,7 @@ class Kernel:
     self.axes["local"] -= sum(all_ones[self.get_offset("local") : self.get_offset("group")])
     self.axes["group"] -= sum(all_ones[self.get_offset("group") : self.get_offset("reduce")])
     self.axes["reduce"] -= sum(all_ones[self.get_offset("reduce") : self.get_offset("upcast")])
+    # self.axes["upcast"] -= sum(all_ones[self.get_offset("upcast") :])
 
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
     return any(all_ones)
@@ -514,10 +515,10 @@ class Kernel:
 
         ret = ret.replace(arg = (op.arg[0], axes))
         if self.axes["group"] and grouped_axes:
-          local_shape = (1,) * self.axes["global"] + self.full_shape[self.axes["global"]:self.axes["global"]+self.axes["local"]] + \
+          local_shape = (1,) * self.axes["global"] + self.full_shape[self.get_offset("local") : self.get_offset("group")] + \
             tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
               for i in range(self.get_offset("group"), self.get_offset("reduce"))]) + \
-            (1,) * (self.shape_len - self.axes["upcast"] - self.get_offset("reduce")) + tuple([x[0] for x in self.upcasted_axis(0)])
+            (1,) * (self.shape_len - self.axes["upcast"] - self.get_offset("group")) + tuple([x[0] for x in self.upcasted_axis(0)])
           st = ShapeTracker.from_shape(local_shape)
           local_size = st.real_size()
           local_buffer = UOp(Ops.DEFINE_LOCAL, op.dtype.ptr(local_size, local=True), (), f"temp{self.reduceops.index(op)}")

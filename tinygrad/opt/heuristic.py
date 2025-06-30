@@ -26,13 +26,13 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
           if MV_ROWS_PER_THREAD > 1: k.apply_opt(Opt(OptOps.UPCAST, global_idx, MV_ROWS_PER_THREAD))
           return k.applied_opts
 
-  if k.opts.has_local and k.opts.has_shared and all_int(k.sts[0].shape[:k.get_offset("reduce")]):
+  if k.opts.has_local and k.opts.has_shared and all_int(k.sts[0].shape[:k.get_offset("group")]):
     # are we grouping? (requires local shape support)
     if not [x for x in k.sts[0].unit_stride_axes() if x >= k.get_offset("upcast") and k.sts[0].shape[x]%4 == 0] and \
-      k.get_offset("reduce") <= 2 and k.get_offset("reduce") < k.shape_len and prod(k.sts[0].shape[:k.get_offset("reduce")]) <= 2048:
+      k.get_offset("group") <= 2 and k.get_offset("group") < k.shape_len and prod(k.sts[0].shape[:k.get_offset("group")]) <= 2048:
       # TODO: use 1024 if it's allowed in a smarter way
       for sz in ([256, 16] if prod(k.sts[0].shape[:k.get_offset("reduce")]) <= 32 else [16]):
-        if all(st.shape[k.get_offset("reduce")] % sz == 0 or st.shape[k.get_offset("reduce")] == 1 for st in k.sts):
+        if all(st.shape[k.get_offset("group")] % sz == 0 or st.shape[k.get_offset("group")] == 1 for st in k.sts):
           try: # may fail due to excessive smem usage
             k.apply_opt(Opt(OptOps.GROUPTOP, 0, sz))
             break
