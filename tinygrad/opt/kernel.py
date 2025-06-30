@@ -370,9 +370,10 @@ class Kernel:
       self.axes["local"] += 1
     elif opt.op in {OptOps.GROUP, OptOps.GROUPTOP}:   # green
       check(self.opts.has_local and self.opts.has_shared, "target does not support local or shared mem")
-      check(self.axes["reduce"] > 0 and self.get_first("reduce") <= axis < self.get_first("unroll"), "must be reduce axis to group")
+      check(self.axes["reduce"] > 0 and axis < self.axes["reduce"], "must be reduce axis to group")
       check(not self.tensor_core, "can't group with tensor cores")
       check(len(reduce_axes:=[i for r in self.reduceops for i in r.axis_arg]) == len(set(reduce_axes)), "can't group with parallel reduces")
+      axis = axis + self.get_first("group")
       self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.get_first("upcast"))
       self.axes["group"] += 1
     elif opt.op is OptOps.UNROLL:                     # purple
