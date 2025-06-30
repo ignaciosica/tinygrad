@@ -140,7 +140,7 @@ class Kernel:
   # yellow -- normal upcasted dimensions
   def colors(self) -> list[str]:
     # first non local non reduce dims are global (blue)
-    colors = ["blue" if not self.dont_use_locals else "BLUE"] * self.axes["global"]
+    colors = ["BLUE" if self.dont_use_locals else "blue"] * self.axes["global"]
     # after global are local_dims; warp ones used in tensor cores must be closest to first_reduce (cyan)
     colors += ["cyan"] * self.axes["local"]
     # between first_reduce and first_reduce + group_for_reduces, they are late upcasted (green)
@@ -367,8 +367,10 @@ class Kernel:
     if self.reduceop is not None and (opt.op in {OptOps.GROUP, OptOps.GROUPTOP} or \
                                       (self.axes["group"] and opt.op not in {OptOps.NOLOCALS, OptOps.PADTO})):
       acc_sz = self.reduceop.dtype.itemsize
+      # upcast_sz = prod([a for a,b in zip(self.full_shape[self.first_upcast:], self.sts[0].shape[self.first_upcast:]) if a == b])
+      # local_sz = prod(self.full_shape[self.first_reduce-self.local_dims:self.first_reduce+self.group_for_reduces])
       upcast_sz = prod([a for a,b in zip(self.full_shape[self.get_offset("upcast"):], self.sts[0].shape[self.get_offset("upcast"):]) if a == b])
-      local_sz = prod(self.full_shape[self.get_offset("reduce")-self.axes["local"]:self.get_offset("reduce")+self.axes["group"]])
+      local_sz = prod(self.full_shape[self.get_offset("group")-self.axes["local"]:self.get_offset("reduce")])
       smem_sz = amt*acc_sz*upcast_sz*local_sz
       check(smem_sz <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {smem_sz}, max {self.opts.shared_max}")
 
@@ -392,12 +394,12 @@ class Kernel:
       # TODO: fix upcast_count to put purples before yellows. broken because of METAL tensor cores
       #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.axes["upcast"]:], self.output_shape[-self.axes["upcast"]:])) if self.axes["upcast"] else 0
       #self.shift_to(axis, amt, insert_before=None if upcast_count == 0 else self.shape_len-upcast_count)
-      if self.full_shape[axis] == amt and axis == self.get_offset("reduce"): self.axes["local"] += 1 # first_reduce will ++, so offset loss in simplify_ones
+      if self.full_shape[axis] == amt and axis == self.get_offset("group"): self.axes["local"] += 1 # first_reduce will ++, so offset loss in simplify_ones
       if self.full_shape[axis] == amt and axis < self.get_offset("reduce") and self.axes["group"]: self.axes["group"] -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
     elif opt.op is OptOps.UPCAST:                     # yellow
-      check(axis < self.get_offset("reduce"), "upcast is for non-reduce")
+      check(axis < self.get_offset("group"), "upcast is for non-reduce")
       check(not (self.tensor_core and self.axes["global"] <= axis < self.axes["global"]+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
       check((self.opts is not None and self.opts.device == "DSP") or amt <= 16, "don't upcast more than 16")
       self.shift_to(axis, amt, insert_before=None)
@@ -407,7 +409,7 @@ class Kernel:
       check(self.axes["local"] == 0 and self.axes["group"] == 0, "can't have no locals with locals")
       self.dont_use_locals = True
     elif opt.op is OptOps.SWAP:
-      check(axis < amt < self.axes["global"], f"swap is only for globals with axis < amt, getting {amt=}, {axis=}, {self.axes["global"]=}")
+      check(axis < amt < self.axes["global"], f"swap is only for globals with axis < amt, getting {amt=}, {axis=}, {self.axes['global']=}")
       permute = list(range(self.shape_len))
       permute[axis], permute[amt] = permute[amt], permute[axis]
       self.reshape_and_permute(None, tuple(permute))
@@ -415,7 +417,7 @@ class Kernel:
       check(not self.vars, "does not work with symbolic shape")
       check(axis < self.get_offset("upcast"), "cannot pad upcasted")
       # ok to pad SUM if all parent ALU ops have f(0) = 0
-      if (r:=self.reduceop) is not None and self.get_offset("reduce") <= axis: check(r.arg[0] is Ops.ADD and can_pad(r, {}), f"cannot pad {r}")
+      if (r:=self.reduceop) is not None and self.get_offset("group") <= axis: check(r.arg[0] is Ops.ADD and can_pad(r, {}), f"cannot pad {r}")
       padded = False
       for i,st in enumerate(self.sts):
         if (s:=st.shape[axis]) == 1: continue  # reduced
