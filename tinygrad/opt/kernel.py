@@ -135,7 +135,7 @@ class Kernel:
   def shape_len(self) -> int: return len(self.sts[0].shape)
 
   @property
-  def global_dims(self) -> int: return self.first_reduce-self.axes["local"]
+  def global_dims(self) -> int: return self.axes["global"]
 
   # there's eight chunks of the shape
   # blue   -- global dims
@@ -157,7 +157,7 @@ class Kernel:
     colors += ["red"] * (self.first_upcast - (self.first_reduce + self.group_for_reduces))
     # upcasted dimensions are reduce (magenta) or normal (yellow)
     colors += ["magenta" if self.full_shape[i] != self.sts[0].shape[i] else "yellow" for i in range(self.first_upcast, self.shape_len)]
-    assert len(colors) == self.shape_len, "colors size mismatch"
+    assert len(colors) == self.shape_len, f"colors size mismatch {self.axes} {self.full_shape}"
     return colors
 
   def colored_shape(self, pad:Optional[int]=None, dense=False) -> str:
@@ -399,7 +399,7 @@ class Kernel:
       # TODO: fix upcast_count to put purples before yellows. broken because of METAL tensor cores
       #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.axes["upcast"]:], self.output_shape[-self.axes["upcast"]:])) if self.axes["upcast"] else 0
       #self.shift_to(axis, amt, insert_before=None if upcast_count == 0 else self.shape_len-upcast_count)
-      if self.full_shape[axis] == amt and axis == self.first_reduce: self.axes["local"] += 1 # first_reduce will ++, so offset loss in simplify_ones
+      # if self.full_shape[axis] == amt and axis == self.first_reduce: self.axes["local"] += 1 # first_reduce will ++, so offset loss in simplify_ones
       if self.full_shape[axis] == amt and axis < self.first_reduce+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
       self.upcast()
