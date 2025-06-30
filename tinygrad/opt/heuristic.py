@@ -92,7 +92,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
   # if last dim is small(ish) and it's a reduce dim, upcast the reduce (loop unrolling). no simplify needed since it's just an upcast.
   if k.first_reduce < k.first_upcast and (prod(k.full_shape[k.first_upcast:]) <= 4 or \
     not any(x!=y for x,y in zip(k.sts[0].shape[k.first_upcast:], k.full_shape[k.first_upcast:]))) and \
-      (k.upcasted == 0 or prod(k.full_shape[-k.upcasted:]) < 64):
+      (k.axes["upcast"] == 0 or prod(k.full_shape[-k.axes["upcast"]:]) < 64):
     if isinstance(s:=k.full_unupcasted_shape[-1], int) and s <= 32:  # NOTE: cannot loop unroll symbolic axis
       k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unupcasted_shape)-1-k.first_reduce, 0))
       # if it's small, upcast a second reduce dimension too
@@ -106,13 +106,13 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
 
   # if nothing at all is upcasted and it's easy to, do an upcast
   for splits in [4]:
-    if k.upcasted == 0 and k.full_unupcasted_shape and k.full_unupcasted_shape[-1] % splits == 0:
+    if k.axes["upcast"] == 0 and k.full_unupcasted_shape and k.full_unupcasted_shape[-1] % splits == 0:
       k.apply_opt(Opt(OptOps.UPCAST, len(k.full_unupcasted_shape)-1, splits))
 
   # **** local groups ****
 
   if k.opts.has_local:
-    if NOLOCALS and k.local_dims == 0 and not k.group_for_reduces:
+    if NOLOCALS and k.axes["local"] == 0 and not k.group_for_reduces:
       k.apply_opt(Opt(OptOps.NOLOCALS))
     else:
       # prioritize making expand axes local
