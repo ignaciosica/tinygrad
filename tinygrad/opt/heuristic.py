@@ -28,7 +28,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
 
   if k.opts.has_local and k.opts.has_shared and all_int(k.sts[0].shape[:k.get_offset("reduce")]):
     # are we grouping? (requires local shape support)
-    if not [x for x in k.sts[0].unit_stride_axes() if x >= k.first_upcast and k.sts[0].shape[x]%4 == 0] and \
+    if not [x for x in k.sts[0].unit_stride_axes() if x >= k.get_offset("upcast") and k.sts[0].shape[x]%4 == 0] and \
       k.get_offset("reduce") <= 2 and k.get_offset("reduce") < k.shape_len and prod(k.sts[0].shape[:k.get_offset("reduce")]) <= 2048:
       # TODO: use 1024 if it's allowed in a smarter way
       for sz in ([256, 16] if prod(k.sts[0].shape[:k.get_offset("reduce")]) <= 32 else [16]):
@@ -43,7 +43,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
     unit_stride_axes_mul_4 = [i for i in k.sts[buf_index].unit_stride_axes(ignore_valid=True) if k.sts[buf_index].shape[i]%4 == 0]
     if buf.src[0].dtype.__class__ is ImageDType:
       #assert len(unit_stride_axes_mul_4) >= 1, f"needs a unit stride axis in {k.bufs[buf_index]}"
-      if len(unit_stride_axes_mul_4) and all(x < k.first_upcast for x in unit_stride_axes_mul_4):
+      if len(unit_stride_axes_mul_4) and all(x < k.get_offset("upcast") for x in unit_stride_axes_mul_4):
         if unit_stride_axes_mul_4[0] < k.get_offset("reduce"):
           k.apply_opt(Opt(OptOps.UPCAST, unit_stride_axes_mul_4[0], 4))
         else:
@@ -55,7 +55,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
   # **** below this line need to be optional and benchmarked ****
 
   # TODO: doing extra upcasts with images doesn't work for some reason (maybe has to do with to_image_idx)
-  # to trigger the above bug, remove prod(k.full_shape[k.first_upcast:]) from the below
+  # to trigger the above bug, remove prod(k.full_shape[k.get_offset("upcast"):]) from the below
   # expression and run test/test_ops.py with IMAGE=2
   # if there are small dims with lots of valid masks, upcast them (they might be from Tensor.stack)
   # this can be made much smarter
@@ -65,7 +65,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
     # we might want to be able to split axes that are masked, or refuse to merge them in simplify_merge_adjacent
     # for now skip upcasting here if there is a symbolic axis
     if isinstance(k.full_shape[axis], int) and k.full_shape[axis] <= 7 and any(st.axis_is_masked(axis) for st in k.sts) and \
-      prod(k.full_shape[k.first_upcast:]) * prod(k.full_shape[j] for j in to_upcast) * k.full_shape[axis] <= 7 * 7:
+      prod(k.full_shape[k.get_offset("upcast"):]) * prod(k.full_shape[j] for j in to_upcast) * k.full_shape[axis] <= 7 * 7:
       if DEBUG >= 4: print(f"upcasting masked axis : {axis}")
       to_upcast.append(axis)
   for axis in to_upcast[::-1]: k.apply_opt(Opt(OptOps.UPCAST, axis, 0))
@@ -90,13 +90,13 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
     else: break
 
   # if last dim is small(ish) and it's a reduce dim, upcast the reduce (loop unrolling). no simplify needed since it's just an upcast.
-  if k.get_offset("reduce") < k.first_upcast and (prod(k.full_shape[k.first_upcast:]) <= 4 or \
-    not any(x!=y for x,y in zip(k.sts[0].shape[k.first_upcast:], k.full_shape[k.first_upcast:]))) and \
+  if k.get_offset("reduce") < k.get_offset("upcast") and (prod(k.full_shape[k.get_offset("upcast"):]) <= 4 or \
+    not any(x!=y for x,y in zip(k.sts[0].shape[k.get_offset("upcast"):], k.full_shape[k.get_offset("upcast"):]))) and \
       (k.upcasted == 0 or prod(k.full_shape[-k.upcasted:]) < 64):
     if isinstance(s:=k.full_unupcasted_shape[-1], int) and s <= 32:  # NOTE: cannot loop unroll symbolic axis
       k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unupcasted_shape)-1-k.get_offset("reduce"), 0))
       # if it's small, upcast a second reduce dimension too
-      if k.get_offset("reduce") < k.first_upcast and s <= 3 and isinstance(s2:=k.full_unupcasted_shape[-1], int) and s2 <= 3:
+      if k.get_offset("reduce") < k.get_offset("upcast") and s <= 3 and isinstance(s2:=k.full_unupcasted_shape[-1], int) and s2 <= 3:
         k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unupcasted_shape)-1-k.get_offset("reduce"), 0))
     else:
       for splits in [4]:

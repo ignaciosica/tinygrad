@@ -1,7 +1,7 @@
 from __future__ import annotations
 import itertools, functools, math
 from dataclasses import dataclass
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from typing import Optional, cast, Final, Callable, Sequence
 
 from tinygrad.uop.ops import GroupOp, KernelInfo, UOp, Ops, can_pad, resolve, Variable, sint, graph_rewrite, smax
@@ -80,7 +80,8 @@ class Kernel:
 
     reduce_dims = len(final_reduces)
     global_dims = self.shape_len - reduce_dims
-    self.axes = (("global", global_dims), ("local", 0), ("group", 0), ("reduce", reduce_dims), ("upcast", 0))
+    self.axes = OrderedDict((("global", global_dims), ("local", 0), ("group", 0), ("reduce", reduce_dims), ("upcast", 0)))
+    # self.axes = (("global", global_dims), ("local", 0), ("group", 0), ("reduce", reduce_dims), ("upcast", 0))
 
   def copy(self):
     ret = type(self).__new__(type(self))
@@ -97,29 +98,26 @@ class Kernel:
       self.applied_opts[:], self.group_for_reduces, self.upcasted, self.local_dims, self.dont_use_locals
     ret.tensor_core, ret.tensor_core_opts, ret.use_tensor_cores = self.tensor_core, self.tensor_core_opts, self.use_tensor_cores
 
-    ret.axes = self.axes[:]
+    ret.axes = self.axes.copy()
 
     return ret
 
-  def get_size(self, axis_name: str) -> int:
-    return get_single_element([sz for name, sz in self.axes if name == axis_name])
-
-  def get_offset(self, axis_name: str) -> int:
-    offsets = (0,) + tuple(itertools.accumulate([sz for _, sz in self.axes]))
-    return get_single_element([offset for (name, _), offset in zip(self.axes, offsets) if name == axis_name])
+  def get_offset(self, axis_name) -> int:
+    offsets = (0,) + tuple(itertools.accumulate(sz for sz in self.axes.values()))
+    return get_single_element([offset for name, offset in zip(self.axes.keys(), offsets) if name == axis_name])
 
   @property
   def membufs(self) -> list[UOp]: return dedup([x.src[0].base for x in self.bufs if x.op in {Ops.LOAD, Ops.STORE}])
 
   def upcasted_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
-    upcasted_shape, upcasted_stride = self.sts[i].shape[self.first_upcast:], self.sts[i].real_strides()[self.first_upcast:]
+    upcasted_shape, upcasted_stride = self.sts[i].shape[self.get_offset("upcast"):], self.sts[i].real_strides()[self.get_offset("upcast"):]
     assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
     return list(zip(upcasted_shape, upcasted_stride,
-                    [x!=y for x,y in zip(self.sts[0].shape[self.first_upcast:], self.full_shape[self.first_upcast:])]))
+                    [x!=y for x,y in zip(self.sts[0].shape[self.get_offset("upcast"):], self.full_shape[self.get_offset("upcast"):])]))
 
-  # @property
-  # def first_reduce(self) -> int:
-    # return [resolve(x!=y) for x,y in zip(self.sts[0].shape[:self.first_upcast]+(0,), self.full_shape[:self.first_upcast]+(1,))].index(True)
+  @property
+  def first_reduce(self) -> int:
+    return [resolve(x!=y) for x,y in zip(self.sts[0].shape[:self.first_upcast]+(0,), self.full_shape[:self.first_upcast]+(1,))].index(True)
 
   @property
   def first_upcast(self) -> int: return self.shape_len-self.upcasted
@@ -134,7 +132,7 @@ class Kernel:
   def full_shape(self) -> tuple[sint, ...]: return self.sts[-1].shape
 
   @property
-  def full_unupcasted_shape(self) -> tuple[sint, ...]: return self.full_shape[:self.first_upcast]
+  def full_unupcasted_shape(self) -> tuple[sint, ...]: return self.full_shape[:self.get_offset("upcast")]
 
   @property
   def shape_len(self) -> int: return len(self.output_shape)
@@ -159,9 +157,9 @@ class Kernel:
     # between first_reduce and first_reduce + group_for_reduces, they are late upcasted (green)
     colors += ["green"] * self.group_for_reduces
     # between first_reduce + group_for_reduces and upcasted, they are reduce (red)
-    colors += ["red"] * (self.first_upcast - (self.get_offset("reduce") + self.group_for_reduces))
+    colors += ["red"] * (self.get_offset("upcast") - (self.get_offset("reduce") + self.group_for_reduces))
     # upcasted dimensions are reduce (magenta) or normal (yellow)
-    colors += ["magenta" if self.full_shape[i] != self.sts[0].shape[i] else "yellow" for i in range(self.first_upcast, self.shape_len)]
+    colors += ["magenta" if self.full_shape[i] != self.sts[0].shape[i] else "yellow" for i in range(self.get_offset("upcast"), self.shape_len)]
     assert len(colors) == self.shape_len, "colors size mismatch"
     return colors
 
@@ -203,7 +201,7 @@ class Kernel:
     # TODO: this should be factored in to multi shape stride
     if self.shape_len == 0: return False
     all_ones = [s==1 for s in self.full_shape]
-    self.local_dims -= sum(all_ones[self.get_offset("reduce")-self.local_dims:self.get_offset("reduce")])
+    self.local_dims -= sum(all_ones[self.first_reduce-self.local_dims:self.first_reduce])
     self.upcasted -= sum(all_ones[self.first_upcast:]) # TODO: no necessary since upcasted axis can't be un-upcasted
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
     return any(all_ones)
@@ -237,7 +235,7 @@ class Kernel:
         si, sti, last_st = s[i], st[i], ret[-1][1]
         can_merge.append((sti is not None) and ((sti != 0 and last_st == si*sti) or (sti == 0 and last_st == 0)))
       # more can merge than this
-      mergeable = all(can_merge) and i != self.get_offset("reduce")
+      mergeable = all(can_merge) and i != self.first_reduce
       for j,(s,st) in enumerate(zip(shapes, strides)):
         if mergeable: rets[j][-1] = (rets[j][-1][0] * s[i], st[i])
         else: rets[j].append((s[i], st[i]))
@@ -375,7 +373,7 @@ class Kernel:
     if self.reduceop is not None and (opt.op in {OptOps.GROUP, OptOps.GROUPTOP} or \
                                       (self.group_for_reduces and opt.op not in {OptOps.NOLOCALS, OptOps.PADTO})):
       acc_sz = self.reduceop.dtype.itemsize
-      upcast_sz = prod([a for a,b in zip(self.full_shape[self.first_upcast:], self.sts[0].shape[self.first_upcast:]) if a == b])
+      upcast_sz = prod([a for a,b in zip(self.full_shape[self.get_offset("upcast"):], self.sts[0].shape[self.get_offset("upcast"):]) if a == b])
       local_sz = prod(self.full_shape[self.get_offset("reduce")-self.local_dims:self.get_offset("reduce")+self.group_for_reduces])
       smem_sz = amt*acc_sz*upcast_sz*local_sz
       check(smem_sz <= self.opts.shared_max, f"exceeds maximum shared memory size: needs {smem_sz}, max {self.opts.shared_max}")
@@ -389,13 +387,13 @@ class Kernel:
       self.local_dims += 1
     elif opt.op in {OptOps.GROUP, OptOps.GROUPTOP}:   # green
       check(self.opts.has_local and self.opts.has_shared, "target does not support local or shared mem")
-      check(self.get_offset("reduce") + self.group_for_reduces <= axis < self.first_upcast, "must be reduce axis to group")
+      check(self.get_offset("reduce") + self.group_for_reduces <= axis < self.get_offset("upcast"), "must be reduce axis to group")
       check(not self.tensor_core, "can't group with tensor cores")
       check(len(reduce_axes:=[i for r in self.reduceops for i in r.axis_arg]) == len(set(reduce_axes)), "can't group with parallel reduces")
       self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.get_offset("reduce") + self.group_for_reduces)
       self.group_for_reduces += 1
     elif opt.op is OptOps.UNROLL:                     # purple
-      check(axis < self.first_upcast, "can't upcasted already upcasted")
+      check(axis < self.get_offset("upcast"), "can't upcasted already upcasted")
       check(amt <= 32, "don't unroll more than 32")
       # TODO: fix upcast_count to put purples before yellows. broken because of METAL tensor cores
       #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.upcasted:], self.output_shape[-self.upcasted:])) if self.upcasted else 0
@@ -421,7 +419,7 @@ class Kernel:
       self.reshape_and_permute(None, tuple(permute))
     elif opt.op is OptOps.PADTO:
       check(not self.vars, "does not work with symbolic shape")
-      check(axis < self.first_upcast, "cannot pad upcasted")
+      check(axis < self.get_offset("upcast"), "cannot pad upcasted")
       # ok to pad SUM if all parent ALU ops have f(0) = 0
       if (r:=self.reduceop) is not None and self.get_offset("reduce") <= axis: check(r.arg[0] is Ops.ADD and can_pad(r, {}), f"cannot pad {r}")
       padded = False
@@ -481,7 +479,7 @@ class Kernel:
         grouped_axes = reduced_axes(self.get_offset("reduce"), self.get_offset("reduce") + self.group_for_reduces)
 
         if (tc := self.tensor_core) and (self.use_tensor_cores == 1 or self.use_tensor_cores == 3):
-          wd, tcd = self.global_dims, self.first_upcast
+          wd, tcd = self.global_dims, self.get_offset("upcast")
           def get_upcast_axes(buf): # upcast along non-zero dimensions of (tc_reduce + tc_upcast)
             upcast_axes = int(math.log2(tc.elements_per_thread[buf]))
             return tuple((tcd + len(tc.get_reduce_axes()) + len(tc.get_upcast_axes()) - (i+1), 2) for i in range(upcast_axes))
