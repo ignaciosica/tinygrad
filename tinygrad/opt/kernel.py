@@ -379,7 +379,7 @@ class Kernel:
       # it's disabled for now since it makes BEAM slow for little gain
       check(self.opts.has_local, "target does not support local")
       check(axis < self.axes["global"], "local is for globals")
-      self.shift_to(axis, amt, insert_before=self.get_offset("reduce"))
+      self.shift_to(axis, amt, insert_before=self.get_offset("group"))
       self.axes["local"] += 1
     elif opt.op in {OptOps.GROUP, OptOps.GROUPTOP}:   # green
       check(self.opts.has_local and self.opts.has_shared, "target does not support local or shared mem")
