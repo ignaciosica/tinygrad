@@ -80,6 +80,9 @@ class Kernel:
     if final_reduces != list(range(len(self.full_shape)-len(final_reduces), len(self.full_shape))):
       raise RuntimeError(f"reduces are not at the end of the shape {self.full_shape} -> {self.output_shape}")
 
+    self.axes["reduce"] = len(final_reduces)
+    self.axes["global"] = self.shape_len - self.axes["reduce"]
+
   def copy(self):
     ret = type(self).__new__(type(self))
 
