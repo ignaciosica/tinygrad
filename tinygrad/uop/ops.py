@@ -527,15 +527,29 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
 
 @dataclass(frozen=True)
 class KernelInfo:
-  name: str = "test"            # name of the kernel
-  global_dims: int = 0          # number of global dimensions (this is remapping RANGE to SPECIAL)
-  local_dims: int = 0           # number of local dimensions  (this is remapping RANGE to SPECIAL)
-  upcasted: int = 0             # count that are upcasted     (this is remapping RANGE to UNROLL)
-  dont_use_locals: bool = False # don't use local indexing
+  name: str = "test"                # name of the kernel
+  global_dims: int = 0              # number of global dimensions (this is remapping RANGE to SPECIAL)
+  locals_dims: int = 0              # number of local dimensions  (this is remapping RANGE to SPECIAL)
+  upcast_dims: int = 0              # count that are upcasted     (this is remapping RANGE to UNROLL)
+  dont_use_locals: bool = False     # don't use local indexing
   applied_opts: tuple = tuple()
   opts_to_apply: tuple|None = None
   @property
   def function_name(self): return to_function_name(self.name)
+
+# @dataclass(frozen=True)
+# class KernelInfo:
+#   name: str = "test"              # name of the kernel
+#   global_dims: int = 0            # number of global dimensions  (this is remapping RANGE to SPECIAL)
+#   locals_dims: int = 0            # number of locals dimensions  (this is remapping RANGE to SPECIAL)
+#   groups_dims: int = 0            # number of groups dimensions  ()
+#   reduce_dims: int = 0            # number of reduce dimensions  ()
+#   upcast_dims: int = 0            # number of upcast dimensions  (this is remapping RANGE to UNROLL)
+#   # dont_use_locals: bool = False   # don't use local indexing
+#   applied_opts: tuple = tuple()
+#   opts_to_apply: tuple|None = None
+#   @property
+#   def function_name(self): return to_function_name(self.name)
 
 # ******** ops in python ********
 

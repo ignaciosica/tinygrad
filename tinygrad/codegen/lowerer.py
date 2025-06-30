@@ -16,7 +16,7 @@ def get_index(ast:UOp) -> IndexContext:
   ki = ast.arg if isinstance(ast.arg, KernelInfo) else KernelInfo()
   # NOTE: assumes the shape is <global dims> <local dims> <group_for_reduces> <reduces> <upcasts/unrolls>
   full_shape = ast.full_shape
-  first_upcasted = len(full_shape)-ki.upcasted
+  first_upcasted = len(full_shape)-ki.upcast_dims
 
   # all loops are RANGES
   idxs = [UOp(Ops.RANGE, dtypes.int, (sint_to_uop(g),), i) for i,g in enumerate(full_shape[:first_upcasted])]
