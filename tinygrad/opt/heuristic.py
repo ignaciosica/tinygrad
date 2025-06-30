@@ -50,7 +50,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
           k.apply_opt(Opt(OptOps.UNROLL, unit_stride_axes_mul_4[0]-k.get_offset("reduce"), 4))
 
   # no more opt if we are grouping
-  if k.group_for_reduces: return k.applied_opts
+  if k.axes["group"]: return k.applied_opts
 
   # **** below this line need to be optional and benchmarked ****
 
@@ -112,7 +112,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
   # **** local groups ****
 
   if k.opts.has_local:
-    if NOLOCALS and k.axes["local"] == 0 and not k.group_for_reduces:
+    if NOLOCALS and k.axes["local"] == 0 and not k.axes["group"]:
       k.apply_opt(Opt(OptOps.NOLOCALS))
     else:
       # prioritize making expand axes local
