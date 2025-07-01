@@ -96,9 +96,6 @@ class Kernel:
   def update_info(self, **updates): self.info = replace(self.info, **updates)
 
   @property
-  def applied_opts(self) -> list[Opt]: return list(self.info.applied_opts)
-
-  @property
   def membufs(self) -> list[UOp]: return dedup([x.src[0].base for x in self.bufs if x.op in {Ops.LOAD, Ops.STORE}])
 
   def upcasted_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
@@ -136,6 +133,9 @@ class Kernel:
 
   @property
   def upcasted(self) -> int: return self.info.upcasted
+
+  @property
+  def applied_opts(self) -> list[Opt]: return list(self.info.applied_opts)
 
   # there's eight chunks of the shape
   # blue   -- global dims
