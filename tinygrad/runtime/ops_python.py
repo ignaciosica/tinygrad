@@ -3,8 +3,8 @@
 # works to test the tensor cores, and all the uops in general
 # this is the (living) definition of uops
 from typing import Optional, Any, TYPE_CHECKING, Literal
-from dataclasses import dataclass, replace
-import pickle, base64, itertools, time, struct, sys
+from dataclasses import dataclass, replace, field
+import pickle, base64, itertools, time, struct, sys, os
 from tinygrad.dtype import DType, dtypes, ImageDType, PtrDType, truncate
 from tinygrad.helpers import all_same, getenv, flatten, get_single_element
 from tinygrad.device import Compiled, Compiler, Allocator
@@ -12,63 +12,155 @@ from tinygrad.uop.ops import exec_alu, Ops, UOp, GroupOp
 from tinygrad.renderer import Renderer
 from tinygrad.renderer.cstyle import CUDARenderer, MetalRenderer, AMDRenderer, IntelRenderer, ClangRenderer
 
-### Haldie VIZ ###
+# --- Configuration ---
+# Set the buffer width for visualization from environment variables, defaulting to 8.
+BUF_WIDTH = int(os.getenv("N", 8))
+
+# Global dictionary to hold the visualization state for different buffers.
+# The key is the buffer ID, and the value is a list of CellState objects.
+viz_bufs: dict[int, list["CellState"]] = {}
+
+
+# --- Data Structure for Cell State ---
+
 
 @dataclass(frozen=True, kw_only=True)
 class CellState:
+  """
+  Represents the state of a single memory cell for visualization.
+
+  Attributes:
+      action: The last action performed ('read' or 'write').
+      threads: A list of thread IDs that have accessed this cell.
+               Resets on a write, appends on a read.
+      vec: The vector index associated with a write action.
+      count: The number of consecutive actions of the same type.
+             Resets on a write or when a read follows a write.
+  """
+
   action: Optional[Literal["read", "write"]] = None
-  thread: Optional[int] = None
+  threads: list[int] = field(default_factory=list)
   vec: int = 0
   count: int = 0
 
   def _wrap_colour(self, text: str) -> str:
-    if not self.action or self.count == 0: return text
+    """Applies ANSI color codes to the text based on the cell's state."""
+    if not self.action or self.count == 0:
+      return text
 
-    normal, bright = (32, 92) if self.action == "read" else (31, 91)
+    # Green for "read", Red for "write"
+    base_code = 32 if self.action == "read" else 31
 
-    if self.count <= 3: code, style = normal, ""
-    elif self.count <= 6: code, style = bright, ""
-    else: code, style = bright, "1;"
+    # Intensity increases with the access count
+    if self.count <= 3:
+      code, style = base_code, "0;"  # Normal
+    elif self.count <= 6:
+      code, style = base_code + 60, "0;"  # Bright
+    else:
+      code, style = base_code + 60, "1;"  # Bright and Bold
 
     return f"\033[{style}{code}m{text}\033[0m"
 
   def __str__(self) -> str:
-    parts = [f"t[{self.thread:02d}]" if self.thread is not None else "_____",
-             f"v[{self.vec}]" if self.thread is not None else "____",
-             f"({self.count:02d})" if self.thread is not None else "____"]
-    return self._wrap_colour("".join(parts))
+    """Returns a string representation of the cell for printing."""
+    if not self.threads:
+      return " " * 16  # Return a fixed-width empty string for alignment
 
-BUF_WIDTH = getenv("N", 8)
-viz_bufs: dict[int, list[CellState]] = {}
+    # Format the list of threads, e.g., "t[01,02]"
+    thread_part = f"t[{','.join(f'{th:02d}' for th in self.threads)}]"
+    vec_part = f"v[{self.vec}]"
+    count_part = f"({self.count:02d})"
+
+    # Combine parts and pad to ensure consistent column width
+    full_str = f"{thread_part}{vec_part}{count_part}"
+    return self._wrap_colour(f"{full_str:<16}")
+
+
+# --- Visualization Functions ---
+
 
 def print_viz_bufs():
-  for buf_id, _ in list(viz_bufs.items())[::-1]:
+  """Prints all visualization buffers in reverse order of their ID."""
+  # Iterating over a reversed list of items to avoid issues with dict size changes
+  for buf_id in reversed(list(viz_bufs.keys())):
     print(f"\nbuf[{buf_id}]")
     print_viz_buf(buf_id)
-  time.sleep(0.5)
+  time.sleep(0.05)
+
 
 def print_viz_buf(buf_id: int):
-  viz_buf = viz_bufs[buf_id]
+  """Prints a single buffer, formatted into rows based on BUF_WIDTH."""
+  viz_buf = viz_bufs.get(buf_id, [])
   for i in range(0, len(viz_buf), BUF_WIDTH):
-    print("|".join(str(cs) for cs in viz_buf[i : i + BUF_WIDTH]))
+    print(" | ".join(map(str, viz_buf[i : i + BUF_WIDTH])))
 
-### ---------- ###
 
-def _load(m, i, t=0):
-  if i is None: return 0.0
-  if i < 0 or i >= len(m[0]): raise IndexError(f"load out of bounds, size is {len(m[0])} and access is {i}")
-  viz_bufs[m[1]][i] = replace(viz_bufs[m[1]][i], action="read", thread=t, count=viz_bufs[m[1]][i].count + 1)
+# --- Memory Access Functions ---
+
+
+def _load(m: tuple, i: Optional[int], t: int = 0) -> float:
+  """
+  Helper function to load a value from a memory buffer and update its visualization state for a 'read'.
+  A 'read' action appends the thread ID to the list. If a read follows a write,
+  the thread list and count are reset.
+  """
+  if i is None:
+    return 0.0
+  if not 0 <= i < len(m[0]):
+    raise IndexError(f"Load out of bounds: size is {len(m[0])}, access is {i}")
+
+  buf_id = m[1]
+  current_state = viz_bufs[buf_id][i]
+
+  # If the last action was not a read, start a new sequence of readers.
+  is_new_read_sequence = current_state.action != "read"
+
+  # Start a new thread list if it's a new read sequence, otherwise get the current list.
+  new_threads = [] if is_new_read_sequence else list(current_state.threads)
+
+  # Add the current thread ID if it's not already in the list.
+  if t not in new_threads:
+    new_threads.append(t)
+
+  # Reset the count for a new read sequence, otherwise increment.
+  new_count = 1 if is_new_read_sequence else current_state.count + 1
+
+  viz_bufs[buf_id][i] = replace(
+    current_state,
+    action="read",
+    threads=sorted(new_threads),  # Keep threads sorted for consistent display
+    count=new_count,
+  )
   return m[0][i]
 
-def load(inp, j=0):
-  if len(inp) == 2: return [_load(m, x+j if x is not None else None) if gate else default for (m,x,gate),default in zip(*inp)]
-  return [_load(m, x+j if x is not None else None, t=t) for t,(m,x,_) in enumerate(inp[0])]
 
-def _store(m, i, v, t=0, j=0):
-  if i < 0 or i >= len(m[0]): raise IndexError(f"store out of bounds, size is {len(m[0])}, access is {i}, value is {v}")
-  # print(f"st T({t:02d})[{i:02d}]", end=" ")
-  viz_bufs[m[1]][i] = replace(viz_bufs[m[1]][i], action="write", thread=t, vec=j, count=viz_bufs[m[1]][i].count + 1)
+def _store(m: tuple, i: int, v: float, t: int = 0, j: int = 0):
+  """
+  Helper function to store a value into a memory buffer and update its visualization state for a 'write'.
+  A 'write' action resets the cell's state, including the thread list and count.
+  """
+  if not 0 <= i < len(m[0]):
+    raise IndexError(f"Store out of bounds: size is {len(m[0])}, access is {i}")
+
+  buf_id = m[1]
+  # A write resets the cell's history. The thread list is reset to the current
+  # writer, and the count is reset to 1.
+  viz_bufs[buf_id][i] = CellState(action="write", threads=[t], vec=j, count=1)
   m[0][i] = v
+
+
+def load(inp: list, j: int = 0) -> list:
+  """
+  Dispatcher function for loading values from memory.
+  It has two modes based on the structure of the 'inp' argument:
+  1. Gated Load (if len(inp) == 2): Processes inputs with an associated gate flag.
+  2. Threaded Load (otherwise): Processes inputs, assigning a unique thread ID to each.
+  """
+  # Mode 1: Gated load. inp format: [((m,x,gate),...), (default,...)]
+  if len(inp) == 2:
+    return [_load(m, x + j if x is not None else None) if gate else default for (m, x, gate), default in zip(*inp)]
+  # Mode 2: Threaded load. inp format: [((m,x,_),...),]
+  return [_load(m, x + j if x is not None else None, t=t) for t, (m, x, _) in enumerate(inp[0])]
 
 class PythonProgram:
   def __init__(self, name:str, lib:bytes):
