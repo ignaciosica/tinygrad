@@ -2,7 +2,8 @@
 # a python uops emulator
 # works to test the tensor cores, and all the uops in general
 # this is the (living) definition of uops
-from typing import Optional, Any, TYPE_CHECKING
+from typing import Optional, Any, TYPE_CHECKING, Literal
+from dataclasses import dataclass, replace
 import pickle, base64, itertools, time, struct, sys
 from tinygrad.dtype import DType, dtypes, ImageDType, PtrDType, truncate
 from tinygrad.helpers import all_same, getenv, flatten, get_single_element
@@ -11,18 +12,54 @@ from tinygrad.uop.ops import exec_alu, Ops, UOp, GroupOp
 from tinygrad.renderer import Renderer
 from tinygrad.renderer.cstyle import CUDARenderer, MetalRenderer, AMDRenderer, IntelRenderer, ClangRenderer
 
-def _load(m, i):
+### Haldie VIZ ###
+
+@dataclass(frozen=True, kw_only=True)
+class CellState:
+  action: Optional[Literal["read", "write"]] = None
+  thread: Optional[int] = None
+  vec: Optional[int] = None
+  count: int = 0
+
+  def __str__(self):
+    parts = []
+    parts.append(("w" if self.action == "write" else "r") if self.action else "_")
+    parts.append(f"t[{self.thread:2d}]" if self.thread is not None else "_____")
+    parts.append(f"v[{self.vec}]" if self.vec is not None else "____")
+    parts.append(f"({self.count:2d})" if self.count else "____")
+    return f"{''.join(parts)}"
+
+BUF_WIDTH = getenv("N", 8)
+viz_bufs: dict[int, list[CellState]] = {}
+
+def print_viz_bufs():
+  for buf_id, _ in list(viz_bufs.items())[::-1]:
+    print(f"\nbuf[{buf_id}]")
+    print_viz_buf(buf_id)
+  time.sleep(0.02)
+
+def print_viz_buf(buf_id: int):
+  viz_buf = viz_bufs[buf_id]
+  for i in range(0, len(viz_buf), BUF_WIDTH):
+    print(" | ".join(str(cs) for cs in viz_buf[i : i + BUF_WIDTH]))
+
+### ---------- ###
+
+def _load(m, i, t=0):
   if i is None: return 0.0
-  if i < 0 or i >= len(m): raise IndexError(f"load out of bounds, size is {len(m)} and access is {i}")
-  return m[i]
+  if i < 0 or i >= len(m[0]): raise IndexError(f"load out of bounds, size is {len(m[0])} and access is {i}")
+  viz_bufs[m[1]][i] = replace(viz_bufs[m[1]][i], action="read", thread=t, count=viz_bufs[m[1]][i].count + 1)
+  return m[0][i]
 
 def load(inp, j=0):
   if len(inp) == 2: return [_load(m, x+j if x is not None else None) if gate else default for (m,x,gate),default in zip(*inp)]
-  return [_load(m, x+j if x is not None else None) for m,x,_ in inp[0]]
+  return [_load(m, x+j if x is not None else None, t=t) for t,(m,x,_) in enumerate(inp[0])]
 
-def _store(m, i, v):
-  if i < 0 or i >= len(m): raise IndexError(f"store out of bounds, size is {len(m)}, access is {i}, value is {v}")
-  m[i] = v
+def _store(m, i, v, t=0, j=0):
+  if i < 0 or i >= len(m[0]): raise IndexError(f"store out of bounds, size is {len(m[0])}, access is {i}, value is {v}")
+  # print(f"st T({t:02d})[{i:02d}]", end=" ")
+  viz_bufs[m[1]][i] = replace(viz_bufs[m[1]][i], action="write", thread=t, vec=j, count=viz_bufs[m[1]][i].count + 1)
+  m[0][i] = v
 
 class PythonProgram:
   def __init__(self, name:str, lib:bytes):
@@ -32,10 +69,13 @@ class PythonProgram:
     warp = list(itertools.product(*[range(x) for x in local_size[::-1]]))
     warp_size = len(warp)
     for idxs in itertools.product(*[range(x) for x in global_size[::-1]]):
+      # print(f"\n{idxs}")
+      # NOTE: block level, print at this stage to show parallelism across the threadblock
       ul: dict[int, Any] = {}
       dl: dict[int, DType] = {}
       pbufs: list[memoryview] = list(bufs)
       pvals: list[int] = list(vals)
+      mem: int = 0
       i = 0
       loop_ends: dict[int, int] = {}
       while i < len(self.uops):
@@ -49,11 +89,13 @@ class PythonProgram:
           assert len(inp) == 2, "expected store is ([(memory, offset, gate)], [value])"
           if dtp[1].count > 1:
             for j,val in enumerate(inp[1]):
-              for (m,o,g),v in zip(inp[0], val):
-                if g: _store(m, o+j, v)
+              for t,((m,o,g),v) in enumerate(zip(inp[0], val)):
+                if g: _store(m, o+j, v, t=t, j=j)
+            print_viz_bufs()
           else:
-            for (m,o,g),v in zip(*inp):
-              if g: _store(m, o, v)
+            for t,((m,o,g),v) in enumerate(zip(*inp)):
+              if g: _store(m, o, v, t=t, j=0)
+            print_viz_bufs()
           i += 1
           continue
         if uop is Ops.ENDRANGE:
@@ -70,7 +112,9 @@ class PythonProgram:
           assert dtype.fmt is not None and isinstance(dtype, PtrDType)
           if TYPE_CHECKING or sys.version_info < (3, 12): assert dtype.fmt != "e"
           buf = memoryview(bytearray(dtype.size*dtype.itemsize)) if uop is Ops.DEFINE_LOCAL else pbufs.pop(0)
-          ul[i] = [buf.cast(dtype.fmt)] * warp_size
+          buf_casted = buf.cast(dtype.fmt)
+          if arg not in viz_bufs: viz_bufs[arg] = [CellState() for _ in range(len(buf_casted))]
+          ul[i] = [(buf_casted, arg)] * warp_size
         elif uop is Ops.DEFINE_VAR:
           ul[i] = [pvals.pop(0)] * warp_size
         elif uop is Ops.SPECIAL:
@@ -109,8 +153,14 @@ class PythonProgram:
         elif uop is Ops.LOAD:
           if dtype.count > 1:
             ul[i] = [load([inp[i][j] if i != 0 and dtp[i].count > 1 else inp[i] for i in range(len(inp))], j) for j in range(dtype.count)]
+            # print_viz_buf(2)
+            print_viz_bufs()
+            # print("-lv-")
           else:
             ul[i] = load(inp)
+            # print_viz_buf(2)
+            print_viz_bufs()
+            # print("-ls-")
         elif uop is Ops.ASSIGN:
           for j in range(len(inp[0])): inp[0][j] = inp[1][j]
           ul[i] = inp[0]
