@@ -18,16 +18,25 @@ from tinygrad.renderer.cstyle import CUDARenderer, MetalRenderer, AMDRenderer, I
 class CellState:
   action: Optional[Literal["read", "write"]] = None
   thread: Optional[int] = None
-  vec: Optional[int] = None
+  vec: int = 0
   count: int = 0
 
-  def __str__(self):
-    parts = []
-    parts.append(("w" if self.action == "write" else "r") if self.action else "_")
-    parts.append(f"t[{self.thread:2d}]" if self.thread is not None else "_____")
-    parts.append(f"v[{self.vec}]" if self.vec is not None else "____")
-    parts.append(f"({self.count:2d})" if self.count else "____")
-    return f"{''.join(parts)}"
+  def _wrap_colour(self, text: str) -> str:
+    if not self.action or self.count == 0: return text
+
+    normal, bright = (32, 92) if self.action == "read" else (31, 91)
+
+    if self.count <= 3: code, style = normal, ""
+    elif self.count <= 6: code, style = bright, ""
+    else: code, style = bright, "1;"
+
+    return f"\033[{style}{code}m{text}\033[0m"
+
+  def __str__(self) -> str:
+    parts = [f"t[{self.thread:02d}]" if self.thread is not None else "_____",
+             f"v[{self.vec}]" if self.thread is not None else "____",
+             f"({self.count:02d})" if self.thread is not None else "____"]
+    return self._wrap_colour("".join(parts))
 
 BUF_WIDTH = getenv("N", 8)
 viz_bufs: dict[int, list[CellState]] = {}
@@ -36,12 +45,12 @@ def print_viz_bufs():
   for buf_id, _ in list(viz_bufs.items())[::-1]:
     print(f"\nbuf[{buf_id}]")
     print_viz_buf(buf_id)
-  time.sleep(0.02)
+  time.sleep(0.5)
 
 def print_viz_buf(buf_id: int):
   viz_buf = viz_bufs[buf_id]
   for i in range(0, len(viz_buf), BUF_WIDTH):
-    print(" | ".join(str(cs) for cs in viz_buf[i : i + BUF_WIDTH]))
+    print("|".join(str(cs) for cs in viz_buf[i : i + BUF_WIDTH]))
 
 ### ---------- ###
 
@@ -65,6 +74,7 @@ class PythonProgram:
   def __init__(self, name:str, lib:bytes):
     self.uops: list[tuple[Ops, Optional[DType], list[int], Any]] = pickle.loads(lib)
   def __call__(self, *bufs, global_size:tuple[int,int,int]=(1,1,1), local_size:tuple[int,int,int]=(1,1,1), vals:tuple[int, ...]=(), wait=False):
+    time.sleep(1)
     st = time.perf_counter()
     warp = list(itertools.product(*[range(x) for x in local_size[::-1]]))
     warp_size = len(warp)
@@ -245,6 +255,7 @@ class PythonProgram:
           ul[i] = [exec_alu(uop, dtype, p) for p in zip(*inp)]
         assert i in ul, (uop, dtype, idp, arg)
         i += 1
+    time.sleep(4)
     return time.perf_counter() - st
 
 class PythonRenderer(Renderer):
