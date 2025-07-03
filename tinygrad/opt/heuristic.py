@@ -109,8 +109,6 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
     if k.upcasted == 0 and k.full_unupcasted_shape and k.full_unupcasted_shape[-1] % splits == 0:
       k.apply_opt(Opt(OptOps.UPCAST, len(k.full_unupcasted_shape)-1, splits))
 
-  return []
-
   # **** local groups ****
 
   if k.opts.has_local:
@@ -119,7 +117,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
     else:
       # prioritize making expand axes local
       local_axis_ranking = [(any(k.sts[buf_index].views[-1].strides[axis] == 0 for buf_index in range(len(k.sts))), axis) \
-                            for axis in range(len(k.full_shape[:k.first_reduce]))]
+                            for axis in range(len(k.full_shape[:k.first_upcast]))]
       to_local: list[tuple[int, int]] = []
       for _, axis in sorted(local_axis_ranking, key=lambda x: (-x[0], -x[1])):
         local_size = prod(sz for _, sz in to_local)
