@@ -213,7 +213,6 @@ class Kernel:
     # TODO: this should be factored in to multi shape stride
     if self.shape_len == 0: return False
     all_ones = [s==1 for s in self.full_shape]
-    # TODO: not necessary to update upcasted since upcasted axis can't be un-upcasted
     self.update_info(local_dims=self.local_dims - sum(all_ones[self.first_upcast - self.local_dims : self.first_upcast]),
                      upcasted=self.upcasted - sum(all_ones[self.first_upcast : self.first_reduce]))
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
@@ -413,7 +412,7 @@ class Kernel:
       #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.upcasted:], self.output_shape[-self.upcasted:])) if self.upcasted else 0
       #self.shift_to(axis, amt, insert_before=None if upcast_count == 0 else self.shape_len-upcast_count)
       # first_reduce will ++, so offset loss in simplify_ones
-      if self.full_shape[axis] == amt and axis == self.first_reduce: self.update_info(local_dims=self.local_dims + 1)
+      if self.full_shape[axis] == amt and axis == self.first_reduce: self.update_info(upcasted=self.upcasted + 1)
       if self.full_shape[axis] == amt and axis < self.first_reduce+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
       check(self.full_shape[-1] != 1, "can't unroll a dimension with size 1")
