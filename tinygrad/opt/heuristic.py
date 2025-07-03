@@ -26,9 +26,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
           if MV_ROWS_PER_THREAD > 1: k.apply_opt(Opt(OptOps.UPCAST, global_idx, MV_ROWS_PER_THREAD))
           return k.applied_opts
 
-  return []
-
-  if k.opts.has_local and k.opts.has_shared and all_int(k.sts[0].shape[:k.first_reduce]):
+  if k.opts.has_local and k.opts.has_shared and all_int(k.sts[0].shape[:k.first_upcast]):
     # are we grouping? (requires local shape support)
     if not [x for x in k.sts[0].unit_stride_axes() if x >= k.first_upcast and k.sts[0].shape[x]%4 == 0] and \
       k.first_reduce <= 2 and k.first_reduce < k.shape_len and prod(k.sts[0].shape[:k.first_reduce]) <= 2048:
@@ -50,6 +48,8 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
           k.apply_opt(Opt(OptOps.UPCAST, unit_stride_axes_mul_4[0], 4))
         else:
           k.apply_opt(Opt(OptOps.UNROLL, unit_stride_axes_mul_4[0]-k.first_reduce, 4))
+
+  return []
 
   # no more opt if we are grouping
   if k.group_for_reduces: return k.applied_opts
