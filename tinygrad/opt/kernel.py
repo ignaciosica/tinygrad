@@ -514,21 +514,11 @@ class Kernel:
             tc_base_dims += permutation[self.first_upcast : self.first_upcast + len(tc.get_upcast_axes())]
             tc_base_dims += permutation[self.first_unroll : self.first_unroll + len(tc.get_reduce_axes())]
 
-            print("base",tc_base_dims)
-            print("perm",perm)
-            # tc_sorted_dims = [tc_base_dims[i] for i in sorted(perm, key=lambda i: tc_base_dims[i])]
             tc_sorted_dims = [element for _, element in sorted(zip(perm, tc_base_dims))]
-            # tc_sorted_dims = tc_base_dims[:]
-            # values = sorted((tc_base_dims[i] for i in perm))
-            # for val, i in zip(values, perm): tc_sorted_dims[i] = val
-            print("sort",tc_sorted_dims)
 
             permutation[self.first_local : self.first_local + len(tc.get_local_axes())] = tc_sorted_dims[: len(tc.get_local_axes())]
             permutation[self.first_upcast : self.first_upcast + len(tc.get_upcast_axes())] = tc_sorted_dims[len(tc.get_local_axes()) : len(tc.get_local_axes()) + len(tc.get_upcast_axes())]
             permutation[self.first_unroll : self.first_unroll + len(tc.get_reduce_axes())] = tc_sorted_dims[len(tc.get_local_axes()) + len(tc.get_upcast_axes()) :]
-
-            print("tcpr",permutation)
-            print("\n\n")
 
             return ShapeTracker.from_shape(shape).permute(tuple(permutation))
 
