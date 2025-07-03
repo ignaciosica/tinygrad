@@ -89,27 +89,27 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
       upcasted_axis.add(xb_choices[0][2])
     else: break
 
-  return []
-
   # if last dim is small(ish) and it's a reduce dim, upcast the reduce (loop unrolling). no simplify needed since it's just an upcast.
-  if k.first_reduce < k.first_upcast and (prod(k.full_shape[k.first_upcast:]) <= 4 or \
-    not any(x!=y for x,y in zip(k.sts[0].shape[k.first_upcast:], k.full_shape[k.first_upcast:]))) and \
+  if k.first_reduce < k.first_unroll and (prod(k.full_shape[k.first_unroll:]) <= 4 or \
+    not any(x!=y for x,y in zip(k.sts[0].shape[k.first_unroll:], k.full_shape[k.first_unroll:]))) and \
       (k.upcasted == 0 or prod(k.full_shape[-k.upcasted:]) < 64):
-    if isinstance(s:=k.full_unupcasted_shape[-1], int) and s <= 32:  # NOTE: cannot loop unroll symbolic axis
-      k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unupcasted_shape)-1-k.first_reduce, 0))
+    if isinstance(s:=k.full_unrolled_shape[-1], int) and s <= 32:  # NOTE: cannot loop unroll symbolic axis
+      k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unrolled_shape)-1, 0))
       # if it's small, upcast a second reduce dimension too
-      if k.first_reduce < k.first_upcast and s <= 3 and isinstance(s2:=k.full_unupcasted_shape[-1], int) and s2 <= 3:
-        k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unupcasted_shape)-1-k.first_reduce, 0))
+      if k.first_reduce < k.first_unroll and s <= 3 and isinstance(s2:=k.full_unrolled_shape[-1], int) and s2 <= 3:
+        k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unrolled_shape)-1, 0))
     else:
       for splits in [4]:
-        if k.full_unupcasted_shape[-1]%splits == 0:
-          k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unupcasted_shape)-1-k.first_reduce, splits))
+        if k.full_unrolled_shape[-1]%splits == 0:
+          k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unrolled_shape)-1, splits))
           break
 
   # if nothing at all is upcasted and it's easy to, do an upcast
   for splits in [4]:
     if k.upcasted == 0 and k.full_unupcasted_shape and k.full_unupcasted_shape[-1] % splits == 0:
       k.apply_opt(Opt(OptOps.UPCAST, len(k.full_unupcasted_shape)-1, splits))
+
+  return []
 
   # **** local groups ****
 
