@@ -28,6 +28,7 @@ def get_index(ast:UOp) -> IndexContext:
     assert isinstance(g, int), "needs to be int to upcast"
     idxs.append(UOp(Ops.UNROLL, dtypes.int, (UOp.const(dtypes.int.vec(g), tuple(range(g))),), ((i,g),)))
 
+  # reduce RANGES
   idxs += [UOp(Ops.RANGE, dtypes.int, (sint_to_uop(g),), i) for i,g in enumerate(full_shape[first_reduce:first_unrolled], start=first_upcasted)]
 
   # unroll loops
