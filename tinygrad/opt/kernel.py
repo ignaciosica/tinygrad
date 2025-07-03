@@ -151,15 +151,14 @@ class Kernel:
   @property
   def applied_opts(self) -> list[Opt]: return list(self.info.applied_opts)
 
-  # there's eight chunks of the shape
+  # there's six chunks of the shape
   # blue   -- global dims
   # cyan   -- local dims (warp ones first)
+  # yellow -- upcasted dimensions
   #  *** self.first_reduce
   # green  -- reduce-local dims
   # red    -- reduce loops
-  #  *** self.upcasted
-  # purple -- reduce upcasted
-  # yellow -- normal upcasted dimensions
+  # purple -- reduce unrolled
   def colors(self) -> list[str]:
     # first non local non reduce dims are global (blue)
     colors = ["blue"] * self.global_dims if not self.info.dont_use_locals else ["BLUE"] * self.global_dims
