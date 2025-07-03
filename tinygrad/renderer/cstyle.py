@@ -187,7 +187,7 @@ class ClangRenderer(CStyleLanguage):
   global_max = None
   infinity = "__builtin_inff()"
   nan = '__builtin_nanf("")'
-  amx_tc = [TensorCore(dims=(sz,sz,1), threads=1, elements_per_thread=(sz,sz,sz*sz), dtype_in=dt, dtype_out=dt, swizzle=(None,((),(4,5,6,7,0,1,2,3))),
+  amx_tc = [TensorCore(dims=(sz,sz,1), threads=1, elements_per_thread=(sz,sz,sz*sz), dtype_in=dt, dtype_out=dt, swizzle=(None,(4,5,6,7,0,1,2,3)),
                       opts=("u0","u0","u0","u0","u1","u1","u1","u1")) for dt,sz in [(dt, 64 // dt.itemsize) for dt in [dtypes.float]]]
   if AMX: tensor_cores = amx_tc
 
@@ -262,7 +262,7 @@ class OpenCLRenderer(CStyleLanguage):
 class IntelRenderer(OpenCLRenderer):
   device, suffix, kernel_typedef = "GPU", "INTEL", "__attribute__((intel_reqd_sub_group_size(8)))\n" + "__kernel void"
   tensor_cores = [TensorCore(dims=(8,8,16), threads=8, elements_per_thread=(16,16,8), dtype_in=dtypes.half, dtype_out=dtypes.float,
-    opts=("l0","l0","l0","u1","u1","u1"), swizzle=(((4,5,6),(0,1,2,3,7,8,9)), ((0,1,2),(7,8,9,3,4,5,6))))]
+    opts=("l0","l0","l0","u1","u1","u1"), swizzle=((4,5,6,0,1,2,3,7,8,9), (0,1,2,7,8,9,3,4,5,6)))]
 
   string_rewrite = PatternMatcher([
     (UPat(Ops.CAST, dtype=dtypes.bfloat16, src=(UPat.var('x', dtype=dtypes.float),)), lambda ctx,x: f"intel_convert_bfloat16_as_ushort({ctx[x]})"),
@@ -281,10 +281,8 @@ class MetalRenderer(CStyleLanguage):
   device = "METAL"
   shared_max = 32768
   tensor_cores = [TensorCore(dims=(8,8,8), threads=32, elements_per_thread=(2,2,2), dtype_in=di, dtype_out=do, opts=("u0","l0","l1","l1","l0","l1"),
-    # swizzle=(((6,1,2,7,4),(8,0,3,5)), ((0,5,6,3,7),(1,2,4,8)))
-    swizzle=((7,1,2,8,4,6,5,0,3), (0,6,7,3,8,5,1,2,4))
-    ) for di,do in [(dtypes.float,dtypes.float),(dtypes.half,dtypes.float),
-    (dtypes.half,dtypes.half),(dtypes.bfloat16,dtypes.float),(dtypes.bfloat16,dtypes.bfloat16)]]
+    swizzle=((7,1,2,8,4,6,5,0,3),(0,6,7,3,8,5,1,2,4))) for di,do in [(dtypes.float,dtypes.float),(dtypes.half,dtypes.float),(dtypes.half,dtypes.half),
+                                                                     (dtypes.bfloat16,dtypes.float),(dtypes.bfloat16,dtypes.bfloat16)]]
   def __init__(self): self.tensor_cores = MetalRenderer.tensor_cores if hasattr(os, 'uname') and os.uname().machine == "arm64" else []
 
   # language options
@@ -333,12 +331,12 @@ class CUDARenderer(CStyleLanguage):
   shared_max = 49152
   # https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-matrix-multiply-accumulate-instructions
   tc_81616 = [TensorCore(dims=(8,16,16), threads=32, elements_per_thread=(8,4,4), dtype_in=di, dtype_out=do, opts=cuda_tc_opts,
-    swizzle=(((6,7,2,3,4),(0,1,9,5,10,8)), ((6,7,9,0,1),(2,3,4,10,5,8)))) for di,do in [(dtypes.half,dtypes.float), (dtypes.bfloat16,dtypes.float),
+    swizzle=((6,7,2,3,4,0,1,9,5,10,8), (6,7,9,0,1,2,3,4,10,5,8))) for di,do in [(dtypes.half,dtypes.float), (dtypes.bfloat16,dtypes.float),
                                                                                         (dtypes.half,dtypes.half)]]
   tc_8168_f16 = [TensorCore(dims=(8,16,8), threads=32, elements_per_thread=(4,2,4), dtype_in=di, dtype_out=do, opts=cuda_tc_opts,
-    swizzle=(((6,7,2,3,4),(0,1,8,5,9)), ((6,7,8,0,1),(2,3,4,9,5)))) for di,do in [(dtypes.half,dtypes.float), (dtypes.half,dtypes.half)]]
+    swizzle=((6,7,2,3,4,0,1,8,5,9), (6,7,8,0,1,2,3,4,9,5))) for di,do in [(dtypes.half,dtypes.float), (dtypes.half,dtypes.half)]]
   tc_8168_tf32 = [TensorCore(dims=(8,16,8), threads=32, elements_per_thread=(4,2,4), dtype_in=dtypes.float, dtype_out=dtypes.float, opts=cuda_tc_opts,
-    swizzle=(((5,6,2,3,4),(0,1,8,9,7)), ((5,6,8,0,1),(2,3,4,9,7))))]
+    swizzle=((5,6,2,3,4,0,1,8,9,7), (5,6,8,0,1,2,3,4,9,7)))]
 
   tc_sm80 = tc_81616 + tc_8168_f16
   if getenv("ALLOW_TF32", 0): tc_sm80 += tc_8168_tf32
@@ -412,14 +410,14 @@ class AMDRenderer(CStyleLanguage):
   global_max = (2147483647, 65535, 65535)
   # https://gpuopen.com/learn/wmma_on_rdna3/
   tensor_cores = [TensorCore(dims=(16,16,16), threads=32, elements_per_thread=(16,16,8), dtype_in=di, dtype_out=do,
-    opts=("l0","l0","l0","l0","l1","u1","u1","u1"), swizzle=(((4,9,10,11,0),(1,2,3,5,6,7,8)), ((0,1,2,3,4),(9,10,11,5,6,7,8))))
+    opts=("l0","l0","l0","l0","l1","u1","u1","u1"), swizzle=((4,9,10,11,0,1,2,3,5,6,7,8), (0,1,2,3,4,9,10,11,5,6,7,8)))
     for di,do in [(dtypes.half,dtypes.float),(dtypes.half,dtypes.half),(dtypes.bfloat16,dtypes.float)]]
   tensor_cores_rdna4 = [TensorCore(dims=(16,16,16), threads=32, elements_per_thread=(8,8,8), dtype_in=di, dtype_out=do,
-    opts=("l0","l0","l0","l0","u1","u1","u1","l1"), swizzle=(((9,10,11,4,7),(0,1,2,3,5,6,8)),((0,1,2,3,7),(4,9,10,11,5,6,8))))
+    opts=("l0","l0","l0","l0","u1","u1","u1","l1"), swizzle=((9,10,11,4,7,0,1,2,3,5,6,8),(0,1,2,3,7,4,9,10,11,5,6,8)))
     for di,do in [(dtypes.half,dtypes.float),(dtypes.half,dtypes.half),(dtypes.bfloat16,dtypes.float),(dtypes.bfloat16,dtypes.bfloat16)]]
   # https://gpuopen.com/learn/amd-lab-notes/amd-lab-notes-matrix-cores-readme
   tensor_cores_mfma = [TensorCore(dims=(16,16,16), threads=64, elements_per_thread=(4,4,4), dtype_in=di, dtype_out=do,
-    opts=("l0","l0","l0","l0","u1","u1","l1","l1"), swizzle=(((10,11,4,5,8,9),(0,1,2,3,6,7)),((0,1,2,3,8,9),(4,5,10,11,6,7))))
+    opts=("l0","l0","l0","l0","u1","u1","l1","l1"), swizzle=((10,11,4,5,8,9,0,1,2,3,6,7),(0,1,2,3,8,9,4,5,10,11,6,7)))
     for di,do in [(dtypes.half,dtypes.float),(dtypes.bfloat16,dtypes.float)]]
 
   @staticmethod
