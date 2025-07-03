@@ -143,6 +143,9 @@ class Kernel:
   def global_dims(self) -> int: return self.first_upcast-self.local_dims
 
   @property
+  def first_local(self) -> int: return self.first_upcast-self.local_dims
+
+  @property
   def local_dims(self) -> int: return self.info.local_dims
 
   @property
@@ -501,23 +504,40 @@ class Kernel:
         grouped_axes = reduced_axes(self.first_reduce, self.first_reduce + self.group_for_reduces)
 
         if (tc := self.tensor_core) and self.use_tensor_cores == 1:
-          wd, tcd = self.global_dims, self.first_upcast
-          def get_upcast_axes(buf): # upcast along non-zero dimensions of (tc_reduce + tc_upcast)
+          def get_upcast_axes(buf):
             upcast_axes = int(math.log2(tc.elements_per_thread[buf]))
-            return tuple((tcd + len(tc.get_reduce_axes()) + len(tc.get_upcast_axes()) - (i+1), 2) for i in range(upcast_axes))
-          def get_tc_swizzle_st(shape, local_perm, upcast_perm):
-            offset = (tcd - (wd + len(local_perm)))
-            permaxis = list(range(wd)) \
-              + [wd + x + (offset if x >= len(local_perm) else 0) for x in local_perm]  + list(range(wd + len(local_perm), tcd)) \
-              + [wd + x + (offset if x >= len(local_perm) else 0) for x in upcast_perm] + list(range(tcd + len(upcast_perm), len(shape)))
-            return ShapeTracker.from_shape(shape).permute(tuple(permaxis))
+            return tuple((self.first_upcast + len(tc.get_upcast_axes()) - (i+1), 2) for i in range(upcast_axes))
+          def get_tc_swizzle_st(shape, perm):
+            permutation, tc_base_dims = list(range(len(self.full_shape))), []
+
+            tc_base_dims += permutation[self.first_local : self.first_local + len(tc.get_local_axes())]
+            tc_base_dims += permutation[self.first_upcast : self.first_upcast + len(tc.get_upcast_axes())]
+            tc_base_dims += permutation[self.first_unroll : self.first_unroll + len(tc.get_reduce_axes())]
+
+            print("base",tc_base_dims)
+            print("perm",perm)
+            # tc_sorted_dims = [tc_base_dims[i] for i in sorted(perm, key=lambda i: tc_base_dims[i])]
+            tc_sorted_dims = [element for _, element in sorted(zip(perm, tc_base_dims))]
+            # tc_sorted_dims = tc_base_dims[:]
+            # values = sorted((tc_base_dims[i] for i in perm))
+            # for val, i in zip(values, perm): tc_sorted_dims[i] = val
+            print("sort",tc_sorted_dims)
+
+            permutation[self.first_local : self.first_local + len(tc.get_local_axes())] = tc_sorted_dims[: len(tc.get_local_axes())]
+            permutation[self.first_upcast : self.first_upcast + len(tc.get_upcast_axes())] = tc_sorted_dims[len(tc.get_local_axes()) : len(tc.get_local_axes()) + len(tc.get_upcast_axes())]
+            permutation[self.first_unroll : self.first_unroll + len(tc.get_reduce_axes())] = tc_sorted_dims[len(tc.get_local_axes()) + len(tc.get_upcast_axes()) :]
+
+            print("tcpr",permutation)
+            print("\n\n")
+
+            return ShapeTracker.from_shape(shape).permute(tuple(permutation))
 
           srcs = list((ret.src[0] if ret.src[0].op is not Ops.CAST else ret.src[0].src[0]).src)
           for i, (src, swizzle) in enumerate(zip(srcs, tc.swizzle)):
             src_st = (src if src.op is Ops.LOAD else src.src[0]).st_arg
-            if swizzle: srcs[i] = src.view(get_tc_swizzle_st(src_st.shape, *swizzle))
+            if swizzle: srcs[i] = src.view(get_tc_swizzle_st(src_st.shape, swizzle))
 
-          tc_reduce_axes = tuple(tcd + ax for ax, _ in tc.get_reduce_axes())
+          tc_reduce_axes = tuple(self.first_unroll + ax for ax, _ in tc.get_reduce_axes())
           if self.use_tensor_cores == 1: # real WMMA, use CONTRACT/UNROLL to get the vectorization right
             tc_upcast_axes = (get_upcast_axes(0), get_upcast_axes(1), get_upcast_axes(2))
             wmma_arg = (str(tc), tc.dims, tc.dtype_in, tc.dtype_out, self.opts.device, tc.threads, tc_upcast_axes, tc_reduce_axes)
