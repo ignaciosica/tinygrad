@@ -542,9 +542,14 @@ class Kernel:
 
         ret = ret.replace(arg = (op.arg[0], axes))
         if self.group_for_reduces and grouped_axes:
+          assert all(tuple([True if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else False \
+              for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces)]))
+          # local_shape = (1,) * self.global_dims + self.full_shape[self.global_dims:self.first_reduce] + \
+          #   tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
+          #     for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces)]) + \
+          #   (1,) * (self.shape_len - self.unrolled - self.group_for_reduces - self.first_reduce) + self.full_shape[self.first_unroll:]
           local_shape = (1,) * self.global_dims + self.full_shape[self.global_dims:self.first_reduce] + \
-            tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
-              for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces)]) + \
+            tuple([self.full_shape[i] for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces)]) + \
             (1,) * (self.shape_len - self.unrolled - self.group_for_reduces - self.first_reduce) + self.full_shape[self.first_unroll:]
           st = ShapeTracker.from_shape(local_shape).expand(self.full_shape[:self.global_dims]+local_shape[self.global_dims:])
           local_size = st.real_size()
