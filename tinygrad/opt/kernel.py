@@ -149,9 +149,6 @@ class Kernel:
   def unrolled(self) -> int: return self.info.unrolled
 
   @property
-  def dont_use_locals(self) -> bool: return self.info.dont_use_locals
-
-  @property
   def applied_opts(self) -> list[Opt]: return list(self.info.applied_opts)
 
   # there's eight chunks of the shape
@@ -165,7 +162,7 @@ class Kernel:
   # yellow -- normal upcasted dimensions
   def colors(self) -> list[str]:
     # first non local non reduce dims are global (blue)
-    colors = ["blue"] * self.global_dims if not self.dont_use_locals else ["BLUE"] * self.global_dims
+    colors = ["blue"] * self.global_dims if not self.info.dont_use_locals else ["BLUE"] * self.global_dims
     # after global are local_dims; warp ones used in tensor cores must be closest to first_reduce (cyan)
     colors += ["cyan"] * self.local_dims
     # after local_dims are upcasted
@@ -363,7 +360,7 @@ class Kernel:
 
   def apply_opt(self, opt:Opt, append_opt:bool=True):
     if self.finalized: raise RuntimeError("can't optimize Kernel after it's finalized")
-    if self.dont_use_locals: check(opt.op not in {OptOps.LOCAL, OptOps.GROUP, OptOps.GROUPTOP}, "not using locals")
+    if self.info.dont_use_locals: check(opt.op not in {OptOps.LOCAL, OptOps.GROUP, OptOps.GROUPTOP}, "not using locals")
 
     if opt.op is OptOps.TC:
       check(len(self.applied_opts) == 0, "tensor core opts must be first") # TODO: things like PADTO might be fine
@@ -429,7 +426,7 @@ class Kernel:
       self.shift_to(axis, amt, insert_before=self.first_reduce)
       self.upcast()
     elif opt.op is OptOps.NOLOCALS:
-      check(self.opts.has_local and not self.dont_use_locals, "NOLOCALS is meaningless if target does not support local or already not using locals")
+      check(self.opts.has_local and not self.info.dont_use_locals, "NOLOCALS is meaningless if target does not support local or already not using locals")
       check(self.local_dims == 0 and self.group_for_reduces == 0, "can't have no locals with locals")
       self.update_info(dont_use_locals=True)
     elif opt.op is OptOps.SWAP:
