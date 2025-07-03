@@ -511,7 +511,7 @@ class Kernel:
             tc_base += perm[self.first_unroll : self.first_unroll + len(tc.get_reduce_axes())]
 
             # swizzle tensor core dimensions
-            tc_sort = [element for _, element in sorted(zip(swizzle, tc_base))]
+            tc_sort = [dim for _, dim in sorted(zip(swizzle, tc_base))]
 
             # replace tensor core dimensions with swizzled ones
             perm[self.first_local : self.first_local + len(tc.get_local_axes())] = tc_sort[: len(tc.get_local_axes())]
