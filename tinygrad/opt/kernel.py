@@ -100,17 +100,26 @@ class Kernel:
   def membufs(self) -> list[UOp]: return dedup([x.src[0].base for x in self.bufs if x.op in {Ops.LOAD, Ops.STORE}])
 
   def upcasted_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
-    upcasted_shape, upcasted_stride = self.sts[i].shape[self.first_upcast:], self.sts[i].real_strides()[self.first_upcast:]
+    upcasted_shape = self.sts[i].shape[self.first_upcast:self.first_reduce]
+    upcasted_stride = self.sts[i].real_strides()[self.first_upcast:self.first_reduce]
     assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
-    return list(zip(upcasted_shape, upcasted_stride,
-                    [x!=y for x,y in zip(self.sts[0].shape[self.first_upcast:], self.full_shape[self.first_upcast:])]))
+    return list(zip(upcasted_shape, upcasted_stride, [False] * len(upcasted_shape)))
+
+  def unrolled_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
+    unrolled_shape = self.sts[i].shape[self.first_unroll:]
+    unrolled_stride = self.sts[i].real_strides()[self.first_unroll:]
+    assert all_int(unrolled_shape), f"cannot upcast a symbolic amount {unrolled_shape=}"
+    return list(zip(unrolled_shape, unrolled_stride, [True] * len(unrolled_shape)))
 
   @property
   def first_reduce(self) -> int:
-    return [resolve(x!=y) for x,y in zip(self.sts[0].shape[:self.first_upcast]+(0,), self.full_shape[:self.first_upcast]+(1,))].index(True)
+    return [resolve(x!=y) for x,y in zip(self.sts[0].shape[:self.first_unroll]+(0,), self.full_shape[:self.first_unroll]+(1,))].index(True)
 
   @property
-  def first_upcast(self) -> int: return self.shape_len-self.upcasted
+  def first_upcast(self) -> int: return self.first_reduce-self.upcasted
+
+  @property
+  def first_unroll(self) -> int: return self.shape_len-self.unrolled
 
   @property
   def reduceop(self) -> UOp|None: return self.reduceops[0] if len(self.reduceops) > 0 else None
@@ -137,6 +146,9 @@ class Kernel:
   def upcasted(self) -> int: return self.info.upcasted
 
   @property
+  def unrolled(self) -> int: return self.info.unrolled
+
+  @property
   def dont_use_locals(self) -> bool: return self.info.dont_use_locals
 
   @property
@@ -156,12 +168,14 @@ class Kernel:
     colors = ["blue"] * self.global_dims if not self.dont_use_locals else ["BLUE"] * self.global_dims
     # after global are local_dims; warp ones used in tensor cores must be closest to first_reduce (cyan)
     colors += ["cyan"] * self.local_dims
+    # after local_dims are upcasted
+    colors += ["yellow"] * self.upcasted
     # between first_reduce and first_reduce + group_for_reduces, they are late upcasted (green)
     colors += ["green"] * self.group_for_reduces
     # between first_reduce + group_for_reduces and upcasted, they are reduce (red)
     colors += ["red"] * (self.first_upcast - (self.first_reduce + self.group_for_reduces))
-    # upcasted dimensions are reduce (magenta) or normal (yellow)
-    colors += ["magenta" if self.full_shape[i] != self.sts[0].shape[i] else "yellow" for i in range(self.first_upcast, self.shape_len)]
+    # unrolled dimensions are reduce (magenta)
+    colors += ["magenta"] * self.unrolled
     assert len(colors) == self.shape_len, "colors size mismatch"
     return colors
 
@@ -181,7 +195,7 @@ class Kernel:
 
   # drops the final dimension
   def upcast(self):
-    check(self.full_shape[-1] != 1, "can't upcast a dimension with size 1")
+    check(self.full_shape[self.first_reduce - 1] != 1, "can't upcast a dimension with size 1")
     self.update_info(upcasted=self.info.upcasted + 1)
 
   # axis : the axis to pull from
@@ -203,8 +217,9 @@ class Kernel:
     # TODO: this should be factored in to multi shape stride
     if self.shape_len == 0: return False
     all_ones = [s==1 for s in self.full_shape]
-    self.update_info(local_dims=self.local_dims - sum(all_ones[self.first_reduce-self.local_dims:self.first_reduce]),
-                     upcasted=self.upcasted - sum(all_ones[self.first_upcast:])) # TODO: no necessary since upcasted axis can't be un-upcasted
+    # TODO: not necessary to update upcasted since upcasted axis can't be un-upcasted
+    self.update_info(local_dims=self.local_dims - sum(all_ones[self.first_reduce - self.local_dims : self.first_reduce]),
+                     upcasted=self.upcasted - sum(all_ones[self.first_upcast : self.first_reduce]))
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
     return any(all_ones)
 
@@ -386,17 +401,17 @@ class Kernel:
       # it's disabled for now since it makes BEAM slow for little gain
       check(self.opts.has_local, "target does not support local")
       check(axis < self.global_dims, "local is for globals")
-      self.shift_to(axis, amt, insert_before=self.first_reduce)
+      self.shift_to(axis, amt, insert_before=self.first_upcast)
       self.update_info(local_dims=self.info.local_dims + 1)
     elif opt.op in {OptOps.GROUP, OptOps.GROUPTOP}:   # green
       check(self.opts.has_local and self.opts.has_shared, "target does not support local or shared mem")
-      check(self.first_reduce + self.group_for_reduces <= axis < self.first_upcast, "must be reduce axis to group")
+      check(self.first_reduce + self.group_for_reduces <= axis < self.first_unroll, "must be reduce axis to group")
       check(not self.tensor_core, "can't group with tensor cores")
       check(len(reduce_axes:=[i for r in self.reduceops for i in r.axis_arg]) == len(set(reduce_axes)), "can't group with parallel reduces")
       self.shift_to(axis, amt, top=(opt.op is OptOps.GROUPTOP), insert_before=self.first_reduce + self.group_for_reduces)
       self.group_for_reduces += 1
     elif opt.op is OptOps.UNROLL:                     # purple
-      check(axis < self.first_upcast, "can't upcasted already upcasted")
+      check(axis < self.first_unroll, "can't upcasted already upcasted")
       check(amt <= 32, "don't unroll more than 32")
       # TODO: fix upcast_count to put purples before yellows. broken because of METAL tensor cores
       #upcast_count = sum(x == y for x,y in zip(self.full_shape[-self.upcasted:], self.output_shape[-self.upcasted:])) if self.upcasted else 0
@@ -405,12 +420,13 @@ class Kernel:
       if self.full_shape[axis] == amt and axis == self.first_reduce: self.update_info(local_dims=self.local_dims + 1)
       if self.full_shape[axis] == amt and axis < self.first_reduce+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
-      self.upcast()
+      check(self.full_shape[-1] != 1, "can't unroll a dimension with size 1")
+      self.update_info(upcasted=self.info.unrolled + 1)
     elif opt.op is OptOps.UPCAST:                     # yellow
-      check(axis < self.first_reduce, "upcast is for non-reduce")
+      check(axis < self.first_upcast, "upcast is for non-reduce")
       check(not (self.tensor_core and self.global_dims <= axis < self.global_dims+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
       check((self.opts is not None and self.opts.device == "DSP") or amt <= 16, "don't upcast more than 16")
-      self.shift_to(axis, amt, insert_before=None)
+      self.shift_to(axis, amt, insert_before=self.first_reduce)
       self.upcast()
     elif opt.op is OptOps.NOLOCALS:
       check(self.opts.has_local and not self.dont_use_locals, "NOLOCALS is meaningless if target does not support local or already not using locals")
@@ -423,7 +439,7 @@ class Kernel:
       self.reshape_and_permute(None, tuple(permute))
     elif opt.op is OptOps.PADTO:
       check(not self.vars, "does not work with symbolic shape")
-      check(axis < self.first_upcast, "cannot pad upcasted")
+      check(axis < self.first_upcast or self.first_reduce <= axis < self.first_unroll, "cannot pad upcasted")
       # ok to pad SUM if all parent ALU ops have f(0) = 0
       if (r:=self.reduceop) is not None and self.first_reduce <= axis: check(r.arg[0] is Ops.ADD and can_pad(r, {}), f"cannot pad {r}")
       padded = False
@@ -516,9 +532,10 @@ class Kernel:
         ret = ret.replace(arg = (op.arg[0], axes))
         if self.group_for_reduces and grouped_axes:
           local_shape = (1,) * self.global_dims + self.full_shape[self.global_dims:self.global_dims+self.local_dims] + \
+            tuple([x[0] for x in self.upcasted_axis(0)]) + \
             tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
               for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces)]) + \
-            (1,) * (self.shape_len - self.upcasted - self.group_for_reduces - self.first_reduce) + tuple([x[0] for x in self.upcasted_axis(0)])
+            (1,) * (self.shape_len - self.upcasted - self.group_for_reduces - self.first_reduce) + tuple([x[0] for x in self.unrolled_axis(0)])
           st = ShapeTracker.from_shape(local_shape).expand(self.full_shape[:self.global_dims]+local_shape[self.global_dims:])
           local_size = st.real_size()
           local_buffer = UOp(Ops.DEFINE_LOCAL, op.dtype.ptr(local_size, local=True), (), f"temp{self.reduceops.index(op)}")
