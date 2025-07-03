@@ -14,21 +14,29 @@ class IndexContext:
 
 def get_index(ast:UOp) -> IndexContext:
   ki = ast.arg if isinstance(ast.arg, KernelInfo) else KernelInfo()
-  # NOTE: assumes the shape is <global dims> <local dims> <group_for_reduces> <reduces> <upcasts/unrolls>
+  # NOTE: assumes the shape is <global dims> <local dims> <upcasts> <group_for_reduces> <reduces> <unrolls>
   full_shape = ast.full_shape
-  first_upcasted = len(full_shape)-ki.upcasted
+  first_unrolled = len(full_shape)-ki.unrolled
+  first_reduce = min([first_unrolled]+flatten(x.axis_arg for x in ast.toposort() if x.op is Ops.REDUCE_AXIS))
+  first_upcasted = first_reduce-ki.upcasted
 
   # all loops are RANGES
   idxs = [UOp(Ops.RANGE, dtypes.int, (sint_to_uop(g),), i) for i,g in enumerate(full_shape[:first_upcasted])]
 
   # upcast loops
-  for i,g in enumerate(full_shape[first_upcasted:], start=first_upcasted):
-    assert isinstance(g, int), "needs to be int to upcast/unroll"
+  for i,g in enumerate(full_shape[first_upcasted:first_reduce], start=first_upcasted):
+    assert isinstance(g, int), "needs to be int to upcast"
+    idxs.append(UOp(Ops.UNROLL, dtypes.int, (UOp.const(dtypes.int.vec(g), tuple(range(g))),), ((i,g),)))
+
+  idxs = [UOp(Ops.RANGE, dtypes.int, (sint_to_uop(g),), i) for i,g in enumerate(full_shape[first_reduce:first_unrolled], start=first_upcasted)]
+
+  # unroll loops
+  for i,g in enumerate(full_shape[first_unrolled:], start=first_unrolled):
+    assert isinstance(g, int), "needs to be int to unroll"
     idxs.append(UOp(Ops.UNROLL, dtypes.int, (UOp.const(dtypes.int.vec(g), tuple(range(g))),), ((i,g),)))
 
   # late indexes (group for reduce)
   # if there's no reduce, this is first_upcasted. assumes reduces are at the end
-  first_reduce = min([first_upcasted]+flatten(x.axis_arg for x in ast.toposort() if x.op is Ops.REDUCE_AXIS))
   local_loads = [x for x in ast.toposort() if x.op is Ops.LOAD and x.src[0].base.op is Ops.DEFINE_LOCAL]
   # NOTE: sum up the reduced axes looking across all local loads, yields the number of grouped reduces
   group_for_reduces = sum([any(l.st_arg.shape[i]!=ast.src[0].st_arg.shape[i] for l in local_loads) for i in range(first_reduce,first_upcasted)])
