@@ -282,7 +282,7 @@ class MetalRenderer(CStyleLanguage):
   shared_max = 32768
   tensor_cores = [TensorCore(dims=(8,8,8), threads=32, elements_per_thread=(2,2,2), dtype_in=di, dtype_out=do, opts=("u0","l0","l1","l1","l0","l1"),
     swizzle=((7,1,2,8,4,6,5,0,3),(0,6,7,3,8,5,1,2,4))) for di,do in [(dtypes.float,dtypes.float),(dtypes.half,dtypes.float),
-      (dtypes.half,dtypes.half),(dtypes.bfloat16,dtypes.float),(dtypes.bfloat16,dtypes.bfloat16)]]
+    (dtypes.half,dtypes.half),(dtypes.bfloat16,dtypes.float),(dtypes.bfloat16,dtypes.bfloat16)]]
   def __init__(self): self.tensor_cores = MetalRenderer.tensor_cores if hasattr(os, 'uname') and os.uname().machine == "arm64" else []
 
   # language options
