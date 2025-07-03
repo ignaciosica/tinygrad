@@ -131,7 +131,7 @@ class Kernel:
   def full_shape(self) -> tuple[sint, ...]: return self.sts[-1].shape
 
   @property
-  def full_unupcasted_shape(self) -> tuple[sint, ...]: return self.full_shape[: self.first_upcast]
+  def full_unupcasted_shape(self) -> tuple[sint, ...]: return self.full_shape[:self.first_upcast]
 
   @property
   def full_unrolled_shape(self) -> tuple[sint, ...]: return self.full_shape[self.first_reduce : self.first_unroll]
