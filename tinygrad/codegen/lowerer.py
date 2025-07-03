@@ -28,7 +28,7 @@ def get_index(ast:UOp) -> IndexContext:
     assert isinstance(g, int), "needs to be int to upcast"
     idxs.append(UOp(Ops.UNROLL, dtypes.int, (UOp.const(dtypes.int.vec(g), tuple(range(g))),), ((i,g),)))
 
-  idxs = [UOp(Ops.RANGE, dtypes.int, (sint_to_uop(g),), i) for i,g in enumerate(full_shape[first_reduce:first_unrolled], start=first_upcasted)]
+  idxs += [UOp(Ops.RANGE, dtypes.int, (sint_to_uop(g),), i) for i,g in enumerate(full_shape[first_reduce:first_unrolled], start=first_upcasted)]
 
   # unroll loops
   for i,g in enumerate(full_shape[first_unrolled:], start=first_unrolled):
@@ -39,7 +39,7 @@ def get_index(ast:UOp) -> IndexContext:
   # if there's no reduce, this is first_upcasted. assumes reduces are at the end
   local_loads = [x for x in ast.toposort() if x.op is Ops.LOAD and x.src[0].base.op is Ops.DEFINE_LOCAL]
   # NOTE: sum up the reduced axes looking across all local loads, yields the number of grouped reduces
-  group_for_reduces = sum([any(l.st_arg.shape[i]!=ast.src[0].st_arg.shape[i] for l in local_loads) for i in range(first_reduce,first_upcasted)])
+  group_for_reduces = sum([any(l.st_arg.shape[i]!=ast.src[0].st_arg.shape[i] for l in local_loads) for i in range(first_reduce,first_unrolled)])
   ridxs = idxs[:]
   for a in range(first_reduce, first_reduce+group_for_reduces):
     ridxs[a] = UOp(Ops.RANGE, dtypes.int, (sint_to_uop(full_shape[a]),), 1000+a)

@@ -131,13 +131,14 @@ class Kernel:
   def full_shape(self) -> tuple[sint, ...]: return self.sts[-1].shape
 
   @property
-  def full_unupcasted_shape(self) -> tuple[sint, ...]: return self.full_shape[:self.first_upcast]
+  def full_unupcasted_shape(self) -> tuple[sint, ...]:
+    return self.full_shape[: self.first_upcast] + (1,) * self.upcasted + self.full_shape[self.first_reduce : self.first_unroll]
 
   @property
   def shape_len(self) -> int: return len(self.sts[0].shape)
 
   @property
-  def global_dims(self) -> int: return self.first_reduce-self.local_dims
+  def global_dims(self) -> int: return self.first_upcast-self.local_dims
 
   @property
   def local_dims(self) -> int: return self.info.local_dims
@@ -173,10 +174,10 @@ class Kernel:
     # between first_reduce and first_reduce + group_for_reduces, they are late upcasted (green)
     colors += ["green"] * self.group_for_reduces
     # between first_reduce + group_for_reduces and upcasted, they are reduce (red)
-    colors += ["red"] * (self.first_upcast - (self.first_reduce + self.group_for_reduces))
+    colors += ["red"] * (self.first_unroll - (self.first_reduce + self.group_for_reduces))
     # unrolled dimensions are reduce (magenta)
     colors += ["magenta"] * self.unrolled
-    assert len(colors) == self.shape_len, "colors size mismatch"
+    assert len(colors) == self.shape_len, f"colors size mismatch {colors} {self.full_shape}"
     return colors
 
   def colored_shape(self, pad:Optional[int]=None, dense=False) -> str:
@@ -421,7 +422,7 @@ class Kernel:
       if self.full_shape[axis] == amt and axis < self.first_reduce+self.group_for_reduces: self.group_for_reduces -= 1 # fully unrolling a GROUP
       self.shift_to(axis, amt, insert_before=None)
       check(self.full_shape[-1] != 1, "can't unroll a dimension with size 1")
-      self.update_info(upcasted=self.info.unrolled + 1)
+      self.update_info(unrolled=self.info.unrolled + 1)
     elif opt.op is OptOps.UPCAST:                     # yellow
       check(axis < self.first_upcast, "upcast is for non-reduce")
       check(not (self.tensor_core and self.global_dims <= axis < self.global_dims+len(self.tensor_core.get_local_axes())), "can't upcast TC locals")
@@ -487,7 +488,7 @@ class Kernel:
         return ret.replace(src=(ret.src[0].replace(arg=st),)+ret.src[1:])
       if op.op is Ops.SINK:
         # NOTE: should group_for_reduces be added to the local_dims?
-        return ret.replace(arg=replace(self.info, name=ret.arg.name if ret.arg is not None else self.name if name_override is None else name_override,
+        return ret.replace(arg=replace(self.info, name=self.name if name_override is None else name_override,
           global_dims=self.global_dims if self.opts.has_local else 0, local_dims=self.local_dims + self.group_for_reduces, opts_to_apply=None))
       if op.op is Ops.REDUCE_AXIS:
         reduce_idx = len(self.bufs) + self.reduceops.index(op) * 2
