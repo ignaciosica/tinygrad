@@ -49,8 +49,6 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
         else:
           k.apply_opt(Opt(OptOps.UNROLL, unit_stride_axes_mul_4[0]-k.first_reduce, 4))
 
-  return []
-
   # no more opt if we are grouping
   if k.group_for_reduces: return k.applied_opts
 
@@ -63,7 +61,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
   # this can be made much smarter
   to_upcast: list[int] = []
   # upcast leading axes first (hack-ish for winograd; we actually want to upcast masked axes with low stride first)
-  for axis in range(k.first_reduce):
+  for axis in range(k.first_upcast):
     # we might want to be able to split axes that are masked, or refuse to merge them in simplify_merge_adjacent
     # for now skip upcasting here if there is a symbolic axis
     if isinstance(k.full_shape[axis], int) and k.full_shape[axis] <= 7 and any(st.axis_is_masked(axis) for st in k.sts) and \
@@ -71,6 +69,8 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
       if DEBUG >= 4: print(f"upcasting masked axis : {axis}")
       to_upcast.append(axis)
   for axis in to_upcast[::-1]: k.apply_opt(Opt(OptOps.UPCAST, axis, 0))
+
+  return []
 
   # potentially do more upcasts of non reduce axes based on a heuristic
   is_dsp = k.opts is not None and k.opts.device == "DSP"
