@@ -5,7 +5,6 @@ from tinygrad.dtype import ImageDType
 from tinygrad.uop.ops import Ops, resolve
 
 def hand_coded_optimizations(k:Kernel) -> list[Opt]:
-  return []
   # make a copy so it does not mutate the input
   k = k.copy()
 
@@ -26,6 +25,8 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
           if MV_BLOCKSIZE > 1: k.apply_opt(Opt(OptOps.LOCAL, global_idx, MV_BLOCKSIZE))
           if MV_ROWS_PER_THREAD > 1: k.apply_opt(Opt(OptOps.UPCAST, global_idx, MV_ROWS_PER_THREAD))
           return k.applied_opts
+
+  return []
 
   if k.opts.has_local and k.opts.has_shared and all_int(k.sts[0].shape[:k.first_reduce]):
     # are we grouping? (requires local shape support)
