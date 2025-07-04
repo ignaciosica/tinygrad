@@ -1083,7 +1083,7 @@ class TestHandCodedOpts(unittest.TestCase):
 
     k = helper_linearizer_opt(c)[-1]
 
-    assert k.group_for_reduces == 1
+    assert k.info.group_dims == 1
     assert k.local_dims == 1
     assert k.upcasted == 1
 
