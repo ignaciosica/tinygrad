@@ -64,16 +64,18 @@ class CellState:
   def __str__(self) -> str:
     """Returns a string representation of the cell for printing."""
     if not self.threads:
-      return " " * 16  # Return a fixed-width empty string for alignment
+      return " " * 2 # Return a fixed-width empty string for alignment
 
     # Format the list of threads, e.g., "t[01,02]"
     thread_part = f"t[{','.join(f'{th:02d}' for th in self.threads)}]"
     vec_part = f"v[{self.vec}]"
-    count_part = f"({self.count:02d})"
+    count_part = f"{self.count:02d}"
 
     # Combine parts and pad to ensure consistent column width
     full_str = f"{thread_part}{vec_part}{count_part}"
-    return self._wrap_colour(f"{full_str:<16}")
+    full_str = f"{count_part}"
+    # return self._wrap_colour(f"{full_str:<16}")
+    return self._wrap_colour(f"{full_str}")
 
 
 # --- Visualization Functions ---
@@ -85,14 +87,14 @@ def print_viz_bufs():
   for buf_id in reversed(list(viz_bufs.keys())):
     print(f"\nbuf[{buf_id}]")
     print_viz_buf(buf_id)
-  time.sleep(0.05)
+  time.sleep(0.02)
 
 
 def print_viz_buf(buf_id: int):
   """Prints a single buffer, formatted into rows based on BUF_WIDTH."""
   viz_buf = viz_bufs.get(buf_id, [])
   for i in range(0, len(viz_buf), BUF_WIDTH):
-    print(" | ".join(map(str, viz_buf[i : i + BUF_WIDTH])))
+    print("|".join(map(str, viz_buf[i : i + BUF_WIDTH])))
 
 
 # --- Memory Access Functions ---
