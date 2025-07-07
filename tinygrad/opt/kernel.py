@@ -200,6 +200,10 @@ class Kernel:
     check(self.full_shape[self.first_reduce - 1] != 1, "can't upcast a dimension with size 1")
     self.update_info(upcasted=self.info.upcasted + 1)
 
+  def unroll(self):
+    check(self.full_shape[-1] != 1, "can't unroll a dimension with size 1")
+    self.update_info(unrolled=self.info.unrolled + 1)
+
   # axis : the axis to pull from
   # amount : the amount to take
   # top : if you want to pull that amount from the top
@@ -453,9 +457,11 @@ class Kernel:
           padded = True
       check(padded, "nothing was padded")
 
+    print(opt)
     if append_opt: self.update_info(applied_opts=self.info.applied_opts + (opt,))
     if self.simplify_ones() and self.tensor_core_opts:
       self.tensor_core_opts.fix_axes(axis) # fix up axes in TC opts if required after simplify_ones()
+    print(self.colored_shape())
 
   def apply_opts(self, opts:Sequence[Opt]) -> Kernel:
     for opt in opts: self.apply_opt(opt)

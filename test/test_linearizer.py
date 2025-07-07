@@ -251,7 +251,7 @@ class TestLinearizer(unittest.TestCase):
     r = Tensor.conv2d(x,w,padding=1).relu()
 
     k = Kernel(r.schedule()[-1].ast)
-    k.upcast()
+    k.unroll()
     k.upcast()
     k.linearize()
     accs = [u for u in k.uops if u.op is Ops.DEFINE_REG]
@@ -878,7 +878,7 @@ class TestFloat4(unittest.TestCase):
 
     s = c.schedule()[0]
     k = Kernel(s.ast)
-    k.upcast()
+    k.unroll()
     k.upcast()
     k.linearize()
 
