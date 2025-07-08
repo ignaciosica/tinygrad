@@ -1049,7 +1049,7 @@ class TestHandCodedOpts(unittest.TestCase):
         k.apply_opts(hand_coded_optimizations(k))
         if k.reduceop is not None: continue  # not a tile transform kernel (there is a gemm reduce kernel)
         if len(k.bufs) < 22: continue  # not a tile transform kernel (there's a permute kernel at the end)
-        upcasts.append(tuple(k.full_shape[k.shape_len - k.upcasted:k.shape_len]))
+        upcasts.append(tuple(k.full_shape[k.first_reduce - k.upcasted:k.first_reduce]))
       assert len(upcasts) == 3  # 3 transformation matrices
       assert len(wino_schedule) <= 4  # 4 kernels
       # this test case's inputs are too small, so one of the 4-stacks became a local, which is fine i guess
@@ -1061,7 +1061,7 @@ class TestHandCodedOpts(unittest.TestCase):
         k.apply_opts(hand_coded_optimizations(k))
         if len(k.bufs) < 20: continue  # not a tile transform kernel
         # heuristic number to make sure that at least some upcasts but not too many upcasts are being done
-        assert 6 <= prod(k.full_shape[k.shape_len - k.upcasted:k.shape_len]) <= 216
+        assert 6 <= prod(k.full_shape[k.first_reduce - k.upcasted:k.first_reduce]) <= 216
       assert len(backward_schedule) <= 13  # just the current number, but it could be better
 
   def test_masked_upcast_many(self):
