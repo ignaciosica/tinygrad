@@ -90,8 +90,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
     else: break
 
   # if last dim is small(ish) and it's a reduce dim, upcast the reduce (loop unrolling). no simplify needed since it's just an upcast.
-  if k.first_reduce < k.first_unroll and (prod(k.full_shape[k.first_unroll:]) <= 4 or \
-    not any(x!=y for x,y in zip(k.sts[0].shape[k.first_unroll:], k.full_shape[k.first_unroll:]))) and \
+  if k.first_reduce < k.first_unroll and (prod(k.full_shape[k.first_unroll:]) <= 4) and \
       (k.upcasted == 0 or prod(k.full_shape[-k.upcasted:k.first_reduce]) < 64):
     if isinstance(s:=k.full_unrolled_shape[-1], int) and s <= 32:  # NOTE: cannot loop unroll symbolic axis
       k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unrolled_shape)-1, 0))
