@@ -862,7 +862,7 @@ class TestFloat4(unittest.TestCase):
 
     s = c.schedule()[0]
     k = Kernel(s.ast)
-    k.upcast()
+    k.unroll()
     k.linearize()
 
     assert TestFloat4.count_float4(k.uops) == (0, 0)
