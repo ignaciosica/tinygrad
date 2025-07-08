@@ -105,12 +105,6 @@ class Kernel:
     assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
     return list(zip(upcasted_shape, upcasted_stride, [False] * len(upcasted_shape)))
 
-  def unrolled_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
-    unrolled_shape = self.sts[i].shape[self.first_unroll:]
-    unrolled_stride = self.sts[i].real_strides()[self.first_unroll:]
-    assert all_int(unrolled_shape), f"cannot unroll a symbolic amount {unrolled_shape=}"
-    return list(zip(unrolled_shape, unrolled_stride, [True] * len(unrolled_shape)))
-
   @property
   def first_reduce(self) -> int:
     return [resolve(x!=y) for x,y in zip(self.sts[0].shape[:self.first_unroll]+(0,), self.full_shape[:self.first_unroll]+(1,))].index(True)
@@ -550,11 +544,10 @@ class Kernel:
 
         ret = ret.replace(arg = (op.arg[0], axes))
         if self.group_for_reduces and grouped_axes:
-          local_shape = (1,) * self.global_dims + self.full_shape[self.global_dims:self.global_dims+self.local_dims] + \
-            tuple([x[0] for x in self.upcasted_axis(0)]) + \
-            tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx+1].shape[i] else 1 \
-              for i in range(self.first_reduce, self.first_reduce+self.group_for_reduces)]) + \
-            (1,) * (self.shape_len - self.unrolled - self.group_for_reduces - self.first_reduce) + tuple([x[0] for x in self.unrolled_axis(0)])
+          local_shape = ((1,) * self.global_dims + self.sts[0].shape[self.global_dims : self.first_reduce]
+                         + tuple([self.full_shape[i] if self.sts[reduce_idx].shape[i] != self.sts[reduce_idx + 1].shape[i] else 1
+                                  for i in range(self.first_reduce, self.first_reduce + self.group_for_reduces)])
+                         + self.sts[0].shape[self.first_reduce + self.group_for_reduces :])
           st = ShapeTracker.from_shape(local_shape).expand(self.full_shape[:self.global_dims]+local_shape[self.global_dims:])
           local_size = st.real_size()
           local_buffer = UOp(Ops.DEFINE_LOCAL, op.dtype.ptr(local_size, local=True), (), f"temp{self.reduceops.index(op)}")
