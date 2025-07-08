@@ -28,10 +28,10 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
 
   if k.opts.has_local and k.opts.has_shared and all_int(k.sts[0].shape[:k.first_upcast]):
     # are we grouping? (requires local shape support)
-    if not [x for x in k.sts[0].unit_stride_axes() if x >= k.first_upcast and k.sts[0].shape[x]%4 == 0] and \
+    if not [x for x in k.sts[0].unit_stride_axes() if k.first_reduce > x >= k.first_upcast and k.sts[0].shape[x]%4 == 0] and \
       k.first_reduce <= 2 and k.first_reduce < k.shape_len and prod(k.sts[0].shape[:k.first_reduce]) <= 2048:
       # TODO: use 1024 if it's allowed in a smarter way
-      for sz in ([256, 16] if prod(k.sts[0].shape[:k.first_reduce]) <= 32 else [16]):
+      for sz in ([256, 16] if prod(k.sts[0].shape[:k.first_upcast]) <= 32 else [16]):
         if all(st.shape[k.first_reduce] % sz == 0 or st.shape[k.first_reduce] == 1 for st in k.sts):
           try: # may fail due to excessive smem usage
             k.apply_opt(Opt(OptOps.GROUPTOP, 0, sz))
