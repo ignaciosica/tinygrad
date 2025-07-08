@@ -821,9 +821,9 @@ class TestFloat4(unittest.TestCase):
 
     s = c.schedule()[0]
     k = Kernel(s.ast)
-    k.shift_to(len(k.full_unupcasted_shape)-1, 4)  # manual trigger float4 dim
+    k.shift_to(len(k.full_shape[:k.first_upcast])-1, 4)  # manual trigger float4 dim
     k.upcast()
-    k.shift_to(len(k.full_unupcasted_shape)-1, 2, insert_before=k.shape_len-1)
+    k.shift_to(len(k.full_shape[:k.first_upcast])-1, 2, insert_before=k.shape_len-1)
     k.upcast()
     k.linearize()
 
@@ -838,9 +838,9 @@ class TestFloat4(unittest.TestCase):
 
       s = c.schedule()[0]
       k = Kernel(s.ast)
-      k.shift_to(len(k.full_unupcasted_shape)-1, 4)  # manual trigger float4 dim
+      k.shift_to(len(k.full_shape[:k.first_upcast])-1, 4)  # manual trigger float4 dim
       k.upcast()
-      k.shift_to(len(k.full_unupcasted_shape)-1, shift, insert_before=k.shape_len-1)
+      k.shift_to(len(k.full_shape[:k.first_upcast])-1, shift, insert_before=k.shape_len-1)
       k.upcast()
       k.linearize()
       return k

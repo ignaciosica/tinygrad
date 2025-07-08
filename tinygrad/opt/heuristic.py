@@ -105,8 +105,8 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
 
   # if nothing at all is upcasted and it's easy to, do an upcast
   for splits in [4]:
-    if k.upcasted == 0 and k.full_unupcasted_shape and k.full_unupcasted_shape[-1] % splits == 0:
-      k.apply_opt(Opt(OptOps.UPCAST, len(k.full_unupcasted_shape)-1, splits))
+    if k.upcasted == 0 and (full_unupcasted_shape := k.full_shape[:k.first_upcast]) and full_unupcasted_shape[-1] % splits == 0:
+      k.apply_opt(Opt(OptOps.UPCAST, len(full_unupcasted_shape)-1, splits))
 
   # **** local groups ****
 
