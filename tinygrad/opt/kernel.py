@@ -122,7 +122,7 @@ class Kernel:
   def full_unupcasted_shape(self) -> tuple[sint, ...]: return self.full_shape[:self.first_upcast]
 
   @property
-  def full_unrolled_shape(self) -> tuple[sint, ...]: return self.full_shape[self.first_reduce : self.first_unroll]
+  def full_ununrolled_shape(self) -> tuple[sint, ...]: return self.full_shape[self.first_reduce : self.first_unroll]
 
   @property
   def shape_len(self) -> int: return len(self.sts[0].shape)

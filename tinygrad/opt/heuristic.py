@@ -92,15 +92,15 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
   # if last dim is small(ish) and it's a reduce dim, upcast the reduce (loop unrolling). no simplify needed since it's just an upcast.
   if k.first_reduce < k.first_unroll and (prod(k.full_shape[k.first_unroll:]) <= 4) and \
       (k.upcasted == 0 or prod(k.full_shape[-k.upcasted:k.first_reduce]) < 64):
-    if isinstance(s:=k.full_unrolled_shape[-1], int) and s <= 32:  # NOTE: cannot loop unroll symbolic axis
-      k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unrolled_shape)-1, 0))
+    if isinstance(s:=k.full_ununrolled_shape[-1], int) and s <= 32:  # NOTE: cannot loop unroll symbolic axis
+      k.apply_opt(Opt(OptOps.UNROLL, len(k.full_ununrolled_shape)-1, 0))
       # if it's small, upcast a second reduce dimension too
-      if k.first_reduce < k.first_unroll and s <= 3 and isinstance(s2:=k.full_unrolled_shape[-1], int) and s2 <= 3:
-        k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unrolled_shape)-1, 0))
+      if k.first_reduce < k.first_unroll and s <= 3 and isinstance(s2:=k.full_ununrolled_shape[-1], int) and s2 <= 3:
+        k.apply_opt(Opt(OptOps.UNROLL, len(k.full_ununrolled_shape)-1, 0))
     else:
       for splits in [4]:
-        if k.full_unrolled_shape[-1]%splits == 0:
-          k.apply_opt(Opt(OptOps.UNROLL, len(k.full_unrolled_shape)-1, splits))
+        if k.full_ununrolled_shape[-1]%splits == 0:
+          k.apply_opt(Opt(OptOps.UNROLL, len(k.full_ununrolled_shape)-1, splits))
           break
 
   # if nothing at all is upcasted and it's easy to, do an upcast
