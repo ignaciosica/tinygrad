@@ -43,10 +43,10 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
     unit_stride_axes_mul_4 = [i for i in k.sts[buf_index].unit_stride_axes(ignore_valid=True) if k.sts[buf_index].shape[i]%4 == 0]
     if buf.src[0].dtype.__class__ is ImageDType:
       #assert len(unit_stride_axes_mul_4) >= 1, f"needs a unit stride axis in {k.bufs[buf_index]}"
-      if len(unit_stride_axes_mul_4) and all(x < k.first_upcast for x in unit_stride_axes_mul_4):
-        if unit_stride_axes_mul_4[0] < k.first_reduce:
+      if len(unit_stride_axes_mul_4) and all(x < k.first_unroll for x in unit_stride_axes_mul_4):
+        if unit_stride_axes_mul_4[0] < k.first_upcast:
           k.apply_opt(Opt(OptOps.UPCAST, unit_stride_axes_mul_4[0], 4))
-        else:
+        elif unit_stride_axes_mul_4[0] >= k.first_reduce:
           k.apply_opt(Opt(OptOps.UNROLL, unit_stride_axes_mul_4[0]-k.first_reduce, 4))
 
   # no more opt if we are grouping
