@@ -429,7 +429,7 @@ class Kernel:
       self.shift_to(axis, amt, insert_before=self.first_reduce)
       self.upcast()
     elif opt.op is OptOps.NOLOCALS:
-      check(self.opts.has_local and not self.info.dont_use_locals, "NOLOCALS is meaningless if target does not support local or already not using locals")
+      check(self.opts.has_local and not self.info.dont_use_locals, "NOLOCALS meaningless if target doesn't support local or already not using locals")
       check(self.local_dims == 0 and self.group_for_reduces == 0, "can't have no locals with locals")
       self.update_info(dont_use_locals=True)
     elif opt.op is OptOps.SWAP:
@@ -452,11 +452,11 @@ class Kernel:
           padded = True
       check(padded, "nothing was padded")
 
-    print(opt)
+    # print(opt)
     if append_opt: self.update_info(applied_opts=self.info.applied_opts + (opt,))
     if self.simplify_ones() and self.tensor_core_opts:
       self.tensor_core_opts.fix_axes(axis) # fix up axes in TC opts if required after simplify_ones()
-    print(self.colored_shape())
+    # print(self.colored_shape())
 
   def apply_opts(self, opts:Sequence[Opt]) -> Kernel:
     for opt in opts: self.apply_opt(opt)
