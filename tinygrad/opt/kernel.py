@@ -224,7 +224,8 @@ class Kernel:
     if self.shape_len == 0: return False
     all_ones = [s==1 for s in self.full_shape]
     self.update_info(local_dims=self.local_dims - sum(all_ones[self.first_upcast - self.local_dims : self.first_upcast]),
-                     upcasted=self.upcasted - sum(all_ones[self.first_upcast : self.first_reduce]))
+                     upcasted=self.upcasted - sum(all_ones[self.first_upcast : self.first_reduce]),
+                     unrolled=self.unrolled - sum(all_ones[self.first_unroll :]))
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
     return any(all_ones)
 
