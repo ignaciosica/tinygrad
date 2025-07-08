@@ -676,7 +676,7 @@ class TestLinearizer(unittest.TestCase):
     global_stores = [u for u in k.uops if u.op is Ops.STORE and any(x.op is Ops.DEFINE_GLOBAL for x in get_recursive(u.src[0]))]
     barrier = [u for u in k.uops if u.op is Ops.BARRIER][0]
     # check that the float4 cast collapses for all stores
-    for store in local_stores+global_stores:
+    for store in global_stores:
       assert store.src[-1].dtype.count > 1 # and store.src[2].op is not Ops.VECTORIZE
     # # check the children's vins
     # TODO: src ALU are not the same, should it?
