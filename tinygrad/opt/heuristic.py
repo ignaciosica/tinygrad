@@ -79,7 +79,7 @@ def hand_coded_optimizations(k:Kernel) -> list[Opt]:
     for axis, upcast_amount in itertools.product(range(k.first_upcast), ([128] if not len(upcasted_axis) else []) if is_dsp else [3,4]):
       # if we haven't upcasted it, it's not symbolic, it mods, and buffer has stride 0 on axis while having no stride 0 in the upcasted axis already
       if axis not in upcasted_axis and isinstance(k.full_shape[axis], int) and k.full_shape[axis]%upcast_amount == 0 and \
-        any(st.views[-1].strides[axis] == 0 and not any(x[1] == 0 for x in k.upcasted_axis(buf_index)) for buf_index, st in enumerate(k.sts)):
+        any(st.views[-1].strides[axis] == 0 and not any(x == 0 for x in st.real_strides()[k.first_upcast:k.first_reduce]) for st in k.sts):
         xb_choices.append((sum(st.views[-1].strides[axis]>0 for st in k.sts),
                            sum(st.views[-1].strides[axis] for st in k.sts), axis, upcast_amount))
     if xb_choices:

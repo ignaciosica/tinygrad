@@ -99,12 +99,6 @@ class Kernel:
   @property
   def membufs(self) -> list[UOp]: return dedup([x.src[0].base for x in self.bufs if x.op in {Ops.LOAD, Ops.STORE}])
 
-  def upcasted_axis(self, i:int) -> list[tuple[int, Optional[sint], bool]]:
-    upcasted_shape = self.sts[i].shape[self.first_upcast:self.first_reduce]
-    upcasted_stride = self.sts[i].real_strides()[self.first_upcast:self.first_reduce]
-    assert all_int(upcasted_shape), f"cannot upcast a symbolic amount {upcasted_shape=}"
-    return list(zip(upcasted_shape, upcasted_stride, [False] * len(upcasted_shape)))
-
   @property
   def first_reduce(self) -> int:
     return [resolve(x!=y) for x,y in zip(self.sts[0].shape[:self.first_unroll]+(0,), self.full_shape[:self.first_unroll]+(1,))].index(True)
@@ -113,7 +107,7 @@ class Kernel:
   def first_upcast(self) -> int: return self.first_reduce-self.upcasted
 
   @property
-  def first_unroll(self) -> int: return self.shape_len-self.unrolled
+  def first_unroll(self) -> int: return self.shape_len-self.info.unrolled
 
   @property
   def reduceop(self) -> UOp|None: return self.reduceops[0] if len(self.reduceops) > 0 else None
@@ -137,16 +131,10 @@ class Kernel:
   def global_dims(self) -> int: return self.first_upcast-self.local_dims
 
   @property
-  def first_local(self) -> int: return self.first_upcast-self.local_dims
-
-  @property
   def local_dims(self) -> int: return self.info.local_dims
 
   @property
   def upcasted(self) -> int: return self.info.upcasted
-
-  @property
-  def unrolled(self) -> int: return self.info.unrolled
 
   @property
   def applied_opts(self) -> list[Opt]: return list(self.info.applied_opts)
@@ -171,7 +159,7 @@ class Kernel:
     # between first_reduce + group_for_reduces and upcasted, they are reduce (red)
     colors += ["red"] * (self.first_unroll - (self.first_reduce + self.group_for_reduces))
     # unrolled dimensions are reduce (magenta)
-    colors += ["magenta"] * self.unrolled
+    colors += ["magenta"] * self.info.unrolled
     assert len(colors) == self.shape_len, f"colors size mismatch {colors} {self.full_shape}"
     return colors
 
@@ -219,7 +207,7 @@ class Kernel:
     all_ones = [s==1 for s in self.full_shape]
     self.update_info(local_dims=self.local_dims - sum(all_ones[self.first_upcast - self.local_dims : self.first_upcast]),
                      upcasted=self.upcasted - sum(all_ones[self.first_upcast : self.first_reduce]),
-                     unrolled=self.unrolled - sum(all_ones[self.first_unroll :]))
+                     unrolled=self.info.unrolled - sum(all_ones[self.first_unroll :]))
     self.reshape_and_permute(lambda shape: [x for i,x in enumerate(shape) if not all_ones[i]], None)
     return any(all_ones)
 
@@ -508,7 +496,7 @@ class Kernel:
             perm = list(range(len(self.full_shape)))
 
             # exctract tensor core dimensions
-            tc_base = perm[self.first_local : self.first_local + len(tc.get_local_axes())]
+            tc_base = perm[self.global_dims : self.global_dims + len(tc.get_local_axes())]
             tc_base += perm[self.first_upcast : self.first_upcast + len(tc.get_upcast_axes())]
             tc_base += perm[self.first_unroll : self.first_unroll + len(tc.get_reduce_axes())]
 
@@ -516,7 +504,7 @@ class Kernel:
             tc_sort = [dim for _, dim in sorted(zip(swizzle, tc_base))]
 
             # replace tensor core dimensions with swizzled ones
-            perm[self.first_local : self.first_local + len(tc.get_local_axes())] = tc_sort[: len(tc.get_local_axes())]
+            perm[self.global_dims : self.global_dims + len(tc.get_local_axes())] = tc_sort[: len(tc.get_local_axes())]
             perm[self.first_upcast : self.first_upcast + len(tc.get_upcast_axes())] = tc_sort[len(tc.get_local_axes()) : -len(tc.get_reduce_axes())]
             perm[self.first_unroll : self.first_unroll + len(tc.get_reduce_axes())] = tc_sort[- len(tc.get_reduce_axes()) :]
 
