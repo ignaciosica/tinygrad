@@ -9,6 +9,7 @@ from tinygrad.renderer import Renderer, ProgramSpec, Estimates
 from tinygrad.engine.schedule import ScheduleItem
 from tinygrad.codegen import full_rewrite
 from tinygrad.codegen.opt.kernel import Opt
+from tinygrad.dtype import dtypes, PtrDType
 
 # **************** Program Creation ****************
 
@@ -214,6 +215,24 @@ capturing: list = []  # put classes with an add method in here
 def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=None, do_update_stats=True):
   for si, ei in lower_schedule(schedule):
     if len(capturing) and CAPTURING: capturing[0].add(ei)
+    if getenv("VALIDATE_WITH_DOUBLE") and si.ast.op is Ops.SINK:
+      import numpy as np
+
+      nb: tuple[Buffer, ...] = tuple(Buffer("CPU", b.size, dtypes.double if dtypes.is_float(b.dtype) else b.dtype) for b in si.bufs)
+      for double_b, gpu_b in zip(nb, si.bufs):
+        if gpu_b.is_allocated():
+          double_b.ensure_allocated().copyin(memoryview(gpu_b.numpy().astype(np.float64)))
+
+      # run on GPU
+      ei.run(var_vals, do_update_stats=do_update_stats)
+      casting_pm = PatternMatcher([(UPat(GroupOp.All, name="x"), cast_to_double)])
+
+      double_ast = graph_rewrite(si.ast, casting_pm, name="VALIDATE_WITH_DOUBLE")
+
+      # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
+      with Context(NOOPT=1):
+        lower_schedule_item(ScheduleItem(double_ast, nb, si.metadata, si.fixedvars)).run(var_vals, do_update_stats=do_update_stats)
+      np.testing.assert_allclose(si.bufs[0].numpy(), nb[0].numpy())
     if VALIDATE_WITH_CPU and si.ast.op is Ops.SINK:
       # copy in allocated buffers from the GPU
       nb: tuple[Buffer, ...] = tuple(Buffer("CPU", b.size, b.dtype) for b in si.bufs)
@@ -230,3 +249,8 @@ def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=
     else:
       ei.run(var_vals, do_update_stats=do_update_stats)
 
+def cast_to_double(x:UOp) -> UOp | None:
+  if x.dtype.base in dtypes.floats and x.dtype.base is not dtypes.double:
+    if isinstance(x.dtype, PtrDType): return x.replace(dtype=dtypes.double.ptr(x.dtype.size))
+    return x.replace(dtype=dtypes.double)
+  return None
