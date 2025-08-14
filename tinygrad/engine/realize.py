@@ -215,30 +215,31 @@ capturing: list = []  # put classes with an add method in here
 def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=None, do_update_stats=True):
   for si, ei in lower_schedule(schedule):
     if len(capturing) and CAPTURING: capturing[0].add(ei)
-    if VALIDATE_WITH_CPU and si.ast.op is Ops.SINK:
-      import numpy as np
 
-      use_double = getenv("VALIDATE_WITH_DOUBLE")
+    # Always run on the primary device (e.g., GPU).
+    ei.run(var_vals, do_update_stats=do_update_stats)
 
-      # copy in allocated buffers from the GPU
-      nb: tuple[Buffer, ...] = tuple(Buffer("CPU", b.size, dtypes.double if dtypes.is_float(b.dtype) and use_double else b.dtype) for b in si.bufs)
-      for cpu_b, gpu_b in zip(nb, si.bufs):
-        source_buffer = memoryview(gpu_b.numpy().astype(np.float64)) if dtypes.is_float(gpu_b.dtype) and use_double else gpu_b.as_buffer()
-        if gpu_b.is_allocated():
-          cpu_b.ensure_allocated().copyin(source_buffer)
+    # Optionally, validate against a CPU execution.
+    if not (VALIDATE_WITH_CPU and si.ast.op is Ops.SINK): continue
 
-      # run on GPU
-      ei.run(var_vals, do_update_stats=do_update_stats)
+    import numpy as np
+    use_double = getenv("VALIDATE_WITH_DOUBLE")
 
-      # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
-      casting_pm = PatternMatcher([(UPat(GroupOp.All, name="x"), cast_to_double)])
-      ast = graph_rewrite(si.ast, casting_pm) if use_double else si.ast
-      lower_schedule_item(ScheduleItem(ast, nb, si.metadata, si.fixedvars)).run(var_vals, do_update_stats=do_update_stats)
-      np.testing.assert_allclose(si.bufs[0].numpy(), nb[0].numpy(), rtol=1e-3, atol=1e-3)
-    else:
-      ei.run(var_vals, do_update_stats=do_update_stats)
+    # Create CPU buffers and copy input data from the primary device.
+    cpu_buffers = tuple(Buffer("CPU", b.size, dtypes.double if dtypes.is_float(b.dtype) and use_double else b.dtype) for b in si.bufs)
+    for cpu_b, gpu_b in zip(cpu_buffers, si.bufs):
+      if not gpu_b.is_allocated(): continue
+      mv = memoryview(gpu_b.numpy().astype(np.float64)) if dtypes.is_float(gpu_b.dtype) and use_double else gpu_b.as_buffer()
+      cpu_b.ensure_allocated().copyin(mv)
+
+    # Prepare and run the kernel on the CPU.
+    ast = graph_rewrite(si.ast, PatternMatcher([(UPat(GroupOp.All, name="x"), cast_to_double)])) if use_double else si.ast
+    cpu_si = ScheduleItem(ast, cpu_buffers, si.metadata, si.fixedvars)
+    lower_schedule_item(cpu_si).run(var_vals, do_update_stats=False) # Stats already updated by primary run.
+
+    # Compare the output buffers.
+    np.testing.assert_allclose(si.bufs[0].numpy(), cpu_buffers[0].numpy(), rtol=1e-3, atol=1e-3)
 
 def cast_to_double(x: UOp) -> UOp | None:
-  if x.dtype.base not in dtypes.floats or x.dtype.base is dtypes.double:
-    return None
+  if x.dtype.base not in dtypes.floats or x.dtype.base is dtypes.double: return None
   return x.replace(dtype=dtypes.double.ptr(x.dtype.size) if isinstance(x.dtype, PtrDType) else dtypes.double)
