@@ -217,13 +217,15 @@ def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=
     if len(capturing) and CAPTURING: capturing[0].add(ei)
     if VALIDATE_WITH_CPU and si.ast.op is Ops.SINK:
       import numpy as np
+
       use_double = getenv("VALIDATE_WITH_DOUBLE")
 
       # copy in allocated buffers from the GPU
       nb: tuple[Buffer, ...] = tuple(Buffer("CPU", b.size, dtypes.double if dtypes.is_float(b.dtype) and use_double else b.dtype) for b in si.bufs)
       for cpu_b, gpu_b in zip(nb, si.bufs):
         source_buffer = memoryview(gpu_b.numpy().astype(np.float64)) if dtypes.is_float(gpu_b.dtype) and use_double else gpu_b.as_buffer()
-        if gpu_b.is_allocated(): cpu_b.ensure_allocated().copyin(source_buffer)
+        if gpu_b.is_allocated():
+          cpu_b.ensure_allocated().copyin(source_buffer)
 
       # run on GPU
       ei.run(var_vals, do_update_stats=do_update_stats)
@@ -236,6 +238,7 @@ def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=
     else:
       ei.run(var_vals, do_update_stats=do_update_stats)
 
-def cast_to_double(x:UOp) -> UOp | None:
-  if x.dtype.base not in dtypes.floats or x.dtype.base is dtypes.double: return None
+def cast_to_double(x: UOp) -> UOp | None:
+  if x.dtype.base not in dtypes.floats or x.dtype.base is dtypes.double:
+    return None
   return x.replace(dtype=dtypes.double.ptr(x.dtype.size) if isinstance(x.dtype, PtrDType) else dtypes.double)
