@@ -222,9 +222,9 @@ def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=
       # copy in allocated buffers from the GPU
       nb: tuple[Buffer, ...] = tuple(Buffer("CPU", b.size, dtypes.double if dtypes.is_float(b.dtype) and use_double else b.dtype) for b in si.bufs)
       for cpu_b, gpu_b in zip(nb, si.bufs):
-        if not gpu_b.is_allocated(): continue
-        mv = memoryview(gpu_b.numpy().astype(np.float64)) if dtypes.is_float(gpu_b.dtype) and use_double else gpu_b.as_buffer()
-        cpu_b.ensure_allocated().copyin(mv)
+        if gpu_b.is_allocated():
+          mv = memoryview(gpu_b.numpy().astype(np.float64)) if dtypes.is_float(gpu_b.dtype) and use_double else gpu_b.as_buffer()
+          cpu_b.ensure_allocated().copyin(mv)
 
       # run on GPU
       ei.run(var_vals, do_update_stats=do_update_stats)
