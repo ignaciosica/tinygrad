@@ -3,12 +3,13 @@ import time, pprint
 from dataclasses import dataclass, replace, field
 from tinygrad.helpers import all_same, colored, DEBUG, GlobalCounters, ansilen, BEAM, NOOPT, all_int, CAPTURING, Metadata, TRACEMETA, TracingKey
 from tinygrad.helpers import DEVECTORIZE, time_to_str, VALIDATE_WITH_CPU, getenv, cpu_profile
-from tinygrad.uop.ops import Ops, PatternMatcher, UOp, UPat, Variable, sym_infer, graph_rewrite, print_uops, track_rewrites, KernelInfo
+from tinygrad.uop.ops import Ops, PatternMatcher, UOp, UPat, Variable, sym_infer, graph_rewrite, print_uops, track_rewrites, KernelInfo, GroupOp
 from tinygrad.device import Device, Buffer
 from tinygrad.renderer import Renderer, ProgramSpec, Estimates
 from tinygrad.engine.schedule import ScheduleItem
 from tinygrad.codegen import full_rewrite
 from tinygrad.codegen.opt.kernel import Opt
+from tinygrad.dtype import dtypes, PtrDType
 
 # **************** Program Creation ****************
 
@@ -195,18 +196,25 @@ def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=
   for si, ei in lower_schedule(schedule):
     if len(capturing) and CAPTURING: capturing[0].add(ei)
     if VALIDATE_WITH_CPU and si.ast.op is Ops.SINK:
+      import numpy as np
+      use_double = getenv("VALIDATE_WITH_DOUBLE")
+
       # copy in allocated buffers from the GPU
-      nb: tuple[Buffer, ...] = tuple(Buffer("CPU", b.size, b.dtype) for b in si.bufs)
+      nb: tuple[Buffer, ...] = tuple(Buffer("CPU", b.size, dtypes.double if dtypes.is_float(b.dtype) and use_double else b.dtype) for b in si.bufs)
       for cpu_b, gpu_b in zip(nb, si.bufs):
-        if gpu_b.is_allocated(): cpu_b.ensure_allocated().copyin(gpu_b.as_buffer())
+        if gpu_b.is_allocated():
+          mv = memoryview(gpu_b.numpy().astype(np.float64)) if dtypes.is_float(gpu_b.dtype) and use_double else gpu_b.as_buffer()
+          cpu_b.ensure_allocated().copyin(mv)
 
       # run on GPU
       ei.run(var_vals, do_update_stats=do_update_stats)
 
       # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
-      lower_schedule_item(ScheduleItem(si.ast, nb, si.metadata, si.fixedvars)).run(var_vals, do_update_stats=do_update_stats)
-      import numpy as np
+      ast = graph_rewrite(si.ast, PatternMatcher([(UPat(GroupOp.All, name="x"), cast_to_double)])) if use_double else si.ast
+      lower_schedule_item(ScheduleItem(ast, nb, si.metadata, si.fixedvars)).run(var_vals, do_update_stats=do_update_stats)
       np.testing.assert_allclose(si.bufs[0].numpy(), nb[0].numpy(), rtol=1e-3, atol=1e-3)
-    else:
-      ei.run(var_vals, do_update_stats=do_update_stats)
+    else: ei.run(var_vals, do_update_stats=do_update_stats)
 
+def cast_to_double(x: UOp) -> UOp | None:
+  if x.dtype.base not in dtypes.floats or x.dtype.base is dtypes.double: return None
+  return x.replace(dtype=dtypes.double.ptr(x.dtype.size) if isinstance(x.dtype, PtrDType) else dtypes.double)
