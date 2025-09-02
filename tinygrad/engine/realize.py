@@ -9,7 +9,7 @@ from tinygrad.renderer import Renderer, ProgramSpec, Estimates
 from tinygrad.engine.schedule import ScheduleItem
 from tinygrad.codegen import full_rewrite
 from tinygrad.codegen.opt.kernel import Opt
-from tinygrad.dtype import dtypes, PtrDType
+from tinygrad.dtype import dtypes, PtrDType, _to_np_dtype
 
 # **************** Program Creation ****************
 
@@ -212,29 +212,31 @@ def lower_schedule(schedule:list[ScheduleItem]) -> Generator[tuple[ScheduleItem,
 
 capturing: list = []  # put classes with an add method in here
 
-def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=None, do_update_stats=True):
+def run_schedule(schedule: list[ScheduleItem], var_vals: dict[Variable, int] | None = None, do_update_stats=True):
   for si, ei in lower_schedule(schedule):
     if len(capturing) and CAPTURING: capturing[0].add(ei)
     if VALIDATE_WITH_CPU and si.ast.op is Ops.SINK:
-      import numpy as np
-      use_double = getenv("VALIDATE_WITH_DOUBLE")
-
       # copy in allocated buffers from the GPU
-      nb: tuple[Buffer, ...] = tuple(Buffer("CPU", b.size, dtypes.double if dtypes.is_float(b.dtype) and use_double else b.dtype) for b in si.bufs)
-      for cpu_b, gpu_b in zip(nb, si.bufs):
+      nb: list[Buffer] = []
+      for gpu_b in si.bufs:
+        target_dtype = dtypes.double if dtypes.is_float(gpu_b.dtype) else gpu_b.dtype
+        nb.append(cpu_b := Buffer("CPU", gpu_b.size, target_dtype).ensure_allocated())
         if gpu_b.is_allocated():
-          mv = memoryview(gpu_b.numpy().astype(np.float64)) if dtypes.is_float(gpu_b.dtype) and use_double else gpu_b.as_buffer()
-          cpu_b.ensure_allocated().copyin(mv)
+          cpu_b.copyin(memoryview(gpu_b.numpy().astype(_to_np_dtype(target_dtype))))
 
       # run on GPU
       ei.run(var_vals, do_update_stats=do_update_stats)
 
       # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
-      ast = graph_rewrite(si.ast, PatternMatcher([(UPat(GroupOp.All, name="x"), cast_to_double)])) if use_double else si.ast
-      lower_schedule_item(ScheduleItem(ast, nb, si.metadata, si.fixedvars)).run(var_vals, do_update_stats=do_update_stats)
+      ast = graph_rewrite(si.ast, PatternMatcher([(UPat(GroupOp.All, name="x"), cast_to_double)]))
+      lower_schedule_item(ScheduleItem(ast, tuple(nb), si.metadata, si.fixedvars)).run(var_vals, do_update_stats=do_update_stats)
+      import numpy as np
       np.testing.assert_allclose(si.bufs[0].numpy(), nb[0].numpy(), rtol=1e-3, atol=1e-3)
-    else: ei.run(var_vals, do_update_stats=do_update_stats)
+    else:
+      ei.run(var_vals, do_update_stats=do_update_stats)
+
 
 def cast_to_double(x: UOp) -> UOp | None:
-  if x.dtype.base not in dtypes.floats or x.dtype.base is dtypes.double: return None
+  if not dtypes.is_float(x.dtype.base) or x.dtype.base is dtypes.double:
+    return None
   return x.replace(dtype=dtypes.double.ptr(x.dtype.size) if isinstance(x.dtype, PtrDType) else dtypes.double)
