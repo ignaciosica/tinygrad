@@ -217,25 +217,23 @@ def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=
     if len(capturing) and CAPTURING: capturing[0].add(ei)
     if VALIDATE_WITH_CPU and si.ast.op is Ops.SINK:
       # copy in allocated buffers from the GPU
-      nb: list[Buffer] = []
-      for gpu_b in si.bufs:
-        target_dtype = dtypes.double if dtypes.is_float(gpu_b.dtype) else gpu_b.dtype
-        nb.append(cpu_b := Buffer("CPU", gpu_b.size, target_dtype).ensure_allocated())
-        if gpu_b.is_allocated():
-          cpu_b.copyin(memoryview(gpu_b.numpy().astype(_to_np_dtype(target_dtype))))
+      nb: tuple[Buffer, ...] = tuple(Buffer("CPU", b.size, b.dtype) for b in si.bufs)
+      for cpu_b, gpu_b in zip(nb, si.bufs):
+        if gpu_b.is_allocated(): cpu_b.ensure_allocated().copyin(gpu_b.as_buffer())
 
       # run on GPU
       ei.run(var_vals, do_update_stats=do_update_stats)
 
-      # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
-      ast = graph_rewrite(si.ast, PatternMatcher([(UPat(GroupOp.All, name="x"), cast_to_double)]))
-      lower_schedule_item(ScheduleItem(ast, tuple(nb), si.metadata, si.fixedvars)).run(var_vals, do_update_stats=do_update_stats)
+      pm_cast = PatternMatcher([(UPat((*GroupOp.ALU, Ops.REDUCE_AXIS), name="alu"), cast_to_double)])
+      cpu_si = ScheduleItem(graph_rewrite(si.ast, pm_cast), nb, si.metadata, si.fixedvars)
+      lower_schedule_item(cpu_si).run(var_vals, do_update_stats=do_update_stats)
       import numpy as np
+      # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
       np.testing.assert_allclose(si.bufs[0].numpy(), nb[0].numpy(), rtol=1e-3, atol=1e-3)
     else:
       ei.run(var_vals, do_update_stats=do_update_stats)
 
-def cast_to_double(x: UOp) -> UOp | None:
-  if not dtypes.is_float(x.dtype.base) or x.dtype.base is dtypes.double:
-    return None
-  return x.replace(dtype=dtypes.double.ptr(x.dtype.size) if isinstance(x.dtype, PtrDType) else dtypes.double)
+# NOTE: alus have always base and scalar dtype
+def cast_to_double(alu: UOp) -> UOp | None:
+  if alu.dtype not in dtypes.floats or alu.dtype is dtypes.double: return None
+  return alu.replace(dtype=dtypes.double, src=tuple(x.cast(dtypes.double) if x.dtype in dtypes.floats else x for x in alu.src)).cast(alu.dtype)
