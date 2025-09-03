@@ -3,12 +3,13 @@ import time, pprint, random, itertools, math
 from dataclasses import dataclass, replace, field
 from tinygrad.helpers import all_same, colored, DEBUG, GlobalCounters, ansilen, BEAM, NOOPT, all_int, CAPTURING, Metadata, TRACEMETA, TracingKey
 from tinygrad.helpers import DEVECTORIZE, time_to_str, VALIDATE_WITH_CPU, getenv, cpu_profile, PROFILE, ProfilePointEvent, cpu_events, prod
-from tinygrad.uop.ops import Ops, PatternMatcher, UOp, UPat, Variable, sym_infer, graph_rewrite, print_uops, track_rewrites, KernelInfo, pyrender
+from tinygrad.uop.ops import Ops, PatternMatcher, UOp, UPat, Variable, sym_infer, graph_rewrite, print_uops, track_rewrites, KernelInfo, pyrender, GroupOp
 from tinygrad.device import Device, Buffer
 from tinygrad.renderer import Renderer, ProgramSpec, Estimates
 from tinygrad.engine.schedule import ScheduleItem
 from tinygrad.codegen import full_rewrite
 from tinygrad.codegen.opt.kernel import Opt
+from tinygrad.dtype import dtypes
 
 # **************** Program Creation ****************
 
@@ -224,9 +225,15 @@ def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=
       ei.run(var_vals, do_update_stats=do_update_stats)
 
       # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
-      lower_schedule_item(ScheduleItem(si.ast, nb, si.metadata, si.fixedvars)).run(var_vals, do_update_stats=do_update_stats)
+      pm_cast = PatternMatcher([(UPat((*GroupOp.ALU, Ops.REDUCE_AXIS), name="alu"), cast_to_double)])
+      cpu_si = ScheduleItem(graph_rewrite(si.ast, pm_cast), nb, si.metadata, si.fixedvars)
+      lower_schedule_item(cpu_si).run(var_vals, do_update_stats=do_update_stats)
       import numpy as np
       np.testing.assert_allclose(si.bufs[0].numpy(), nb[0].numpy(), rtol=1e-3, atol=1e-3)
     else:
       ei.run(var_vals, do_update_stats=do_update_stats)
 
+# NOTE: alus have always base and scalar dtype
+def cast_to_double(alu: UOp) -> UOp | None:
+  if alu.dtype not in dtypes.floats or alu.dtype is dtypes.double: return None
+  return alu.replace(dtype=dtypes.double, src=tuple(x.cast(dtypes.double) if x.dtype in dtypes.floats else x for x in alu.src)).cast(alu.dtype)
