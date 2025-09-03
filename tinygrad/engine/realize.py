@@ -9,7 +9,7 @@ from tinygrad.renderer import Renderer, ProgramSpec, Estimates
 from tinygrad.engine.schedule import ScheduleItem
 from tinygrad.codegen import full_rewrite
 from tinygrad.codegen.opt.kernel import Opt
-from tinygrad.dtype import dtypes, PtrDType, _to_np_dtype
+from tinygrad.dtype import dtypes
 
 # **************** Program Creation ****************
 
@@ -224,11 +224,11 @@ def run_schedule(schedule:list[ScheduleItem], var_vals:dict[Variable, int]|None=
       # run on GPU
       ei.run(var_vals, do_update_stats=do_update_stats)
 
+      # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
       pm_cast = PatternMatcher([(UPat((*GroupOp.ALU, Ops.REDUCE_AXIS), name="alu"), cast_to_double)])
       cpu_si = ScheduleItem(graph_rewrite(si.ast, pm_cast), nb, si.metadata, si.fixedvars)
       lower_schedule_item(cpu_si).run(var_vals, do_update_stats=do_update_stats)
       import numpy as np
-      # validate the output buffers match (NOTE: this is assuming the output is buffer 0)
       np.testing.assert_allclose(si.bufs[0].numpy(), nb[0].numpy(), rtol=1e-3, atol=1e-3)
     else:
       ei.run(var_vals, do_update_stats=do_update_stats)
