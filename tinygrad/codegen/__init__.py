@@ -70,6 +70,8 @@ def _get_rewrites_for_renderer(opts:Renderer, optimize:bool, linearizer:bool, _Q
     ret.append(RewriteStep(pm_postrange_opt, ctx=lambda _: opts, name="post optimize ast"))
 
   # ** expander (expand_rewrite) **
+  ret.append(RewriteStep(sym, name="postopt symbolic"))
+
   # expand
   ret.append(RewriteStep(sym+pm_pre_expander+expander, name="expander"))
 
