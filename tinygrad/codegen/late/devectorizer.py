@@ -286,7 +286,7 @@ def reduce_to_acc(ctx:ReduceContext, red:UOp):
     stored_ranges = flatten([x.src[2:] for x in topo if x.op is Ops.STORE])
     input_ranges = tuple([x for x in topo if x.op is Ops.RANGE and x not in reduce_range and x not in stored_ranges])
     identity = red.const(red.dtype, identity_element(red.arg, red.dtype.scalar()))
-    acc = UOp(Ops.DEFINE_REG, red.dtype.ptr(size=1, addrspace=AddrSpace.REG), arg=(ctx.acc_num,)).index(UOp.const(dtypes.int, 0))
+    acc = UOp(Ops.DEFINE_REG, red.dtype.ptr(size=1, addrspace=AddrSpace.REG), arg=ctx.acc_num).index(UOp.const(dtypes.int, 0))
     do_store = acc.store(identity, UOp(Ops.NOOP, src=input_ranges)) if len(input_ranges) else acc.store(identity)
     lst = [acc.load(do_store, *reduce_range)] + lst  # put acc as the first element
     ctx.acc_num += 1
