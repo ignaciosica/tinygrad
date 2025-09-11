@@ -958,7 +958,7 @@ jobs:
           python -c "from tinygrad import Device; assert Device.DEFAULT == {'LLVM':'CPU'}.get(x:='${{ matrix.backend }}'.upper(), x), Device.DEFAULT"
           DEBUG=4 python3 test/test_tiny.py TestTiny.test_plus
       - name: Run pytest (${{ matrix.backend }})
-        run: python3 -m pytest -n=logical test/ --ignore=test/models --ignore=test/unit --durations=20
+        run: python3 -m pytest -n=12 test/ --ignore=test/models --ignore=test/unit --durations=20
       - name: Run process replay tests
         uses: ./.github/actions/process-replay
       - name: Run macOS-specific unit test
