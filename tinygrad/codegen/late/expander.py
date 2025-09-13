@@ -99,24 +99,6 @@ expander = PatternMatcher([
     lambda ex,x,y: UOp(Ops.UNROLL, ex.dtype, tuple((x+y).gep(i) for i in range(256 if AMX else 8)), ex.arg)),
 ])
 
-def create_gate(root:UOp) -> UOp|None:
-  @functools.cache
-  def _gate_srcs(u:UOp, gate:UOp) -> UOp:
-    if u.op is Ops.BARRIER: return u
-    if u.op is Ops.LOAD and u.src[-1].op is Ops.BARRIER:
-      return UOp(u.op, u.dtype, u.src[:-1]+(UOp(Ops.IF, src=(gate, u.src[-1])),), arg=u.arg)
-    return u if (replace_source:=tuple(_gate_srcs(x, gate) for x in u.src)) == u.src else UOp(u.op, u.dtype, replace_source, u.arg)
-  idx = root.src[0]
-  if idx.op is Ops.CAST: idx = idx.src[0]
-  return None if idx.op is not Ops.INDEX or len(idx.src) == 2 or (ret:=_gate_srcs(root, idx.src[2])) is root else ret
-
-migrate_indexing = PatternMatcher([
-  # create gate MUST BE BEFORE expander
-  (UPat(Ops.STORE, name="root"), create_gate),
-])
-
-# ****
-
 def fix_reduce_unroll(x:UOp):
   reduce_range, reduce_expand = partition(x.src[1:], lambda y: y.op is Ops.RANGE)
   if len(reduce_expand) == 0: return None
