@@ -3,28 +3,44 @@ from typing import TypeAlias, TYPE_CHECKING, Self
 from tinygrad.uop import Ops
 from tinygrad.dtype import dtypes, ConstType
 from tinygrad.helpers import prod, argfix
+
 if TYPE_CHECKING:
   from tinygrad.uop.ops import UOp
-  sint:TypeAlias = UOp|int
+
+  sint: TypeAlias = UOp | int
+
 
 class MathMixin:
   # required to implement
-  def alu(self, op:Ops, *src:Self) -> Self: raise NotImplementedError
-  def const_like(self, b:ConstType) -> Self: raise NotImplementedError
+  def alu(self, op: Ops, *src: Self) -> Self:
+    raise NotImplementedError
+
+  def const_like(self, b: ConstType) -> Self:
+    raise NotImplementedError
 
   # great functions you get!
-  def ufix(self, x:Self|ConstType) -> Self: return self.const_like(x) if not isinstance(x, MathMixin) else x
-  def _binop(self, op:Ops, x:Self|ConstType, reverse:bool) -> Self:
+  def ufix(self, x: Self | ConstType) -> Self:
+    return self.const_like(x) if not isinstance(x, MathMixin) else x
+
+  def _binop(self, op: Ops, x: Self | ConstType, reverse: bool) -> Self:
     return self.ufix(x).alu(op, self) if reverse else self.alu(op, self.ufix(x))
-  def logical_not(self): return self.ne(True)
+
+  def logical_not(self):
+    return self.ne(True)
+
   def neg(self):
-    if (dtype:=getattr(self, 'dtype')) is None: raise TypeError(f"MathTraits __neg__ requires a dtype, {self=}")
-    return self.logical_not() if dtype.scalar() == dtypes.bool else self*(-1)
+    if (dtype := getattr(self, "dtype")) is None:
+      raise TypeError(f"MathTraits __neg__ requires a dtype, {self=}")
+    return self.logical_not() if dtype.scalar() == dtypes.bool else self * (-1)
+
   def _check_dtype(self):
-    if (dtype:=getattr(self, 'dtype')) is not None:
-      if isinstance(dtype, tuple): dtype = dtype[0]
-      if not (dtypes.is_bool(dtype) or dtypes.is_int(dtype)): raise RuntimeError(f"{dtype} is not supported")
-  def add(self, x:Self|ConstType, reverse:bool=False):
+    if (dtype := getattr(self, "dtype")) is not None:
+      if isinstance(dtype, tuple):
+        dtype = dtype[0]
+      if not (dtypes.is_bool(dtype) or dtypes.is_int(dtype)):
+        raise RuntimeError(f"{dtype} is not supported")
+
+  def add(self, x: Self | ConstType, reverse: bool = False):
     """
     Adds `self` and `x`.
     Equivalent to `self + x`.
@@ -42,7 +58,8 @@ class MathMixin:
     ```
     """
     return self._binop(Ops.ADD, x, reverse)
-  def mul(self, x:Self|ConstType, reverse:bool=False):
+
+  def mul(self, x: Self | ConstType, reverse: bool = False):
     """
     Multiplies `self` and `x`.
     Equivalent to `self * x`.
@@ -61,7 +78,8 @@ class MathMixin:
     ```
     """
     return self._binop(Ops.MUL, x, reverse)
-  def bitwise_and(self, x:Self|ConstType, reverse:bool=False):
+
+  def bitwise_and(self, x: Self | ConstType, reverse: bool = False):
     """
     Computes the bitwise AND of `self` and `x`.
     Equivalent to `self & x`.
@@ -75,7 +93,8 @@ class MathMixin:
     """
     self._check_dtype()
     return self._binop(Ops.AND, x, reverse)
-  def bitwise_or(self, x:Self|ConstType, reverse:bool=False):
+
+  def bitwise_or(self, x: Self | ConstType, reverse: bool = False):
     """
     Computes the bitwise OR of `self` and `x`.
     Equivalent to `self | x`.
@@ -89,7 +108,8 @@ class MathMixin:
     """
     self._check_dtype()
     return self._binop(Ops.OR, x, reverse)
-  def bitwise_xor(self, x:Self|ConstType, reverse:bool=False):
+
+  def bitwise_xor(self, x: Self | ConstType, reverse: bool = False):
     """
     Computes bitwise xor of `self` and `x`.
     Equivalent to `self ^ x`.
@@ -104,7 +124,8 @@ class MathMixin:
     """
     self._check_dtype()
     return self._binop(Ops.XOR, x, reverse)
-  def idiv(self, x:Self|ConstType, reverse:bool=False):
+
+  def idiv(self, x: Self | ConstType, reverse: bool = False):
     """
     Divides `self` by `x`.
     Equivalent to `self // x`.
@@ -116,71 +137,163 @@ class MathMixin:
     ```
     """
     return self._binop(Ops.IDIV, x, reverse)
-  def mod(self, x:Self|ConstType, reverse:bool=False): return self._binop(Ops.MOD, x, reverse)
-  def sub(self, x:Self|ConstType, reverse:bool=False): return self.ufix(x).alu(Ops.ADD, -self) if reverse else self.alu(Ops.ADD, self.ufix(-x))
-  def div(self, x:Self|ConstType, reverse:bool=False):
-    return (self.ufix(x)*self.alu(Ops.RECIPROCAL)) if reverse else (self*self.ufix(x).alu(Ops.RECIPROCAL))
 
-  def __neg__(self): return self.neg()
+  def mod(self, x: Self | ConstType, reverse: bool = False):
+    return self._binop(Ops.MOD, x, reverse)
 
-  def __add__(self, x:Self|ConstType): return self.add(x)
-  def __sub__(self, x:Self|ConstType): return self.sub(x)
-  def __mul__(self, x:Self|ConstType): return self.mul(x)
-  def __truediv__(self, x:Self|ConstType): return self.div(x)
-  def __floordiv__(self, x:Self|ConstType): return self.idiv(x)  # TODO: idiv is trunc div, not floordiv
-  def __mod__(self, x:Self|ConstType): return self.mod(x)
-  def __and__(self, x:Self|ConstType): return self.bitwise_and(x)
-  def __or__(self, x:Self|ConstType): return self.bitwise_or(x)
-  def __xor__(self, x:Self|ConstType): return self.bitwise_xor(x)
+  def sub(self, x: Self | ConstType, reverse: bool = False):
+    return self.ufix(x).alu(Ops.ADD, -self) if reverse else self.alu(Ops.ADD, self.ufix(-x))
 
-  def __radd__(self, x:Self|ConstType): return self.add(x, True)
-  def __rsub__(self, x:Self|ConstType): return self.sub(x, True)
-  def __rmul__(self, x:Self|ConstType): return self.mul(x, True)
-  def __rtruediv__(self, x:Self|ConstType): return self.div(x, True)
-  def __rfloordiv__(self, x:Self|ConstType): return self.idiv(x, True)
-  def __rand__(self, x:Self|ConstType): return self.bitwise_and(x, True)
-  def __ror__(self, x:Self|ConstType): return self.bitwise_or(x, True)
-  def __rxor__(self, x:Self|ConstType): return self.bitwise_xor(x, True)
-  def __rmod__(self, x:Self|ConstType): return self.mod(x, True)
+  def div(self, x: Self | ConstType, reverse: bool = False):
+    return (self.ufix(x) * self.alu(Ops.RECIPROCAL)) if reverse else (self * self.ufix(x).alu(Ops.RECIPROCAL))
 
-  def __lt__(self, x:Self|ConstType): return self.alu(Ops.CMPLT, self.ufix(x))
-  def __gt__(self, x:Self|ConstType): return self.ufix(x).alu(Ops.CMPLT, self)
-  def __ge__(self, x:Self|ConstType): return (self < x).logical_not()
-  def __le__(self, x:Self|ConstType): return (self > x).logical_not()
+  def __neg__(self):
+    return self.neg()
 
-  def ne(self, x:Self|ConstType): return self.alu(Ops.CMPNE, self.ufix(x))
-  def eq(self, x:Self|ConstType): return self.ne(x).logical_not()
-  def __ne__(self, x:Self|ConstType): return self.ne(x)  # type: ignore[override]
+  def __add__(self, x: Self | ConstType):
+    return self.add(x)
+
+  def __sub__(self, x: Self | ConstType):
+    return self.sub(x)
+
+  def __mul__(self, x: Self | ConstType):
+    return self.mul(x)
+
+  def __truediv__(self, x: Self | ConstType):
+    return self.div(x)
+
+  def __floordiv__(self, x: Self | ConstType):
+    return self.idiv(x)  # TODO: idiv is trunc div, not floordiv
+
+  def __mod__(self, x: Self | ConstType):
+    return self.mod(x)
+
+  def __and__(self, x: Self | ConstType):
+    return self.bitwise_and(x)
+
+  def __or__(self, x: Self | ConstType):
+    return self.bitwise_or(x)
+
+  def __xor__(self, x: Self | ConstType):
+    return self.bitwise_xor(x)
+
+  def __radd__(self, x: Self | ConstType):
+    return self.add(x, True)
+
+  def __rsub__(self, x: Self | ConstType):
+    return self.sub(x, True)
+
+  def __rmul__(self, x: Self | ConstType):
+    return self.mul(x, True)
+
+  def __rtruediv__(self, x: Self | ConstType):
+    return self.div(x, True)
+
+  def __rfloordiv__(self, x: Self | ConstType):
+    return self.idiv(x, True)
+
+  def __rand__(self, x: Self | ConstType):
+    return self.bitwise_and(x, True)
+
+  def __ror__(self, x: Self | ConstType):
+    return self.bitwise_or(x, True)
+
+  def __rxor__(self, x: Self | ConstType):
+    return self.bitwise_xor(x, True)
+
+  def __rmod__(self, x: Self | ConstType):
+    return self.mod(x, True)
+
+  def __lt__(self, x: Self | ConstType):
+    return self.alu(Ops.CMPLT, self.ufix(x))
+
+  def __gt__(self, x: Self | ConstType):
+    return self.ufix(x).alu(Ops.CMPLT, self)
+
+  def __ge__(self, x: Self | ConstType):
+    return (self < x).logical_not()
+
+  def __le__(self, x: Self | ConstType):
+    return (self > x).logical_not()
+
+  def ne(self, x: Self | ConstType):
+    return self.alu(Ops.CMPNE, self.ufix(x))
+
+  def eq(self, x: Self | ConstType):
+    return self.ne(x).logical_not()
+
+  def __ne__(self, x: Self | ConstType):
+    return self.ne(x)  # type: ignore[override]
+
   # NOTE: __eq__ isn't overridden, and means the same thing as is by default
 
-  def lshift(self, x:Self|int, reverse:bool=False): return self._binop(Ops.SHL, x, reverse)
-  def rshift(self, x:Self|int, reverse:bool=False): return self._binop(Ops.SHR, x, reverse)
-  def __lshift__(self, x:Self|int): return self.lshift(x)
-  def __rshift__(self, x:Self|int): return self.rshift(x)
-  def __rlshift__(self, x:Self|int): return self.lshift(x, True)
-  def __rrshift__(self, x:Self|int): return self.rshift(x, True)
+  def lshift(self, x: Self | int, reverse: bool = False):
+    return self._binop(Ops.SHL, x, reverse)
 
-  def maximum(self, x:Self|ConstType): return self.alu(Ops.MAX, self.ufix(x))
-  def minimum(self, x:Self|ConstType): return -(-self).maximum(-x)
-  def where(self, x:Self|ConstType, y:Self|ConstType):
-    if isinstance(x, type(self)): return self.alu(Ops.WHERE, x, x.ufix(y))
-    if isinstance(y, type(self)): return self.alu(Ops.WHERE, y.ufix(x), y)
+  def rshift(self, x: Self | int, reverse: bool = False):
+    return self._binop(Ops.SHR, x, reverse)
+
+  def __lshift__(self, x: Self | int):
+    return self.lshift(x)
+
+  def __rshift__(self, x: Self | int):
+    return self.rshift(x)
+
+  def __rlshift__(self, x: Self | int):
+    return self.lshift(x, True)
+
+  def __rrshift__(self, x: Self | int):
+    return self.rshift(x, True)
+
+  def maximum(self, x: Self | ConstType):
+    return self.alu(Ops.MAX, self.ufix(x))
+
+  def minimum(self, x: Self | ConstType):
+    return -(-self).maximum(-x)
+
+  def where(self, x: Self | ConstType, y: Self | ConstType):
+    if isinstance(x, type(self)):
+      return self.alu(Ops.WHERE, x, x.ufix(y))
+    if isinstance(y, type(self)):
+      return self.alu(Ops.WHERE, y.ufix(x), y)
     raise RuntimeError("where needs at least one UOp arg")
-  def threefry(self, seed:Self): return self.alu(Ops.THREEFRY, seed)
-  def reciprocal(self): return self.alu(Ops.RECIPROCAL)
-  def trunc(self): return self.alu(Ops.TRUNC)
-  def sqrt(self): return self.alu(Ops.SQRT)
-  def sin(self): return self.alu(Ops.SIN)
-  def log2(self): return self.alu(Ops.LOG2)
-  def exp2(self): return self.alu(Ops.EXP2)
-  def pow(self, x:Self|ConstType): return self.alu(Ops.POW, self.ufix(x))
-  def __pow__(self, x:Self|ConstType): return self.pow(x)
+
+  def threefry(self, seed: Self):
+    return self.alu(Ops.THREEFRY, seed)
+
+  def reciprocal(self):
+    return self.alu(Ops.RECIPROCAL)
+
+  def trunc(self):
+    return self.alu(Ops.TRUNC)
+
+  def sqrt(self):
+    return self.alu(Ops.SQRT)
+
+  def sin(self):
+    return self.alu(Ops.SIN)
+
+  def log2(self):
+    return self.alu(Ops.LOG2)
+
+  def exp2(self):
+    return self.alu(Ops.EXP2)
+
+  def pow(self, x: Self | ConstType):
+    return self.alu(Ops.POW, self.ufix(x))
+
+  def __pow__(self, x: Self | ConstType):
+    return self.pow(x)
+
 
 class MovementMixin:
   # required to implement
-  def _mop(self, op:Ops, arg) -> Self: raise NotImplementedError
+  def _mop(self, op: Ops, arg) -> Self:
+    raise NotImplementedError
+
   @property
-  def shape(self) -> tuple["sint", ...]: raise NotImplementedError
+  def shape(self) -> tuple["sint", ...]:
+    raise NotImplementedError
 
   # great functions you get!
   @property
@@ -206,9 +319,10 @@ class MovementMixin:
     """
     return prod(self.shape)
 
-  def _resolve_dim(self, dim:int, *, extra:bool=False) -> int:
+  def _resolve_dim(self, dim: int, *, extra: bool = False) -> int:
     total = self.ndim + int(extra)
-    if not -max(1, total) <= dim <= max(1, total)-1: raise IndexError(f"{dim=} out of range {[-max(1, total), max(1, total)-1]}")
+    if not -max(1, total) <= dim <= max(1, total) - 1:
+      raise IndexError(f"{dim=} out of range {[-max(1, total), max(1, total) - 1]}")
     return dim + total if dim < 0 else dim
 
   def view(self, shape, *args) -> Self:
@@ -226,11 +340,14 @@ class MovementMixin:
     ```
     """
     # resolve None and args
-    new_shape = tuple([s if s is not None else self.shape[i] for i,s in enumerate(argfix(shape, *args))])
+    new_shape = tuple([s if s is not None else self.shape[i] for i, s in enumerate(argfix(shape, *args))])
     # resolve -1
-    if (c := new_shape.count(-1)) > 1: raise RuntimeError(f"only one dimension can be inferred using -1, getting {new_shape}")
-    if c: new_shape = tuple([-prod(self.shape) // prod(new_shape) if s == -1 else s for s in new_shape])
-    if prod(self.shape) != prod(new_shape): raise ValueError(f"size mismatch, can't reshape ({self.shape}) -> ({new_shape})")
+    if (c := new_shape.count(-1)) > 1:
+      raise RuntimeError(f"only one dimension can be inferred using -1, getting {new_shape}")
+    if c:
+      new_shape = tuple([-prod(self.shape) // prod(new_shape) if s == -1 else s for s in new_shape])
+    if prod(self.shape) != prod(new_shape):
+      raise ValueError(f"size mismatch, can't reshape ({self.shape}) -> ({new_shape})")
     return self._mop(Ops.RESHAPE, arg=new_shape) if new_shape != self.shape else self
 
   def flatten(self, start_dim=0, end_dim=-1) -> Self:
@@ -247,4 +364,4 @@ class MovementMixin:
     ```
     """
     start_dim, end_dim = self._resolve_dim(start_dim), self._resolve_dim(end_dim)
-    return self.reshape(self.shape[:start_dim] + (prod(self.shape[start_dim:end_dim+1]), ) + self.shape[end_dim+1:])
+    return self.reshape(self.shape[:start_dim] + (prod(self.shape[start_dim : end_dim + 1]),) + self.shape[end_dim + 1 :])
