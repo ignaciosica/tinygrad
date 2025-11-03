@@ -10,137 +10,137 @@ import ctypes, tinygrad.runtime.support.llvm as llvm_support
 
 
 class AsDictMixin:
-    import sys
-    if sys.version_info >= (3, 14): _layout_ = 'ms'
-    @classmethod
-    def as_dict(cls, self):
-        result = {}
-        if not isinstance(self, AsDictMixin):
-            # not a structure, assume it's already a python object
-            return self
-        if not hasattr(cls, "_fields_"):
-            return result
-        # sys.version_info >= (3, 5)
-        # for (field, *_) in cls._fields_:  # noqa
-        for field_tuple in cls._fields_:  # noqa
-            field = field_tuple[0]
-            if field.startswith('PADDING_'):
-                continue
-            value = getattr(self, field)
-            type_ = type(value)
-            if hasattr(value, "_length_") and hasattr(value, "_type_"):
-                # array
-                if not hasattr(type_, "as_dict"):
-                    value = [v for v in value]
-                else:
-                    type_ = type_._type_
-                    value = [type_.as_dict(v) for v in value]
-            elif hasattr(value, "contents") and hasattr(value, "_type_"):
-                # pointer
-                try:
-                    if not hasattr(type_, "as_dict"):
-                        value = value.contents
-                    else:
-                        type_ = type_._type_
-                        value = type_.as_dict(value.contents)
-                except ValueError:
-                    # nullptr
-                    value = None
-            elif isinstance(value, AsDictMixin):
-                # other structure
-                value = type_.as_dict(value)
-            result[field] = value
-        return result
+  import sys
+
+  if sys.version_info >= (3, 14):
+    _layout_ = "ms"
+
+  @classmethod
+  def as_dict(cls, self):
+    result = {}
+    if not isinstance(self, AsDictMixin):
+      # not a structure, assume it's already a python object
+      return self
+    if not hasattr(cls, "_fields_"):
+      return result
+    # sys.version_info >= (3, 5)
+    # for (field, *_) in cls._fields_:  # noqa
+    for field_tuple in cls._fields_:  # noqa
+      field = field_tuple[0]
+      if field.startswith("PADDING_"):
+        continue
+      value = getattr(self, field)
+      type_ = type(value)
+      if hasattr(value, "_length_") and hasattr(value, "_type_"):
+        # array
+        if not hasattr(type_, "as_dict"):
+          value = [v for v in value]
+        else:
+          type_ = type_._type_
+          value = [type_.as_dict(v) for v in value]
+      elif hasattr(value, "contents") and hasattr(value, "_type_"):
+        # pointer
+        try:
+          if not hasattr(type_, "as_dict"):
+            value = value.contents
+          else:
+            type_ = type_._type_
+            value = type_.as_dict(value.contents)
+        except ValueError:
+          # nullptr
+          value = None
+      elif isinstance(value, AsDictMixin):
+        # other structure
+        value = type_.as_dict(value)
+      result[field] = value
+    return result
 
 
 class Structure(ctypes.Structure, AsDictMixin):
+  def __init__(self, *args, **kwds):
+    # We don't want to use positional arguments fill PADDING_* fields
 
-    def __init__(self, *args, **kwds):
-        # We don't want to use positional arguments fill PADDING_* fields
+    args = dict(zip(self.__class__._field_names_(), args))
+    args.update(kwds)
+    super(Structure, self).__init__(**args)
 
-        args = dict(zip(self.__class__._field_names_(), args))
-        args.update(kwds)
-        super(Structure, self).__init__(**args)
+  @classmethod
+  def _field_names_(cls):
+    if hasattr(cls, "_fields_"):
+      return (f[0] for f in cls._fields_ if not f[0].startswith("PADDING"))
+    else:
+      return ()
 
-    @classmethod
-    def _field_names_(cls):
-        if hasattr(cls, '_fields_'):
-            return (f[0] for f in cls._fields_ if not f[0].startswith('PADDING'))
+  @classmethod
+  def get_type(cls, field):
+    for f in cls._fields_:
+      if f[0] == field:
+        return f[1]
+    return None
+
+  @classmethod
+  def bind(cls, bound_fields):
+    fields = {}
+    for name, type_ in cls._fields_:
+      if hasattr(type_, "restype"):
+        if name in bound_fields:
+          if bound_fields[name] is None:
+            fields[name] = type_()
+          else:
+            # use a closure to capture the callback from the loop scope
+            fields[name] = type_(
+              (lambda callback: lambda *args: callback(*args))(bound_fields[name])
+            )
+          del bound_fields[name]
         else:
-            return ()
-
-    @classmethod
-    def get_type(cls, field):
-        for f in cls._fields_:
-            if f[0] == field:
-                return f[1]
-        return None
-
-    @classmethod
-    def bind(cls, bound_fields):
-        fields = {}
-        for name, type_ in cls._fields_:
-            if hasattr(type_, "restype"):
-                if name in bound_fields:
-                    if bound_fields[name] is None:
-                        fields[name] = type_()
-                    else:
-                        # use a closure to capture the callback from the loop scope
-                        fields[name] = (
-                            type_((lambda callback: lambda *args: callback(*args))(
-                                bound_fields[name]))
-                        )
-                    del bound_fields[name]
-                else:
-                    # default callback implementation (does nothing)
-                    try:
-                        default_ = type_(0).restype().value
-                    except TypeError:
-                        default_ = None
-                    fields[name] = type_((
-                        lambda default_: lambda *args: default_)(default_))
-            else:
-                # not a callback function, use default initialization
-                if name in bound_fields:
-                    fields[name] = bound_fields[name]
-                    del bound_fields[name]
-                else:
-                    fields[name] = type_()
-        if len(bound_fields) != 0:
-            raise ValueError(
-                "Cannot bind the following unknown callback(s) {}.{}".format(
-                    cls.__name__, bound_fields.keys()
-            ))
-        return cls(**fields)
+          # default callback implementation (does nothing)
+          try:
+            default_ = type_(0).restype().value
+          except TypeError:
+            default_ = None
+          fields[name] = type_((lambda default_: lambda *args: default_)(default_))
+      else:
+        # not a callback function, use default initialization
+        if name in bound_fields:
+          fields[name] = bound_fields[name]
+          del bound_fields[name]
+        else:
+          fields[name] = type_()
+    if len(bound_fields) != 0:
+      raise ValueError(
+        "Cannot bind the following unknown callback(s) {}.{}".format(
+          cls.__name__, bound_fields.keys()
+        )
+      )
+    return cls(**fields)
 
 
 class Union(ctypes.Union, AsDictMixin):
-    pass
+  pass
 
 
+def string_cast(char_pointer, encoding="utf-8", errors="strict"):
+  value = ctypes.cast(char_pointer, ctypes.c_char_p).value
+  if value is not None and encoding is not None:
+    value = value.decode(encoding, errors=errors)
+  return value
 
-def string_cast(char_pointer, encoding='utf-8', errors='strict'):
-    value = ctypes.cast(char_pointer, ctypes.c_char_p).value
-    if value is not None and encoding is not None:
-        value = value.decode(encoding, errors=errors)
-    return value
 
-
-def char_pointer_cast(string, encoding='utf-8'):
-    if encoding is not None:
-        try:
-            string = string.encode(encoding)
-        except AttributeError:
-            # In Python3, bytes has no encode attribute
-            pass
-    string = ctypes.c_char_p(string)
-    return ctypes.cast(string, ctypes.POINTER(ctypes.c_char))
-
+def char_pointer_cast(string, encoding="utf-8"):
+  if encoding is not None:
+    try:
+      string = string.encode(encoding)
+    except AttributeError:
+      # In Python3, bytes has no encode attribute
+      pass
+  string = ctypes.c_char_p(string)
+  return ctypes.cast(string, ctypes.POINTER(ctypes.c_char))
 
 
 class FunctionFactoryStub:
-    def __getattr__(self, _):
-      return ctypes.CFUNCTYPE(lambda y:y)
+  def __getattr__(self, _):
+    return ctypes.CFUNCTYPE(lambda y: y)
+
 
 # libraries['llvm'] explanation
 # As you did not list (-l libraryname.so) a library that exports this function
@@ -148,367 +148,470 @@ class FunctionFactoryStub:
 # You can either re-run clan2py with -l /path/to/library.so
 # Or manually fix this by comment the ctypes.CDLL loading
 _libraries = {}
-_libraries['llvm'] = ctypes.CDLL(llvm_support.LLVM_PATH) #  ctypes.CDLL('llvm')
-c_int128 = ctypes.c_ubyte*16
+_libraries["llvm"] = ctypes.CDLL(llvm_support.LLVM_PATH)  #  ctypes.CDLL('llvm')
+c_int128 = ctypes.c_ubyte * 16
 c_uint128 = c_int128
 void = None
 if ctypes.sizeof(ctypes.c_longdouble) == 16:
-    c_long_double_t = ctypes.c_longdouble
+  c_long_double_t = ctypes.c_longdouble
 else:
-    c_long_double_t = ctypes.c_ubyte*16
+  c_long_double_t = ctypes.c_ubyte * 16
 
 
-
-LLVM_C_ANALYSIS_H = True # macro
-LLVM_C_EXTERNC_H = True # macro
+LLVM_C_ANALYSIS_H = True  # macro
+LLVM_C_EXTERNC_H = True  # macro
 # LLVM_C_STRICT_PROTOTYPES_BEGIN = _Pragma ( "clang diagnostic push" ) _Pragma ( "clang diagnostic error \"-Wstrict-prototypes\"" ) # macro
 # LLVM_C_STRICT_PROTOTYPES_END = _Pragma ( "clang diagnostic pop" ) # macro
 # LLVM_C_EXTERN_C_BEGIN = _Pragma ( "clang diagnostic push" ) _Pragma ( "clang diagnostic error \"-Wstrict-prototypes\"" ) # macro
 # LLVM_C_EXTERN_C_END = _Pragma ( "clang diagnostic pop" ) # macro
-LLVM_C_TYPES_H = True # macro
-LLVM_C_DATATYPES_H = True # macro
+LLVM_C_TYPES_H = True  # macro
+LLVM_C_DATATYPES_H = True  # macro
 LLVMBool = ctypes.c_int32
+
+
 class struct_LLVMOpaqueMemoryBuffer(Structure):
-    pass
+  pass
+
 
 LLVMMemoryBufferRef = ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer)
+
+
 class struct_LLVMOpaqueContext(Structure):
-    pass
+  pass
+
 
 LLVMContextRef = ctypes.POINTER(struct_LLVMOpaqueContext)
+
+
 class struct_LLVMOpaqueModule(Structure):
-    pass
+  pass
+
 
 LLVMModuleRef = ctypes.POINTER(struct_LLVMOpaqueModule)
+
+
 class struct_LLVMOpaqueType(Structure):
-    pass
+  pass
+
 
 LLVMTypeRef = ctypes.POINTER(struct_LLVMOpaqueType)
+
+
 class struct_LLVMOpaqueValue(Structure):
-    pass
+  pass
+
 
 LLVMValueRef = ctypes.POINTER(struct_LLVMOpaqueValue)
+
+
 class struct_LLVMOpaqueBasicBlock(Structure):
-    pass
+  pass
+
 
 LLVMBasicBlockRef = ctypes.POINTER(struct_LLVMOpaqueBasicBlock)
+
+
 class struct_LLVMOpaqueMetadata(Structure):
-    pass
+  pass
+
 
 LLVMMetadataRef = ctypes.POINTER(struct_LLVMOpaqueMetadata)
+
+
 class struct_LLVMOpaqueNamedMDNode(Structure):
-    pass
+  pass
+
 
 LLVMNamedMDNodeRef = ctypes.POINTER(struct_LLVMOpaqueNamedMDNode)
+
+
 class struct_LLVMOpaqueValueMetadataEntry(Structure):
-    pass
+  pass
+
 
 LLVMValueMetadataEntry = struct_LLVMOpaqueValueMetadataEntry
+
+
 class struct_LLVMOpaqueBuilder(Structure):
-    pass
+  pass
+
 
 LLVMBuilderRef = ctypes.POINTER(struct_LLVMOpaqueBuilder)
+
+
 class struct_LLVMOpaqueDIBuilder(Structure):
-    pass
+  pass
+
 
 LLVMDIBuilderRef = ctypes.POINTER(struct_LLVMOpaqueDIBuilder)
+
+
 class struct_LLVMOpaqueModuleProvider(Structure):
-    pass
+  pass
+
 
 LLVMModuleProviderRef = ctypes.POINTER(struct_LLVMOpaqueModuleProvider)
+
+
 class struct_LLVMOpaquePassManager(Structure):
-    pass
+  pass
+
 
 LLVMPassManagerRef = ctypes.POINTER(struct_LLVMOpaquePassManager)
+
+
 class struct_LLVMOpaquePassRegistry(Structure):
-    pass
+  pass
+
 
 LLVMPassRegistryRef = ctypes.POINTER(struct_LLVMOpaquePassRegistry)
+
+
 class struct_LLVMOpaqueUse(Structure):
-    pass
+  pass
+
 
 LLVMUseRef = ctypes.POINTER(struct_LLVMOpaqueUse)
+
+
 class struct_LLVMOpaqueAttributeRef(Structure):
-    pass
+  pass
+
 
 LLVMAttributeRef = ctypes.POINTER(struct_LLVMOpaqueAttributeRef)
+
+
 class struct_LLVMOpaqueDiagnosticInfo(Structure):
-    pass
+  pass
+
 
 LLVMDiagnosticInfoRef = ctypes.POINTER(struct_LLVMOpaqueDiagnosticInfo)
+
+
 class struct_LLVMComdat(Structure):
-    pass
+  pass
+
 
 LLVMComdatRef = ctypes.POINTER(struct_LLVMComdat)
+
+
 class struct_LLVMOpaqueModuleFlagEntry(Structure):
-    pass
+  pass
+
 
 LLVMModuleFlagEntry = struct_LLVMOpaqueModuleFlagEntry
+
+
 class struct_LLVMOpaqueJITEventListener(Structure):
-    pass
+  pass
+
 
 LLVMJITEventListenerRef = ctypes.POINTER(struct_LLVMOpaqueJITEventListener)
+
+
 class struct_LLVMOpaqueBinary(Structure):
-    pass
+  pass
+
 
 LLVMBinaryRef = ctypes.POINTER(struct_LLVMOpaqueBinary)
 
 # values for enumeration 'c__EA_LLVMVerifierFailureAction'
 c__EA_LLVMVerifierFailureAction__enumvalues = {
-    0: 'LLVMAbortProcessAction',
-    1: 'LLVMPrintMessageAction',
-    2: 'LLVMReturnStatusAction',
+  0: "LLVMAbortProcessAction",
+  1: "LLVMPrintMessageAction",
+  2: "LLVMReturnStatusAction",
 }
 LLVMAbortProcessAction = 0
 LLVMPrintMessageAction = 1
 LLVMReturnStatusAction = 2
-c__EA_LLVMVerifierFailureAction = ctypes.c_uint32 # enum
+c__EA_LLVMVerifierFailureAction = ctypes.c_uint32  # enum
 LLVMVerifierFailureAction = c__EA_LLVMVerifierFailureAction
 LLVMVerifierFailureAction__enumvalues = c__EA_LLVMVerifierFailureAction__enumvalues
 try:
-    LLVMVerifyModule = _libraries['llvm'].LLVMVerifyModule
-    LLVMVerifyModule.restype = LLVMBool
-    LLVMVerifyModule.argtypes = [LLVMModuleRef, LLVMVerifierFailureAction, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMVerifyModule = _libraries["llvm"].LLVMVerifyModule
+  LLVMVerifyModule.restype = LLVMBool
+  LLVMVerifyModule.argtypes = [
+    LLVMModuleRef,
+    LLVMVerifierFailureAction,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMVerifyFunction = _libraries['llvm'].LLVMVerifyFunction
-    LLVMVerifyFunction.restype = LLVMBool
-    LLVMVerifyFunction.argtypes = [LLVMValueRef, LLVMVerifierFailureAction]
+  LLVMVerifyFunction = _libraries["llvm"].LLVMVerifyFunction
+  LLVMVerifyFunction.restype = LLVMBool
+  LLVMVerifyFunction.argtypes = [LLVMValueRef, LLVMVerifierFailureAction]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMViewFunctionCFG = _libraries['llvm'].LLVMViewFunctionCFG
-    LLVMViewFunctionCFG.restype = None
-    LLVMViewFunctionCFG.argtypes = [LLVMValueRef]
+  LLVMViewFunctionCFG = _libraries["llvm"].LLVMViewFunctionCFG
+  LLVMViewFunctionCFG.restype = None
+  LLVMViewFunctionCFG.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMViewFunctionCFGOnly = _libraries['llvm'].LLVMViewFunctionCFGOnly
-    LLVMViewFunctionCFGOnly.restype = None
-    LLVMViewFunctionCFGOnly.argtypes = [LLVMValueRef]
+  LLVMViewFunctionCFGOnly = _libraries["llvm"].LLVMViewFunctionCFGOnly
+  LLVMViewFunctionCFGOnly.restype = None
+  LLVMViewFunctionCFGOnly.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
-LLVM_C_BITREADER_H = True # macro
+  pass
+LLVM_C_BITREADER_H = True  # macro
 try:
-    LLVMParseBitcode = _libraries['llvm'].LLVMParseBitcode
-    LLVMParseBitcode.restype = LLVMBool
-    LLVMParseBitcode.argtypes = [LLVMMemoryBufferRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMParseBitcode = _libraries["llvm"].LLVMParseBitcode
+  LLVMParseBitcode.restype = LLVMBool
+  LLVMParseBitcode.argtypes = [
+    LLVMMemoryBufferRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMParseBitcode2 = _libraries['llvm'].LLVMParseBitcode2
-    LLVMParseBitcode2.restype = LLVMBool
-    LLVMParseBitcode2.argtypes = [LLVMMemoryBufferRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule))]
+  LLVMParseBitcode2 = _libraries["llvm"].LLVMParseBitcode2
+  LLVMParseBitcode2.restype = LLVMBool
+  LLVMParseBitcode2.argtypes = [
+    LLVMMemoryBufferRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMParseBitcodeInContext = _libraries['llvm'].LLVMParseBitcodeInContext
-    LLVMParseBitcodeInContext.restype = LLVMBool
-    LLVMParseBitcodeInContext.argtypes = [LLVMContextRef, LLVMMemoryBufferRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMParseBitcodeInContext = _libraries["llvm"].LLVMParseBitcodeInContext
+  LLVMParseBitcodeInContext.restype = LLVMBool
+  LLVMParseBitcodeInContext.argtypes = [
+    LLVMContextRef,
+    LLVMMemoryBufferRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMParseBitcodeInContext2 = _libraries['llvm'].LLVMParseBitcodeInContext2
-    LLVMParseBitcodeInContext2.restype = LLVMBool
-    LLVMParseBitcodeInContext2.argtypes = [LLVMContextRef, LLVMMemoryBufferRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule))]
+  LLVMParseBitcodeInContext2 = _libraries["llvm"].LLVMParseBitcodeInContext2
+  LLVMParseBitcodeInContext2.restype = LLVMBool
+  LLVMParseBitcodeInContext2.argtypes = [
+    LLVMContextRef,
+    LLVMMemoryBufferRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBitcodeModuleInContext = _libraries['llvm'].LLVMGetBitcodeModuleInContext
-    LLVMGetBitcodeModuleInContext.restype = LLVMBool
-    LLVMGetBitcodeModuleInContext.argtypes = [LLVMContextRef, LLVMMemoryBufferRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMGetBitcodeModuleInContext = _libraries["llvm"].LLVMGetBitcodeModuleInContext
+  LLVMGetBitcodeModuleInContext.restype = LLVMBool
+  LLVMGetBitcodeModuleInContext.argtypes = [
+    LLVMContextRef,
+    LLVMMemoryBufferRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBitcodeModuleInContext2 = _libraries['llvm'].LLVMGetBitcodeModuleInContext2
-    LLVMGetBitcodeModuleInContext2.restype = LLVMBool
-    LLVMGetBitcodeModuleInContext2.argtypes = [LLVMContextRef, LLVMMemoryBufferRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule))]
+  LLVMGetBitcodeModuleInContext2 = _libraries["llvm"].LLVMGetBitcodeModuleInContext2
+  LLVMGetBitcodeModuleInContext2.restype = LLVMBool
+  LLVMGetBitcodeModuleInContext2.argtypes = [
+    LLVMContextRef,
+    LLVMMemoryBufferRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBitcodeModule = _libraries['llvm'].LLVMGetBitcodeModule
-    LLVMGetBitcodeModule.restype = LLVMBool
-    LLVMGetBitcodeModule.argtypes = [LLVMMemoryBufferRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMGetBitcodeModule = _libraries["llvm"].LLVMGetBitcodeModule
+  LLVMGetBitcodeModule.restype = LLVMBool
+  LLVMGetBitcodeModule.argtypes = [
+    LLVMMemoryBufferRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBitcodeModule2 = _libraries['llvm'].LLVMGetBitcodeModule2
-    LLVMGetBitcodeModule2.restype = LLVMBool
-    LLVMGetBitcodeModule2.argtypes = [LLVMMemoryBufferRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule))]
+  LLVMGetBitcodeModule2 = _libraries["llvm"].LLVMGetBitcodeModule2
+  LLVMGetBitcodeModule2.restype = LLVMBool
+  LLVMGetBitcodeModule2.argtypes = [
+    LLVMMemoryBufferRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+  ]
 except AttributeError:
-    pass
-LLVM_C_BITWRITER_H = True # macro
+  pass
+LLVM_C_BITWRITER_H = True  # macro
 try:
-    LLVMWriteBitcodeToFile = _libraries['llvm'].LLVMWriteBitcodeToFile
-    LLVMWriteBitcodeToFile.restype = ctypes.c_int32
-    LLVMWriteBitcodeToFile.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMWriteBitcodeToFile = _libraries["llvm"].LLVMWriteBitcodeToFile
+  LLVMWriteBitcodeToFile.restype = ctypes.c_int32
+  LLVMWriteBitcodeToFile.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMWriteBitcodeToFD = _libraries['llvm'].LLVMWriteBitcodeToFD
-    LLVMWriteBitcodeToFD.restype = ctypes.c_int32
-    LLVMWriteBitcodeToFD.argtypes = [LLVMModuleRef, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32]
+  LLVMWriteBitcodeToFD = _libraries["llvm"].LLVMWriteBitcodeToFD
+  LLVMWriteBitcodeToFD.restype = ctypes.c_int32
+  LLVMWriteBitcodeToFD.argtypes = [
+    LLVMModuleRef,
+    ctypes.c_int32,
+    ctypes.c_int32,
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMWriteBitcodeToFileHandle = _libraries['llvm'].LLVMWriteBitcodeToFileHandle
-    LLVMWriteBitcodeToFileHandle.restype = ctypes.c_int32
-    LLVMWriteBitcodeToFileHandle.argtypes = [LLVMModuleRef, ctypes.c_int32]
+  LLVMWriteBitcodeToFileHandle = _libraries["llvm"].LLVMWriteBitcodeToFileHandle
+  LLVMWriteBitcodeToFileHandle.restype = ctypes.c_int32
+  LLVMWriteBitcodeToFileHandle.argtypes = [LLVMModuleRef, ctypes.c_int32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMWriteBitcodeToMemoryBuffer = _libraries['llvm'].LLVMWriteBitcodeToMemoryBuffer
-    LLVMWriteBitcodeToMemoryBuffer.restype = LLVMMemoryBufferRef
-    LLVMWriteBitcodeToMemoryBuffer.argtypes = [LLVMModuleRef]
+  LLVMWriteBitcodeToMemoryBuffer = _libraries["llvm"].LLVMWriteBitcodeToMemoryBuffer
+  LLVMWriteBitcodeToMemoryBuffer.restype = LLVMMemoryBufferRef
+  LLVMWriteBitcodeToMemoryBuffer.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
-LLVM_C_COMDAT_H = True # macro
+  pass
+LLVM_C_COMDAT_H = True  # macro
 
 # values for enumeration 'c__EA_LLVMComdatSelectionKind'
 c__EA_LLVMComdatSelectionKind__enumvalues = {
-    0: 'LLVMAnyComdatSelectionKind',
-    1: 'LLVMExactMatchComdatSelectionKind',
-    2: 'LLVMLargestComdatSelectionKind',
-    3: 'LLVMNoDeduplicateComdatSelectionKind',
-    4: 'LLVMSameSizeComdatSelectionKind',
+  0: "LLVMAnyComdatSelectionKind",
+  1: "LLVMExactMatchComdatSelectionKind",
+  2: "LLVMLargestComdatSelectionKind",
+  3: "LLVMNoDeduplicateComdatSelectionKind",
+  4: "LLVMSameSizeComdatSelectionKind",
 }
 LLVMAnyComdatSelectionKind = 0
 LLVMExactMatchComdatSelectionKind = 1
 LLVMLargestComdatSelectionKind = 2
 LLVMNoDeduplicateComdatSelectionKind = 3
 LLVMSameSizeComdatSelectionKind = 4
-c__EA_LLVMComdatSelectionKind = ctypes.c_uint32 # enum
+c__EA_LLVMComdatSelectionKind = ctypes.c_uint32  # enum
 LLVMComdatSelectionKind = c__EA_LLVMComdatSelectionKind
 LLVMComdatSelectionKind__enumvalues = c__EA_LLVMComdatSelectionKind__enumvalues
 try:
-    LLVMGetOrInsertComdat = _libraries['llvm'].LLVMGetOrInsertComdat
-    LLVMGetOrInsertComdat.restype = LLVMComdatRef
-    LLVMGetOrInsertComdat.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetOrInsertComdat = _libraries["llvm"].LLVMGetOrInsertComdat
+  LLVMGetOrInsertComdat.restype = LLVMComdatRef
+  LLVMGetOrInsertComdat.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetComdat = _libraries['llvm'].LLVMGetComdat
-    LLVMGetComdat.restype = LLVMComdatRef
-    LLVMGetComdat.argtypes = [LLVMValueRef]
+  LLVMGetComdat = _libraries["llvm"].LLVMGetComdat
+  LLVMGetComdat.restype = LLVMComdatRef
+  LLVMGetComdat.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetComdat = _libraries['llvm'].LLVMSetComdat
-    LLVMSetComdat.restype = None
-    LLVMSetComdat.argtypes = [LLVMValueRef, LLVMComdatRef]
+  LLVMSetComdat = _libraries["llvm"].LLVMSetComdat
+  LLVMSetComdat.restype = None
+  LLVMSetComdat.argtypes = [LLVMValueRef, LLVMComdatRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetComdatSelectionKind = _libraries['llvm'].LLVMGetComdatSelectionKind
-    LLVMGetComdatSelectionKind.restype = LLVMComdatSelectionKind
-    LLVMGetComdatSelectionKind.argtypes = [LLVMComdatRef]
+  LLVMGetComdatSelectionKind = _libraries["llvm"].LLVMGetComdatSelectionKind
+  LLVMGetComdatSelectionKind.restype = LLVMComdatSelectionKind
+  LLVMGetComdatSelectionKind.argtypes = [LLVMComdatRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetComdatSelectionKind = _libraries['llvm'].LLVMSetComdatSelectionKind
-    LLVMSetComdatSelectionKind.restype = None
-    LLVMSetComdatSelectionKind.argtypes = [LLVMComdatRef, LLVMComdatSelectionKind]
+  LLVMSetComdatSelectionKind = _libraries["llvm"].LLVMSetComdatSelectionKind
+  LLVMSetComdatSelectionKind.restype = None
+  LLVMSetComdatSelectionKind.argtypes = [LLVMComdatRef, LLVMComdatSelectionKind]
 except AttributeError:
-    pass
-LLVM_C_CORE_H = True # macro
-LLVM_C_DEPRECATED_H = True # macro
+  pass
+LLVM_C_CORE_H = True  # macro
+LLVM_C_DEPRECATED_H = True  # macro
 # def LLVM_ATTRIBUTE_C_DEPRECATED(decl, message):  # macro
 #    return decl((deprecated(message)))
-LLVM_C_ERRORHANDLING_H = True # macro
+LLVM_C_ERRORHANDLING_H = True  # macro
 # def LLVM_FOR_EACH_VALUE_SUBCLASS(macro):  # macro
 #    return macro(Argument)macro(BasicBlock)macro(InlineAsm)macro(User)macro(Constant)macro(BlockAddress)macro(ConstantAggregateZero)macro(ConstantArray)macro(ConstantDataSequential)macro(ConstantDataArray)macro(ConstantDataVector)macro(ConstantExpr)macro(ConstantFP)macro(ConstantInt)macro(ConstantPointerNull)macro(ConstantStruct)macro(ConstantTokenNone)macro(ConstantVector)macro(GlobalValue)macro(GlobalAlias)macro(GlobalObject)macro(Function)macro(GlobalVariable)macro(GlobalIFunc)macro(UndefValue)macro(PoisonValue)macro(Instruction)macro(UnaryOperator)macro(BinaryOperator)macro(CallInst)macro(IntrinsicInst)macro(DbgInfoIntrinsic)macro(DbgVariableIntrinsic)macro(DbgDeclareInst)macro(DbgLabelInst)macro(MemIntrinsic)macro(MemCpyInst)macro(MemMoveInst)macro(MemSetInst)macro(CmpInst)macro(FCmpInst)macro(ICmpInst)macro(ExtractElementInst)macro(GetElementPtrInst)macro(InsertElementInst)macro(InsertValueInst)macro(LandingPadInst)macro(PHINode)macro(SelectInst)macro(ShuffleVectorInst)macro(StoreInst)macro(BranchInst)macro(IndirectBrInst)macro(InvokeInst)macro(ReturnInst)macro(SwitchInst)macro(UnreachableInst)macro(ResumeInst)macro(CleanupReturnInst)macro(CatchReturnInst)macro(CatchSwitchInst)macro(CallBrInst)macro(FuncletPadInst)macro(CatchPadInst)macro(CleanupPadInst)macro(UnaryInstruction)macro(AllocaInst)macro(CastInst)macro(AddrSpaceCastInst)macro(BitCastInst)macro(FPExtInst)macro(FPToSIInst)macro(FPToUIInst)macro(FPTruncInst)macro(IntToPtrInst)macro(PtrToIntInst)macro(SExtInst)macro(SIToFPInst)macro(TruncInst)macro(UIToFPInst)macro(ZExtInst)macro(ExtractValueInst)macro(LoadInst)macro(VAArgInst)macro(FreezeInst)macro(AtomicCmpXchgInst)macro(AtomicRMWInst)macro(FenceInst)
 # def LLVM_DECLARE_VALUE_CAST(name):  # macro
 #    return LLVMIsA##name(Val);
 LLVMFatalErrorHandler = ctypes.CFUNCTYPE(None, ctypes.POINTER(ctypes.c_char))
 try:
-    LLVMInstallFatalErrorHandler = _libraries['llvm'].LLVMInstallFatalErrorHandler
-    LLVMInstallFatalErrorHandler.restype = None
-    LLVMInstallFatalErrorHandler.argtypes = [LLVMFatalErrorHandler]
+  LLVMInstallFatalErrorHandler = _libraries["llvm"].LLVMInstallFatalErrorHandler
+  LLVMInstallFatalErrorHandler.restype = None
+  LLVMInstallFatalErrorHandler.argtypes = [LLVMFatalErrorHandler]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMResetFatalErrorHandler = _libraries['llvm'].LLVMResetFatalErrorHandler
-    LLVMResetFatalErrorHandler.restype = None
-    LLVMResetFatalErrorHandler.argtypes = []
+  LLVMResetFatalErrorHandler = _libraries["llvm"].LLVMResetFatalErrorHandler
+  LLVMResetFatalErrorHandler.restype = None
+  LLVMResetFatalErrorHandler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMEnablePrettyStackTrace = _libraries['llvm'].LLVMEnablePrettyStackTrace
-    LLVMEnablePrettyStackTrace.restype = None
-    LLVMEnablePrettyStackTrace.argtypes = []
+  LLVMEnablePrettyStackTrace = _libraries["llvm"].LLVMEnablePrettyStackTrace
+  LLVMEnablePrettyStackTrace.restype = None
+  LLVMEnablePrettyStackTrace.argtypes = []
 except AttributeError:
-    pass
+  pass
 
 # values for enumeration 'c__EA_LLVMOpcode'
 c__EA_LLVMOpcode__enumvalues = {
-    1: 'LLVMRet',
-    2: 'LLVMBr',
-    3: 'LLVMSwitch',
-    4: 'LLVMIndirectBr',
-    5: 'LLVMInvoke',
-    7: 'LLVMUnreachable',
-    67: 'LLVMCallBr',
-    66: 'LLVMFNeg',
-    8: 'LLVMAdd',
-    9: 'LLVMFAdd',
-    10: 'LLVMSub',
-    11: 'LLVMFSub',
-    12: 'LLVMMul',
-    13: 'LLVMFMul',
-    14: 'LLVMUDiv',
-    15: 'LLVMSDiv',
-    16: 'LLVMFDiv',
-    17: 'LLVMURem',
-    18: 'LLVMSRem',
-    19: 'LLVMFRem',
-    20: 'LLVMShl',
-    21: 'LLVMLShr',
-    22: 'LLVMAShr',
-    23: 'LLVMAnd',
-    24: 'LLVMOr',
-    25: 'LLVMXor',
-    26: 'LLVMAlloca',
-    27: 'LLVMLoad',
-    28: 'LLVMStore',
-    29: 'LLVMGetElementPtr',
-    30: 'LLVMTrunc',
-    31: 'LLVMZExt',
-    32: 'LLVMSExt',
-    33: 'LLVMFPToUI',
-    34: 'LLVMFPToSI',
-    35: 'LLVMUIToFP',
-    36: 'LLVMSIToFP',
-    37: 'LLVMFPTrunc',
-    38: 'LLVMFPExt',
-    39: 'LLVMPtrToInt',
-    40: 'LLVMIntToPtr',
-    41: 'LLVMBitCast',
-    60: 'LLVMAddrSpaceCast',
-    42: 'LLVMICmp',
-    43: 'LLVMFCmp',
-    44: 'LLVMPHI',
-    45: 'LLVMCall',
-    46: 'LLVMSelect',
-    47: 'LLVMUserOp1',
-    48: 'LLVMUserOp2',
-    49: 'LLVMVAArg',
-    50: 'LLVMExtractElement',
-    51: 'LLVMInsertElement',
-    52: 'LLVMShuffleVector',
-    53: 'LLVMExtractValue',
-    54: 'LLVMInsertValue',
-    68: 'LLVMFreeze',
-    55: 'LLVMFence',
-    56: 'LLVMAtomicCmpXchg',
-    57: 'LLVMAtomicRMW',
-    58: 'LLVMResume',
-    59: 'LLVMLandingPad',
-    61: 'LLVMCleanupRet',
-    62: 'LLVMCatchRet',
-    63: 'LLVMCatchPad',
-    64: 'LLVMCleanupPad',
-    65: 'LLVMCatchSwitch',
+  1: "LLVMRet",
+  2: "LLVMBr",
+  3: "LLVMSwitch",
+  4: "LLVMIndirectBr",
+  5: "LLVMInvoke",
+  7: "LLVMUnreachable",
+  67: "LLVMCallBr",
+  66: "LLVMFNeg",
+  8: "LLVMAdd",
+  9: "LLVMFAdd",
+  10: "LLVMSub",
+  11: "LLVMFSub",
+  12: "LLVMMul",
+  13: "LLVMFMul",
+  14: "LLVMUDiv",
+  15: "LLVMSDiv",
+  16: "LLVMFDiv",
+  17: "LLVMURem",
+  18: "LLVMSRem",
+  19: "LLVMFRem",
+  20: "LLVMShl",
+  21: "LLVMLShr",
+  22: "LLVMAShr",
+  23: "LLVMAnd",
+  24: "LLVMOr",
+  25: "LLVMXor",
+  26: "LLVMAlloca",
+  27: "LLVMLoad",
+  28: "LLVMStore",
+  29: "LLVMGetElementPtr",
+  30: "LLVMTrunc",
+  31: "LLVMZExt",
+  32: "LLVMSExt",
+  33: "LLVMFPToUI",
+  34: "LLVMFPToSI",
+  35: "LLVMUIToFP",
+  36: "LLVMSIToFP",
+  37: "LLVMFPTrunc",
+  38: "LLVMFPExt",
+  39: "LLVMPtrToInt",
+  40: "LLVMIntToPtr",
+  41: "LLVMBitCast",
+  60: "LLVMAddrSpaceCast",
+  42: "LLVMICmp",
+  43: "LLVMFCmp",
+  44: "LLVMPHI",
+  45: "LLVMCall",
+  46: "LLVMSelect",
+  47: "LLVMUserOp1",
+  48: "LLVMUserOp2",
+  49: "LLVMVAArg",
+  50: "LLVMExtractElement",
+  51: "LLVMInsertElement",
+  52: "LLVMShuffleVector",
+  53: "LLVMExtractValue",
+  54: "LLVMInsertValue",
+  68: "LLVMFreeze",
+  55: "LLVMFence",
+  56: "LLVMAtomicCmpXchg",
+  57: "LLVMAtomicRMW",
+  58: "LLVMResume",
+  59: "LLVMLandingPad",
+  61: "LLVMCleanupRet",
+  62: "LLVMCatchRet",
+  63: "LLVMCatchPad",
+  64: "LLVMCleanupPad",
+  65: "LLVMCatchSwitch",
 }
 LLVMRet = 1
 LLVMBr = 2
@@ -577,32 +680,32 @@ LLVMCatchRet = 62
 LLVMCatchPad = 63
 LLVMCleanupPad = 64
 LLVMCatchSwitch = 65
-c__EA_LLVMOpcode = ctypes.c_uint32 # enum
+c__EA_LLVMOpcode = ctypes.c_uint32  # enum
 LLVMOpcode = c__EA_LLVMOpcode
 LLVMOpcode__enumvalues = c__EA_LLVMOpcode__enumvalues
 
 # values for enumeration 'c__EA_LLVMTypeKind'
 c__EA_LLVMTypeKind__enumvalues = {
-    0: 'LLVMVoidTypeKind',
-    1: 'LLVMHalfTypeKind',
-    2: 'LLVMFloatTypeKind',
-    3: 'LLVMDoubleTypeKind',
-    4: 'LLVMX86_FP80TypeKind',
-    5: 'LLVMFP128TypeKind',
-    6: 'LLVMPPC_FP128TypeKind',
-    7: 'LLVMLabelTypeKind',
-    8: 'LLVMIntegerTypeKind',
-    9: 'LLVMFunctionTypeKind',
-    10: 'LLVMStructTypeKind',
-    11: 'LLVMArrayTypeKind',
-    12: 'LLVMPointerTypeKind',
-    13: 'LLVMVectorTypeKind',
-    14: 'LLVMMetadataTypeKind',
-    15: 'LLVMX86_MMXTypeKind',
-    16: 'LLVMTokenTypeKind',
-    17: 'LLVMScalableVectorTypeKind',
-    18: 'LLVMBFloatTypeKind',
-    19: 'LLVMX86_AMXTypeKind',
+  0: "LLVMVoidTypeKind",
+  1: "LLVMHalfTypeKind",
+  2: "LLVMFloatTypeKind",
+  3: "LLVMDoubleTypeKind",
+  4: "LLVMX86_FP80TypeKind",
+  5: "LLVMFP128TypeKind",
+  6: "LLVMPPC_FP128TypeKind",
+  7: "LLVMLabelTypeKind",
+  8: "LLVMIntegerTypeKind",
+  9: "LLVMFunctionTypeKind",
+  10: "LLVMStructTypeKind",
+  11: "LLVMArrayTypeKind",
+  12: "LLVMPointerTypeKind",
+  13: "LLVMVectorTypeKind",
+  14: "LLVMMetadataTypeKind",
+  15: "LLVMX86_MMXTypeKind",
+  16: "LLVMTokenTypeKind",
+  17: "LLVMScalableVectorTypeKind",
+  18: "LLVMBFloatTypeKind",
+  19: "LLVMX86_AMXTypeKind",
 }
 LLVMVoidTypeKind = 0
 LLVMHalfTypeKind = 1
@@ -624,29 +727,29 @@ LLVMTokenTypeKind = 16
 LLVMScalableVectorTypeKind = 17
 LLVMBFloatTypeKind = 18
 LLVMX86_AMXTypeKind = 19
-c__EA_LLVMTypeKind = ctypes.c_uint32 # enum
+c__EA_LLVMTypeKind = ctypes.c_uint32  # enum
 LLVMTypeKind = c__EA_LLVMTypeKind
 LLVMTypeKind__enumvalues = c__EA_LLVMTypeKind__enumvalues
 
 # values for enumeration 'c__EA_LLVMLinkage'
 c__EA_LLVMLinkage__enumvalues = {
-    0: 'LLVMExternalLinkage',
-    1: 'LLVMAvailableExternallyLinkage',
-    2: 'LLVMLinkOnceAnyLinkage',
-    3: 'LLVMLinkOnceODRLinkage',
-    4: 'LLVMLinkOnceODRAutoHideLinkage',
-    5: 'LLVMWeakAnyLinkage',
-    6: 'LLVMWeakODRLinkage',
-    7: 'LLVMAppendingLinkage',
-    8: 'LLVMInternalLinkage',
-    9: 'LLVMPrivateLinkage',
-    10: 'LLVMDLLImportLinkage',
-    11: 'LLVMDLLExportLinkage',
-    12: 'LLVMExternalWeakLinkage',
-    13: 'LLVMGhostLinkage',
-    14: 'LLVMCommonLinkage',
-    15: 'LLVMLinkerPrivateLinkage',
-    16: 'LLVMLinkerPrivateWeakLinkage',
+  0: "LLVMExternalLinkage",
+  1: "LLVMAvailableExternallyLinkage",
+  2: "LLVMLinkOnceAnyLinkage",
+  3: "LLVMLinkOnceODRLinkage",
+  4: "LLVMLinkOnceODRAutoHideLinkage",
+  5: "LLVMWeakAnyLinkage",
+  6: "LLVMWeakODRLinkage",
+  7: "LLVMAppendingLinkage",
+  8: "LLVMInternalLinkage",
+  9: "LLVMPrivateLinkage",
+  10: "LLVMDLLImportLinkage",
+  11: "LLVMDLLExportLinkage",
+  12: "LLVMExternalWeakLinkage",
+  13: "LLVMGhostLinkage",
+  14: "LLVMCommonLinkage",
+  15: "LLVMLinkerPrivateLinkage",
+  16: "LLVMLinkerPrivateWeakLinkage",
 }
 LLVMExternalLinkage = 0
 LLVMAvailableExternallyLinkage = 1
@@ -665,93 +768,93 @@ LLVMGhostLinkage = 13
 LLVMCommonLinkage = 14
 LLVMLinkerPrivateLinkage = 15
 LLVMLinkerPrivateWeakLinkage = 16
-c__EA_LLVMLinkage = ctypes.c_uint32 # enum
+c__EA_LLVMLinkage = ctypes.c_uint32  # enum
 LLVMLinkage = c__EA_LLVMLinkage
 LLVMLinkage__enumvalues = c__EA_LLVMLinkage__enumvalues
 
 # values for enumeration 'c__EA_LLVMVisibility'
 c__EA_LLVMVisibility__enumvalues = {
-    0: 'LLVMDefaultVisibility',
-    1: 'LLVMHiddenVisibility',
-    2: 'LLVMProtectedVisibility',
+  0: "LLVMDefaultVisibility",
+  1: "LLVMHiddenVisibility",
+  2: "LLVMProtectedVisibility",
 }
 LLVMDefaultVisibility = 0
 LLVMHiddenVisibility = 1
 LLVMProtectedVisibility = 2
-c__EA_LLVMVisibility = ctypes.c_uint32 # enum
+c__EA_LLVMVisibility = ctypes.c_uint32  # enum
 LLVMVisibility = c__EA_LLVMVisibility
 LLVMVisibility__enumvalues = c__EA_LLVMVisibility__enumvalues
 
 # values for enumeration 'c__EA_LLVMUnnamedAddr'
 c__EA_LLVMUnnamedAddr__enumvalues = {
-    0: 'LLVMNoUnnamedAddr',
-    1: 'LLVMLocalUnnamedAddr',
-    2: 'LLVMGlobalUnnamedAddr',
+  0: "LLVMNoUnnamedAddr",
+  1: "LLVMLocalUnnamedAddr",
+  2: "LLVMGlobalUnnamedAddr",
 }
 LLVMNoUnnamedAddr = 0
 LLVMLocalUnnamedAddr = 1
 LLVMGlobalUnnamedAddr = 2
-c__EA_LLVMUnnamedAddr = ctypes.c_uint32 # enum
+c__EA_LLVMUnnamedAddr = ctypes.c_uint32  # enum
 LLVMUnnamedAddr = c__EA_LLVMUnnamedAddr
 LLVMUnnamedAddr__enumvalues = c__EA_LLVMUnnamedAddr__enumvalues
 
 # values for enumeration 'c__EA_LLVMDLLStorageClass'
 c__EA_LLVMDLLStorageClass__enumvalues = {
-    0: 'LLVMDefaultStorageClass',
-    1: 'LLVMDLLImportStorageClass',
-    2: 'LLVMDLLExportStorageClass',
+  0: "LLVMDefaultStorageClass",
+  1: "LLVMDLLImportStorageClass",
+  2: "LLVMDLLExportStorageClass",
 }
 LLVMDefaultStorageClass = 0
 LLVMDLLImportStorageClass = 1
 LLVMDLLExportStorageClass = 2
-c__EA_LLVMDLLStorageClass = ctypes.c_uint32 # enum
+c__EA_LLVMDLLStorageClass = ctypes.c_uint32  # enum
 LLVMDLLStorageClass = c__EA_LLVMDLLStorageClass
 LLVMDLLStorageClass__enumvalues = c__EA_LLVMDLLStorageClass__enumvalues
 
 # values for enumeration 'c__EA_LLVMCallConv'
 c__EA_LLVMCallConv__enumvalues = {
-    0: 'LLVMCCallConv',
-    8: 'LLVMFastCallConv',
-    9: 'LLVMColdCallConv',
-    10: 'LLVMGHCCallConv',
-    11: 'LLVMHiPECallConv',
-    12: 'LLVMWebKitJSCallConv',
-    13: 'LLVMAnyRegCallConv',
-    14: 'LLVMPreserveMostCallConv',
-    15: 'LLVMPreserveAllCallConv',
-    16: 'LLVMSwiftCallConv',
-    17: 'LLVMCXXFASTTLSCallConv',
-    64: 'LLVMX86StdcallCallConv',
-    65: 'LLVMX86FastcallCallConv',
-    66: 'LLVMARMAPCSCallConv',
-    67: 'LLVMARMAAPCSCallConv',
-    68: 'LLVMARMAAPCSVFPCallConv',
-    69: 'LLVMMSP430INTRCallConv',
-    70: 'LLVMX86ThisCallCallConv',
-    71: 'LLVMPTXKernelCallConv',
-    72: 'LLVMPTXDeviceCallConv',
-    75: 'LLVMSPIRFUNCCallConv',
-    76: 'LLVMSPIRKERNELCallConv',
-    77: 'LLVMIntelOCLBICallConv',
-    78: 'LLVMX8664SysVCallConv',
-    79: 'LLVMWin64CallConv',
-    80: 'LLVMX86VectorCallCallConv',
-    81: 'LLVMHHVMCallConv',
-    82: 'LLVMHHVMCCallConv',
-    83: 'LLVMX86INTRCallConv',
-    84: 'LLVMAVRINTRCallConv',
-    85: 'LLVMAVRSIGNALCallConv',
-    86: 'LLVMAVRBUILTINCallConv',
-    87: 'LLVMAMDGPUVSCallConv',
-    88: 'LLVMAMDGPUGSCallConv',
-    89: 'LLVMAMDGPUPSCallConv',
-    90: 'LLVMAMDGPUCSCallConv',
-    91: 'LLVMAMDGPUKERNELCallConv',
-    92: 'LLVMX86RegCallCallConv',
-    93: 'LLVMAMDGPUHSCallConv',
-    94: 'LLVMMSP430BUILTINCallConv',
-    95: 'LLVMAMDGPULSCallConv',
-    96: 'LLVMAMDGPUESCallConv',
+  0: "LLVMCCallConv",
+  8: "LLVMFastCallConv",
+  9: "LLVMColdCallConv",
+  10: "LLVMGHCCallConv",
+  11: "LLVMHiPECallConv",
+  12: "LLVMWebKitJSCallConv",
+  13: "LLVMAnyRegCallConv",
+  14: "LLVMPreserveMostCallConv",
+  15: "LLVMPreserveAllCallConv",
+  16: "LLVMSwiftCallConv",
+  17: "LLVMCXXFASTTLSCallConv",
+  64: "LLVMX86StdcallCallConv",
+  65: "LLVMX86FastcallCallConv",
+  66: "LLVMARMAPCSCallConv",
+  67: "LLVMARMAAPCSCallConv",
+  68: "LLVMARMAAPCSVFPCallConv",
+  69: "LLVMMSP430INTRCallConv",
+  70: "LLVMX86ThisCallCallConv",
+  71: "LLVMPTXKernelCallConv",
+  72: "LLVMPTXDeviceCallConv",
+  75: "LLVMSPIRFUNCCallConv",
+  76: "LLVMSPIRKERNELCallConv",
+  77: "LLVMIntelOCLBICallConv",
+  78: "LLVMX8664SysVCallConv",
+  79: "LLVMWin64CallConv",
+  80: "LLVMX86VectorCallCallConv",
+  81: "LLVMHHVMCallConv",
+  82: "LLVMHHVMCCallConv",
+  83: "LLVMX86INTRCallConv",
+  84: "LLVMAVRINTRCallConv",
+  85: "LLVMAVRSIGNALCallConv",
+  86: "LLVMAVRBUILTINCallConv",
+  87: "LLVMAMDGPUVSCallConv",
+  88: "LLVMAMDGPUGSCallConv",
+  89: "LLVMAMDGPUPSCallConv",
+  90: "LLVMAMDGPUCSCallConv",
+  91: "LLVMAMDGPUKERNELCallConv",
+  92: "LLVMX86RegCallCallConv",
+  93: "LLVMAMDGPUHSCallConv",
+  94: "LLVMMSP430BUILTINCallConv",
+  95: "LLVMAMDGPULSCallConv",
+  96: "LLVMAMDGPUESCallConv",
 }
 LLVMCCallConv = 0
 LLVMFastCallConv = 8
@@ -795,38 +898,38 @@ LLVMAMDGPUHSCallConv = 93
 LLVMMSP430BUILTINCallConv = 94
 LLVMAMDGPULSCallConv = 95
 LLVMAMDGPUESCallConv = 96
-c__EA_LLVMCallConv = ctypes.c_uint32 # enum
+c__EA_LLVMCallConv = ctypes.c_uint32  # enum
 LLVMCallConv = c__EA_LLVMCallConv
 LLVMCallConv__enumvalues = c__EA_LLVMCallConv__enumvalues
 
 # values for enumeration 'c__EA_LLVMValueKind'
 c__EA_LLVMValueKind__enumvalues = {
-    0: 'LLVMArgumentValueKind',
-    1: 'LLVMBasicBlockValueKind',
-    2: 'LLVMMemoryUseValueKind',
-    3: 'LLVMMemoryDefValueKind',
-    4: 'LLVMMemoryPhiValueKind',
-    5: 'LLVMFunctionValueKind',
-    6: 'LLVMGlobalAliasValueKind',
-    7: 'LLVMGlobalIFuncValueKind',
-    8: 'LLVMGlobalVariableValueKind',
-    9: 'LLVMBlockAddressValueKind',
-    10: 'LLVMConstantExprValueKind',
-    11: 'LLVMConstantArrayValueKind',
-    12: 'LLVMConstantStructValueKind',
-    13: 'LLVMConstantVectorValueKind',
-    14: 'LLVMUndefValueValueKind',
-    15: 'LLVMConstantAggregateZeroValueKind',
-    16: 'LLVMConstantDataArrayValueKind',
-    17: 'LLVMConstantDataVectorValueKind',
-    18: 'LLVMConstantIntValueKind',
-    19: 'LLVMConstantFPValueKind',
-    20: 'LLVMConstantPointerNullValueKind',
-    21: 'LLVMConstantTokenNoneValueKind',
-    22: 'LLVMMetadataAsValueValueKind',
-    23: 'LLVMInlineAsmValueKind',
-    24: 'LLVMInstructionValueKind',
-    25: 'LLVMPoisonValueValueKind',
+  0: "LLVMArgumentValueKind",
+  1: "LLVMBasicBlockValueKind",
+  2: "LLVMMemoryUseValueKind",
+  3: "LLVMMemoryDefValueKind",
+  4: "LLVMMemoryPhiValueKind",
+  5: "LLVMFunctionValueKind",
+  6: "LLVMGlobalAliasValueKind",
+  7: "LLVMGlobalIFuncValueKind",
+  8: "LLVMGlobalVariableValueKind",
+  9: "LLVMBlockAddressValueKind",
+  10: "LLVMConstantExprValueKind",
+  11: "LLVMConstantArrayValueKind",
+  12: "LLVMConstantStructValueKind",
+  13: "LLVMConstantVectorValueKind",
+  14: "LLVMUndefValueValueKind",
+  15: "LLVMConstantAggregateZeroValueKind",
+  16: "LLVMConstantDataArrayValueKind",
+  17: "LLVMConstantDataVectorValueKind",
+  18: "LLVMConstantIntValueKind",
+  19: "LLVMConstantFPValueKind",
+  20: "LLVMConstantPointerNullValueKind",
+  21: "LLVMConstantTokenNoneValueKind",
+  22: "LLVMMetadataAsValueValueKind",
+  23: "LLVMInlineAsmValueKind",
+  24: "LLVMInstructionValueKind",
+  25: "LLVMPoisonValueValueKind",
 }
 LLVMArgumentValueKind = 0
 LLVMBasicBlockValueKind = 1
@@ -854,22 +957,22 @@ LLVMMetadataAsValueValueKind = 22
 LLVMInlineAsmValueKind = 23
 LLVMInstructionValueKind = 24
 LLVMPoisonValueValueKind = 25
-c__EA_LLVMValueKind = ctypes.c_uint32 # enum
+c__EA_LLVMValueKind = ctypes.c_uint32  # enum
 LLVMValueKind = c__EA_LLVMValueKind
 LLVMValueKind__enumvalues = c__EA_LLVMValueKind__enumvalues
 
 # values for enumeration 'c__EA_LLVMIntPredicate'
 c__EA_LLVMIntPredicate__enumvalues = {
-    32: 'LLVMIntEQ',
-    33: 'LLVMIntNE',
-    34: 'LLVMIntUGT',
-    35: 'LLVMIntUGE',
-    36: 'LLVMIntULT',
-    37: 'LLVMIntULE',
-    38: 'LLVMIntSGT',
-    39: 'LLVMIntSGE',
-    40: 'LLVMIntSLT',
-    41: 'LLVMIntSLE',
+  32: "LLVMIntEQ",
+  33: "LLVMIntNE",
+  34: "LLVMIntUGT",
+  35: "LLVMIntUGE",
+  36: "LLVMIntULT",
+  37: "LLVMIntULE",
+  38: "LLVMIntSGT",
+  39: "LLVMIntSGE",
+  40: "LLVMIntSLT",
+  41: "LLVMIntSLE",
 }
 LLVMIntEQ = 32
 LLVMIntNE = 33
@@ -881,28 +984,28 @@ LLVMIntSGT = 38
 LLVMIntSGE = 39
 LLVMIntSLT = 40
 LLVMIntSLE = 41
-c__EA_LLVMIntPredicate = ctypes.c_uint32 # enum
+c__EA_LLVMIntPredicate = ctypes.c_uint32  # enum
 LLVMIntPredicate = c__EA_LLVMIntPredicate
 LLVMIntPredicate__enumvalues = c__EA_LLVMIntPredicate__enumvalues
 
 # values for enumeration 'c__EA_LLVMRealPredicate'
 c__EA_LLVMRealPredicate__enumvalues = {
-    0: 'LLVMRealPredicateFalse',
-    1: 'LLVMRealOEQ',
-    2: 'LLVMRealOGT',
-    3: 'LLVMRealOGE',
-    4: 'LLVMRealOLT',
-    5: 'LLVMRealOLE',
-    6: 'LLVMRealONE',
-    7: 'LLVMRealORD',
-    8: 'LLVMRealUNO',
-    9: 'LLVMRealUEQ',
-    10: 'LLVMRealUGT',
-    11: 'LLVMRealUGE',
-    12: 'LLVMRealULT',
-    13: 'LLVMRealULE',
-    14: 'LLVMRealUNE',
-    15: 'LLVMRealPredicateTrue',
+  0: "LLVMRealPredicateFalse",
+  1: "LLVMRealOEQ",
+  2: "LLVMRealOGT",
+  3: "LLVMRealOGE",
+  4: "LLVMRealOLT",
+  5: "LLVMRealOLE",
+  6: "LLVMRealONE",
+  7: "LLVMRealORD",
+  8: "LLVMRealUNO",
+  9: "LLVMRealUEQ",
+  10: "LLVMRealUGT",
+  11: "LLVMRealUGE",
+  12: "LLVMRealULT",
+  13: "LLVMRealULE",
+  14: "LLVMRealUNE",
+  15: "LLVMRealPredicateTrue",
 }
 LLVMRealPredicateFalse = 0
 LLVMRealOEQ = 1
@@ -920,47 +1023,47 @@ LLVMRealULT = 12
 LLVMRealULE = 13
 LLVMRealUNE = 14
 LLVMRealPredicateTrue = 15
-c__EA_LLVMRealPredicate = ctypes.c_uint32 # enum
+c__EA_LLVMRealPredicate = ctypes.c_uint32  # enum
 LLVMRealPredicate = c__EA_LLVMRealPredicate
 LLVMRealPredicate__enumvalues = c__EA_LLVMRealPredicate__enumvalues
 
 # values for enumeration 'c__EA_LLVMLandingPadClauseTy'
 c__EA_LLVMLandingPadClauseTy__enumvalues = {
-    0: 'LLVMLandingPadCatch',
-    1: 'LLVMLandingPadFilter',
+  0: "LLVMLandingPadCatch",
+  1: "LLVMLandingPadFilter",
 }
 LLVMLandingPadCatch = 0
 LLVMLandingPadFilter = 1
-c__EA_LLVMLandingPadClauseTy = ctypes.c_uint32 # enum
+c__EA_LLVMLandingPadClauseTy = ctypes.c_uint32  # enum
 LLVMLandingPadClauseTy = c__EA_LLVMLandingPadClauseTy
 LLVMLandingPadClauseTy__enumvalues = c__EA_LLVMLandingPadClauseTy__enumvalues
 
 # values for enumeration 'c__EA_LLVMThreadLocalMode'
 c__EA_LLVMThreadLocalMode__enumvalues = {
-    0: 'LLVMNotThreadLocal',
-    1: 'LLVMGeneralDynamicTLSModel',
-    2: 'LLVMLocalDynamicTLSModel',
-    3: 'LLVMInitialExecTLSModel',
-    4: 'LLVMLocalExecTLSModel',
+  0: "LLVMNotThreadLocal",
+  1: "LLVMGeneralDynamicTLSModel",
+  2: "LLVMLocalDynamicTLSModel",
+  3: "LLVMInitialExecTLSModel",
+  4: "LLVMLocalExecTLSModel",
 }
 LLVMNotThreadLocal = 0
 LLVMGeneralDynamicTLSModel = 1
 LLVMLocalDynamicTLSModel = 2
 LLVMInitialExecTLSModel = 3
 LLVMLocalExecTLSModel = 4
-c__EA_LLVMThreadLocalMode = ctypes.c_uint32 # enum
+c__EA_LLVMThreadLocalMode = ctypes.c_uint32  # enum
 LLVMThreadLocalMode = c__EA_LLVMThreadLocalMode
 LLVMThreadLocalMode__enumvalues = c__EA_LLVMThreadLocalMode__enumvalues
 
 # values for enumeration 'c__EA_LLVMAtomicOrdering'
 c__EA_LLVMAtomicOrdering__enumvalues = {
-    0: 'LLVMAtomicOrderingNotAtomic',
-    1: 'LLVMAtomicOrderingUnordered',
-    2: 'LLVMAtomicOrderingMonotonic',
-    4: 'LLVMAtomicOrderingAcquire',
-    5: 'LLVMAtomicOrderingRelease',
-    6: 'LLVMAtomicOrderingAcquireRelease',
-    7: 'LLVMAtomicOrderingSequentiallyConsistent',
+  0: "LLVMAtomicOrderingNotAtomic",
+  1: "LLVMAtomicOrderingUnordered",
+  2: "LLVMAtomicOrderingMonotonic",
+  4: "LLVMAtomicOrderingAcquire",
+  5: "LLVMAtomicOrderingRelease",
+  6: "LLVMAtomicOrderingAcquireRelease",
+  7: "LLVMAtomicOrderingSequentiallyConsistent",
 }
 LLVMAtomicOrderingNotAtomic = 0
 LLVMAtomicOrderingUnordered = 1
@@ -969,25 +1072,25 @@ LLVMAtomicOrderingAcquire = 4
 LLVMAtomicOrderingRelease = 5
 LLVMAtomicOrderingAcquireRelease = 6
 LLVMAtomicOrderingSequentiallyConsistent = 7
-c__EA_LLVMAtomicOrdering = ctypes.c_uint32 # enum
+c__EA_LLVMAtomicOrdering = ctypes.c_uint32  # enum
 LLVMAtomicOrdering = c__EA_LLVMAtomicOrdering
 LLVMAtomicOrdering__enumvalues = c__EA_LLVMAtomicOrdering__enumvalues
 
 # values for enumeration 'c__EA_LLVMAtomicRMWBinOp'
 c__EA_LLVMAtomicRMWBinOp__enumvalues = {
-    0: 'LLVMAtomicRMWBinOpXchg',
-    1: 'LLVMAtomicRMWBinOpAdd',
-    2: 'LLVMAtomicRMWBinOpSub',
-    3: 'LLVMAtomicRMWBinOpAnd',
-    4: 'LLVMAtomicRMWBinOpNand',
-    5: 'LLVMAtomicRMWBinOpOr',
-    6: 'LLVMAtomicRMWBinOpXor',
-    7: 'LLVMAtomicRMWBinOpMax',
-    8: 'LLVMAtomicRMWBinOpMin',
-    9: 'LLVMAtomicRMWBinOpUMax',
-    10: 'LLVMAtomicRMWBinOpUMin',
-    11: 'LLVMAtomicRMWBinOpFAdd',
-    12: 'LLVMAtomicRMWBinOpFSub',
+  0: "LLVMAtomicRMWBinOpXchg",
+  1: "LLVMAtomicRMWBinOpAdd",
+  2: "LLVMAtomicRMWBinOpSub",
+  3: "LLVMAtomicRMWBinOpAnd",
+  4: "LLVMAtomicRMWBinOpNand",
+  5: "LLVMAtomicRMWBinOpOr",
+  6: "LLVMAtomicRMWBinOpXor",
+  7: "LLVMAtomicRMWBinOpMax",
+  8: "LLVMAtomicRMWBinOpMin",
+  9: "LLVMAtomicRMWBinOpUMax",
+  10: "LLVMAtomicRMWBinOpUMin",
+  11: "LLVMAtomicRMWBinOpFAdd",
+  12: "LLVMAtomicRMWBinOpFSub",
 }
 LLVMAtomicRMWBinOpXchg = 0
 LLVMAtomicRMWBinOpAdd = 1
@@ -1002,44 +1105,44 @@ LLVMAtomicRMWBinOpUMax = 9
 LLVMAtomicRMWBinOpUMin = 10
 LLVMAtomicRMWBinOpFAdd = 11
 LLVMAtomicRMWBinOpFSub = 12
-c__EA_LLVMAtomicRMWBinOp = ctypes.c_uint32 # enum
+c__EA_LLVMAtomicRMWBinOp = ctypes.c_uint32  # enum
 LLVMAtomicRMWBinOp = c__EA_LLVMAtomicRMWBinOp
 LLVMAtomicRMWBinOp__enumvalues = c__EA_LLVMAtomicRMWBinOp__enumvalues
 
 # values for enumeration 'c__EA_LLVMDiagnosticSeverity'
 c__EA_LLVMDiagnosticSeverity__enumvalues = {
-    0: 'LLVMDSError',
-    1: 'LLVMDSWarning',
-    2: 'LLVMDSRemark',
-    3: 'LLVMDSNote',
+  0: "LLVMDSError",
+  1: "LLVMDSWarning",
+  2: "LLVMDSRemark",
+  3: "LLVMDSNote",
 }
 LLVMDSError = 0
 LLVMDSWarning = 1
 LLVMDSRemark = 2
 LLVMDSNote = 3
-c__EA_LLVMDiagnosticSeverity = ctypes.c_uint32 # enum
+c__EA_LLVMDiagnosticSeverity = ctypes.c_uint32  # enum
 LLVMDiagnosticSeverity = c__EA_LLVMDiagnosticSeverity
 LLVMDiagnosticSeverity__enumvalues = c__EA_LLVMDiagnosticSeverity__enumvalues
 
 # values for enumeration 'c__EA_LLVMInlineAsmDialect'
 c__EA_LLVMInlineAsmDialect__enumvalues = {
-    0: 'LLVMInlineAsmDialectATT',
-    1: 'LLVMInlineAsmDialectIntel',
+  0: "LLVMInlineAsmDialectATT",
+  1: "LLVMInlineAsmDialectIntel",
 }
 LLVMInlineAsmDialectATT = 0
 LLVMInlineAsmDialectIntel = 1
-c__EA_LLVMInlineAsmDialect = ctypes.c_uint32 # enum
+c__EA_LLVMInlineAsmDialect = ctypes.c_uint32  # enum
 LLVMInlineAsmDialect = c__EA_LLVMInlineAsmDialect
 LLVMInlineAsmDialect__enumvalues = c__EA_LLVMInlineAsmDialect__enumvalues
 
 # values for enumeration 'c__EA_LLVMModuleFlagBehavior'
 c__EA_LLVMModuleFlagBehavior__enumvalues = {
-    0: 'LLVMModuleFlagBehaviorError',
-    1: 'LLVMModuleFlagBehaviorWarning',
-    2: 'LLVMModuleFlagBehaviorRequire',
-    3: 'LLVMModuleFlagBehaviorOverride',
-    4: 'LLVMModuleFlagBehaviorAppend',
-    5: 'LLVMModuleFlagBehaviorAppendUnique',
+  0: "LLVMModuleFlagBehaviorError",
+  1: "LLVMModuleFlagBehaviorWarning",
+  2: "LLVMModuleFlagBehaviorRequire",
+  3: "LLVMModuleFlagBehaviorOverride",
+  4: "LLVMModuleFlagBehaviorAppend",
+  5: "LLVMModuleFlagBehaviorAppendUnique",
 }
 LLVMModuleFlagBehaviorError = 0
 LLVMModuleFlagBehaviorWarning = 1
@@ -1047,4347 +1150,5272 @@ LLVMModuleFlagBehaviorRequire = 2
 LLVMModuleFlagBehaviorOverride = 3
 LLVMModuleFlagBehaviorAppend = 4
 LLVMModuleFlagBehaviorAppendUnique = 5
-c__EA_LLVMModuleFlagBehavior = ctypes.c_uint32 # enum
+c__EA_LLVMModuleFlagBehavior = ctypes.c_uint32  # enum
 LLVMModuleFlagBehavior = c__EA_LLVMModuleFlagBehavior
 LLVMModuleFlagBehavior__enumvalues = c__EA_LLVMModuleFlagBehavior__enumvalues
 
 # values for enumeration 'c__Ea_LLVMAttributeReturnIndex'
 c__Ea_LLVMAttributeReturnIndex__enumvalues = {
-    0: 'LLVMAttributeReturnIndex',
-    -1: 'LLVMAttributeFunctionIndex',
+  0: "LLVMAttributeReturnIndex",
+  -1: "LLVMAttributeFunctionIndex",
 }
 LLVMAttributeReturnIndex = 0
 LLVMAttributeFunctionIndex = -1
-c__Ea_LLVMAttributeReturnIndex = ctypes.c_int32 # enum
+c__Ea_LLVMAttributeReturnIndex = ctypes.c_int32  # enum
 LLVMAttributeIndex = ctypes.c_uint32
 try:
-    LLVMInitializeCore = _libraries['llvm'].LLVMInitializeCore
-    LLVMInitializeCore.restype = None
-    LLVMInitializeCore.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeCore = _libraries["llvm"].LLVMInitializeCore
+  LLVMInitializeCore.restype = None
+  LLVMInitializeCore.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMShutdown = _libraries['llvm'].LLVMShutdown
-    LLVMShutdown.restype = None
-    LLVMShutdown.argtypes = []
+  LLVMShutdown = _libraries["llvm"].LLVMShutdown
+  LLVMShutdown.restype = None
+  LLVMShutdown.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateMessage = _libraries['llvm'].LLVMCreateMessage
-    LLVMCreateMessage.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMCreateMessage.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMCreateMessage = _libraries["llvm"].LLVMCreateMessage
+  LLVMCreateMessage.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMCreateMessage.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeMessage = _libraries['llvm'].LLVMDisposeMessage
-    LLVMDisposeMessage.restype = None
-    LLVMDisposeMessage.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMDisposeMessage = _libraries["llvm"].LLVMDisposeMessage
+  LLVMDisposeMessage.restype = None
+  LLVMDisposeMessage.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
-LLVMDiagnosticHandler = ctypes.CFUNCTYPE(None, ctypes.POINTER(struct_LLVMOpaqueDiagnosticInfo), ctypes.POINTER(None))
-LLVMYieldCallback = ctypes.CFUNCTYPE(None, ctypes.POINTER(struct_LLVMOpaqueContext), ctypes.POINTER(None))
+  pass
+LLVMDiagnosticHandler = ctypes.CFUNCTYPE(
+  None, ctypes.POINTER(struct_LLVMOpaqueDiagnosticInfo), ctypes.POINTER(None)
+)
+LLVMYieldCallback = ctypes.CFUNCTYPE(
+  None, ctypes.POINTER(struct_LLVMOpaqueContext), ctypes.POINTER(None)
+)
 try:
-    LLVMContextCreate = _libraries['llvm'].LLVMContextCreate
-    LLVMContextCreate.restype = LLVMContextRef
-    LLVMContextCreate.argtypes = []
+  LLVMContextCreate = _libraries["llvm"].LLVMContextCreate
+  LLVMContextCreate.restype = LLVMContextRef
+  LLVMContextCreate.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetGlobalContext = _libraries['llvm'].LLVMGetGlobalContext
-    LLVMGetGlobalContext.restype = LLVMContextRef
-    LLVMGetGlobalContext.argtypes = []
+  LLVMGetGlobalContext = _libraries["llvm"].LLVMGetGlobalContext
+  LLVMGetGlobalContext.restype = LLVMContextRef
+  LLVMGetGlobalContext.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMContextSetDiagnosticHandler = _libraries['llvm'].LLVMContextSetDiagnosticHandler
-    LLVMContextSetDiagnosticHandler.restype = None
-    LLVMContextSetDiagnosticHandler.argtypes = [LLVMContextRef, LLVMDiagnosticHandler, ctypes.POINTER(None)]
+  LLVMContextSetDiagnosticHandler = _libraries["llvm"].LLVMContextSetDiagnosticHandler
+  LLVMContextSetDiagnosticHandler.restype = None
+  LLVMContextSetDiagnosticHandler.argtypes = [
+    LLVMContextRef,
+    LLVMDiagnosticHandler,
+    ctypes.POINTER(None),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMContextGetDiagnosticHandler = _libraries['llvm'].LLVMContextGetDiagnosticHandler
-    LLVMContextGetDiagnosticHandler.restype = LLVMDiagnosticHandler
-    LLVMContextGetDiagnosticHandler.argtypes = [LLVMContextRef]
+  LLVMContextGetDiagnosticHandler = _libraries["llvm"].LLVMContextGetDiagnosticHandler
+  LLVMContextGetDiagnosticHandler.restype = LLVMDiagnosticHandler
+  LLVMContextGetDiagnosticHandler.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMContextGetDiagnosticContext = _libraries['llvm'].LLVMContextGetDiagnosticContext
-    LLVMContextGetDiagnosticContext.restype = ctypes.POINTER(None)
-    LLVMContextGetDiagnosticContext.argtypes = [LLVMContextRef]
+  LLVMContextGetDiagnosticContext = _libraries["llvm"].LLVMContextGetDiagnosticContext
+  LLVMContextGetDiagnosticContext.restype = ctypes.POINTER(None)
+  LLVMContextGetDiagnosticContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMContextSetYieldCallback = _libraries['llvm'].LLVMContextSetYieldCallback
-    LLVMContextSetYieldCallback.restype = None
-    LLVMContextSetYieldCallback.argtypes = [LLVMContextRef, LLVMYieldCallback, ctypes.POINTER(None)]
+  LLVMContextSetYieldCallback = _libraries["llvm"].LLVMContextSetYieldCallback
+  LLVMContextSetYieldCallback.restype = None
+  LLVMContextSetYieldCallback.argtypes = [
+    LLVMContextRef,
+    LLVMYieldCallback,
+    ctypes.POINTER(None),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMContextShouldDiscardValueNames = _libraries['llvm'].LLVMContextShouldDiscardValueNames
-    LLVMContextShouldDiscardValueNames.restype = LLVMBool
-    LLVMContextShouldDiscardValueNames.argtypes = [LLVMContextRef]
+  LLVMContextShouldDiscardValueNames = _libraries[
+    "llvm"
+  ].LLVMContextShouldDiscardValueNames
+  LLVMContextShouldDiscardValueNames.restype = LLVMBool
+  LLVMContextShouldDiscardValueNames.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMContextSetDiscardValueNames = _libraries['llvm'].LLVMContextSetDiscardValueNames
-    LLVMContextSetDiscardValueNames.restype = None
-    LLVMContextSetDiscardValueNames.argtypes = [LLVMContextRef, LLVMBool]
+  LLVMContextSetDiscardValueNames = _libraries["llvm"].LLVMContextSetDiscardValueNames
+  LLVMContextSetDiscardValueNames.restype = None
+  LLVMContextSetDiscardValueNames.argtypes = [LLVMContextRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMContextDispose = _libraries['llvm'].LLVMContextDispose
-    LLVMContextDispose.restype = None
-    LLVMContextDispose.argtypes = [LLVMContextRef]
+  LLVMContextDispose = _libraries["llvm"].LLVMContextDispose
+  LLVMContextDispose.restype = None
+  LLVMContextDispose.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDiagInfoDescription = _libraries['llvm'].LLVMGetDiagInfoDescription
-    LLVMGetDiagInfoDescription.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetDiagInfoDescription.argtypes = [LLVMDiagnosticInfoRef]
+  LLVMGetDiagInfoDescription = _libraries["llvm"].LLVMGetDiagInfoDescription
+  LLVMGetDiagInfoDescription.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetDiagInfoDescription.argtypes = [LLVMDiagnosticInfoRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDiagInfoSeverity = _libraries['llvm'].LLVMGetDiagInfoSeverity
-    LLVMGetDiagInfoSeverity.restype = LLVMDiagnosticSeverity
-    LLVMGetDiagInfoSeverity.argtypes = [LLVMDiagnosticInfoRef]
+  LLVMGetDiagInfoSeverity = _libraries["llvm"].LLVMGetDiagInfoSeverity
+  LLVMGetDiagInfoSeverity.restype = LLVMDiagnosticSeverity
+  LLVMGetDiagInfoSeverity.argtypes = [LLVMDiagnosticInfoRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetMDKindIDInContext = _libraries['llvm'].LLVMGetMDKindIDInContext
-    LLVMGetMDKindIDInContext.restype = ctypes.c_uint32
-    LLVMGetMDKindIDInContext.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMGetMDKindIDInContext = _libraries["llvm"].LLVMGetMDKindIDInContext
+  LLVMGetMDKindIDInContext.restype = ctypes.c_uint32
+  LLVMGetMDKindIDInContext.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetMDKindID = _libraries['llvm'].LLVMGetMDKindID
-    LLVMGetMDKindID.restype = ctypes.c_uint32
-    LLVMGetMDKindID.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMGetMDKindID = _libraries["llvm"].LLVMGetMDKindID
+  LLVMGetMDKindID.restype = ctypes.c_uint32
+  LLVMGetMDKindID.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 size_t = ctypes.c_uint64
 try:
-    LLVMGetEnumAttributeKindForName = _libraries['llvm'].LLVMGetEnumAttributeKindForName
-    LLVMGetEnumAttributeKindForName.restype = ctypes.c_uint32
-    LLVMGetEnumAttributeKindForName.argtypes = [ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMGetEnumAttributeKindForName = _libraries["llvm"].LLVMGetEnumAttributeKindForName
+  LLVMGetEnumAttributeKindForName.restype = ctypes.c_uint32
+  LLVMGetEnumAttributeKindForName.argtypes = [ctypes.POINTER(ctypes.c_char), size_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLastEnumAttributeKind = _libraries['llvm'].LLVMGetLastEnumAttributeKind
-    LLVMGetLastEnumAttributeKind.restype = ctypes.c_uint32
-    LLVMGetLastEnumAttributeKind.argtypes = []
+  LLVMGetLastEnumAttributeKind = _libraries["llvm"].LLVMGetLastEnumAttributeKind
+  LLVMGetLastEnumAttributeKind.restype = ctypes.c_uint32
+  LLVMGetLastEnumAttributeKind.argtypes = []
 except AttributeError:
-    pass
+  pass
 uint64_t = ctypes.c_uint64
 try:
-    LLVMCreateEnumAttribute = _libraries['llvm'].LLVMCreateEnumAttribute
-    LLVMCreateEnumAttribute.restype = LLVMAttributeRef
-    LLVMCreateEnumAttribute.argtypes = [LLVMContextRef, ctypes.c_uint32, uint64_t]
+  LLVMCreateEnumAttribute = _libraries["llvm"].LLVMCreateEnumAttribute
+  LLVMCreateEnumAttribute.restype = LLVMAttributeRef
+  LLVMCreateEnumAttribute.argtypes = [LLVMContextRef, ctypes.c_uint32, uint64_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetEnumAttributeKind = _libraries['llvm'].LLVMGetEnumAttributeKind
-    LLVMGetEnumAttributeKind.restype = ctypes.c_uint32
-    LLVMGetEnumAttributeKind.argtypes = [LLVMAttributeRef]
+  LLVMGetEnumAttributeKind = _libraries["llvm"].LLVMGetEnumAttributeKind
+  LLVMGetEnumAttributeKind.restype = ctypes.c_uint32
+  LLVMGetEnumAttributeKind.argtypes = [LLVMAttributeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetEnumAttributeValue = _libraries['llvm'].LLVMGetEnumAttributeValue
-    LLVMGetEnumAttributeValue.restype = uint64_t
-    LLVMGetEnumAttributeValue.argtypes = [LLVMAttributeRef]
+  LLVMGetEnumAttributeValue = _libraries["llvm"].LLVMGetEnumAttributeValue
+  LLVMGetEnumAttributeValue.restype = uint64_t
+  LLVMGetEnumAttributeValue.argtypes = [LLVMAttributeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateTypeAttribute = _libraries['llvm'].LLVMCreateTypeAttribute
-    LLVMCreateTypeAttribute.restype = LLVMAttributeRef
-    LLVMCreateTypeAttribute.argtypes = [LLVMContextRef, ctypes.c_uint32, LLVMTypeRef]
+  LLVMCreateTypeAttribute = _libraries["llvm"].LLVMCreateTypeAttribute
+  LLVMCreateTypeAttribute.restype = LLVMAttributeRef
+  LLVMCreateTypeAttribute.argtypes = [LLVMContextRef, ctypes.c_uint32, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTypeAttributeValue = _libraries['llvm'].LLVMGetTypeAttributeValue
-    LLVMGetTypeAttributeValue.restype = LLVMTypeRef
-    LLVMGetTypeAttributeValue.argtypes = [LLVMAttributeRef]
+  LLVMGetTypeAttributeValue = _libraries["llvm"].LLVMGetTypeAttributeValue
+  LLVMGetTypeAttributeValue.restype = LLVMTypeRef
+  LLVMGetTypeAttributeValue.argtypes = [LLVMAttributeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateStringAttribute = _libraries['llvm'].LLVMCreateStringAttribute
-    LLVMCreateStringAttribute.restype = LLVMAttributeRef
-    LLVMCreateStringAttribute.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMCreateStringAttribute = _libraries["llvm"].LLVMCreateStringAttribute
+  LLVMCreateStringAttribute.restype = LLVMAttributeRef
+  LLVMCreateStringAttribute.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetStringAttributeKind = _libraries['llvm'].LLVMGetStringAttributeKind
-    LLVMGetStringAttributeKind.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetStringAttributeKind.argtypes = [LLVMAttributeRef, ctypes.POINTER(ctypes.c_uint32)]
+  LLVMGetStringAttributeKind = _libraries["llvm"].LLVMGetStringAttributeKind
+  LLVMGetStringAttributeKind.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetStringAttributeKind.argtypes = [
+    LLVMAttributeRef,
+    ctypes.POINTER(ctypes.c_uint32),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetStringAttributeValue = _libraries['llvm'].LLVMGetStringAttributeValue
-    LLVMGetStringAttributeValue.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetStringAttributeValue.argtypes = [LLVMAttributeRef, ctypes.POINTER(ctypes.c_uint32)]
+  LLVMGetStringAttributeValue = _libraries["llvm"].LLVMGetStringAttributeValue
+  LLVMGetStringAttributeValue.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetStringAttributeValue.argtypes = [
+    LLVMAttributeRef,
+    ctypes.POINTER(ctypes.c_uint32),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsEnumAttribute = _libraries['llvm'].LLVMIsEnumAttribute
-    LLVMIsEnumAttribute.restype = LLVMBool
-    LLVMIsEnumAttribute.argtypes = [LLVMAttributeRef]
+  LLVMIsEnumAttribute = _libraries["llvm"].LLVMIsEnumAttribute
+  LLVMIsEnumAttribute.restype = LLVMBool
+  LLVMIsEnumAttribute.argtypes = [LLVMAttributeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsStringAttribute = _libraries['llvm'].LLVMIsStringAttribute
-    LLVMIsStringAttribute.restype = LLVMBool
-    LLVMIsStringAttribute.argtypes = [LLVMAttributeRef]
+  LLVMIsStringAttribute = _libraries["llvm"].LLVMIsStringAttribute
+  LLVMIsStringAttribute.restype = LLVMBool
+  LLVMIsStringAttribute.argtypes = [LLVMAttributeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsTypeAttribute = _libraries['llvm'].LLVMIsTypeAttribute
-    LLVMIsTypeAttribute.restype = LLVMBool
-    LLVMIsTypeAttribute.argtypes = [LLVMAttributeRef]
+  LLVMIsTypeAttribute = _libraries["llvm"].LLVMIsTypeAttribute
+  LLVMIsTypeAttribute.restype = LLVMBool
+  LLVMIsTypeAttribute.argtypes = [LLVMAttributeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTypeByName2 = _libraries['llvm'].LLVMGetTypeByName2
-    LLVMGetTypeByName2.restype = LLVMTypeRef
-    LLVMGetTypeByName2.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetTypeByName2 = _libraries["llvm"].LLVMGetTypeByName2
+  LLVMGetTypeByName2.restype = LLVMTypeRef
+  LLVMGetTypeByName2.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMModuleCreateWithName = _libraries['llvm'].LLVMModuleCreateWithName
-    LLVMModuleCreateWithName.restype = LLVMModuleRef
-    LLVMModuleCreateWithName.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMModuleCreateWithName = _libraries["llvm"].LLVMModuleCreateWithName
+  LLVMModuleCreateWithName.restype = LLVMModuleRef
+  LLVMModuleCreateWithName.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMModuleCreateWithNameInContext = _libraries['llvm'].LLVMModuleCreateWithNameInContext
-    LLVMModuleCreateWithNameInContext.restype = LLVMModuleRef
-    LLVMModuleCreateWithNameInContext.argtypes = [ctypes.POINTER(ctypes.c_char), LLVMContextRef]
+  LLVMModuleCreateWithNameInContext = _libraries[
+    "llvm"
+  ].LLVMModuleCreateWithNameInContext
+  LLVMModuleCreateWithNameInContext.restype = LLVMModuleRef
+  LLVMModuleCreateWithNameInContext.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    LLVMContextRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCloneModule = _libraries['llvm'].LLVMCloneModule
-    LLVMCloneModule.restype = LLVMModuleRef
-    LLVMCloneModule.argtypes = [LLVMModuleRef]
+  LLVMCloneModule = _libraries["llvm"].LLVMCloneModule
+  LLVMCloneModule.restype = LLVMModuleRef
+  LLVMCloneModule.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeModule = _libraries['llvm'].LLVMDisposeModule
-    LLVMDisposeModule.restype = None
-    LLVMDisposeModule.argtypes = [LLVMModuleRef]
+  LLVMDisposeModule = _libraries["llvm"].LLVMDisposeModule
+  LLVMDisposeModule.restype = None
+  LLVMDisposeModule.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetModuleIdentifier = _libraries['llvm'].LLVMGetModuleIdentifier
-    LLVMGetModuleIdentifier.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetModuleIdentifier.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMGetModuleIdentifier = _libraries["llvm"].LLVMGetModuleIdentifier
+  LLVMGetModuleIdentifier.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetModuleIdentifier.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetModuleIdentifier = _libraries['llvm'].LLVMSetModuleIdentifier
-    LLVMSetModuleIdentifier.restype = None
-    LLVMSetModuleIdentifier.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMSetModuleIdentifier = _libraries["llvm"].LLVMSetModuleIdentifier
+  LLVMSetModuleIdentifier.restype = None
+  LLVMSetModuleIdentifier.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSourceFileName = _libraries['llvm'].LLVMGetSourceFileName
-    LLVMGetSourceFileName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetSourceFileName.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMGetSourceFileName = _libraries["llvm"].LLVMGetSourceFileName
+  LLVMGetSourceFileName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetSourceFileName.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetSourceFileName = _libraries['llvm'].LLVMSetSourceFileName
-    LLVMSetSourceFileName.restype = None
-    LLVMSetSourceFileName.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMSetSourceFileName = _libraries["llvm"].LLVMSetSourceFileName
+  LLVMSetSourceFileName.restype = None
+  LLVMSetSourceFileName.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDataLayoutStr = _libraries['llvm'].LLVMGetDataLayoutStr
-    LLVMGetDataLayoutStr.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetDataLayoutStr.argtypes = [LLVMModuleRef]
+  LLVMGetDataLayoutStr = _libraries["llvm"].LLVMGetDataLayoutStr
+  LLVMGetDataLayoutStr.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetDataLayoutStr.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDataLayout = _libraries['llvm'].LLVMGetDataLayout
-    LLVMGetDataLayout.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetDataLayout.argtypes = [LLVMModuleRef]
+  LLVMGetDataLayout = _libraries["llvm"].LLVMGetDataLayout
+  LLVMGetDataLayout.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetDataLayout.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetDataLayout = _libraries['llvm'].LLVMSetDataLayout
-    LLVMSetDataLayout.restype = None
-    LLVMSetDataLayout.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMSetDataLayout = _libraries["llvm"].LLVMSetDataLayout
+  LLVMSetDataLayout.restype = None
+  LLVMSetDataLayout.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTarget = _libraries['llvm'].LLVMGetTarget
-    LLVMGetTarget.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetTarget.argtypes = [LLVMModuleRef]
+  LLVMGetTarget = _libraries["llvm"].LLVMGetTarget
+  LLVMGetTarget.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetTarget.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetTarget = _libraries['llvm'].LLVMSetTarget
-    LLVMSetTarget.restype = None
-    LLVMSetTarget.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMSetTarget = _libraries["llvm"].LLVMSetTarget
+  LLVMSetTarget.restype = None
+  LLVMSetTarget.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCopyModuleFlagsMetadata = _libraries['llvm'].LLVMCopyModuleFlagsMetadata
-    LLVMCopyModuleFlagsMetadata.restype = ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry)
-    LLVMCopyModuleFlagsMetadata.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMCopyModuleFlagsMetadata = _libraries["llvm"].LLVMCopyModuleFlagsMetadata
+  LLVMCopyModuleFlagsMetadata.restype = ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry)
+  LLVMCopyModuleFlagsMetadata.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeModuleFlagsMetadata = _libraries['llvm'].LLVMDisposeModuleFlagsMetadata
-    LLVMDisposeModuleFlagsMetadata.restype = None
-    LLVMDisposeModuleFlagsMetadata.argtypes = [ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry)]
+  LLVMDisposeModuleFlagsMetadata = _libraries["llvm"].LLVMDisposeModuleFlagsMetadata
+  LLVMDisposeModuleFlagsMetadata.restype = None
+  LLVMDisposeModuleFlagsMetadata.argtypes = [
+    ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry)
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMModuleFlagEntriesGetFlagBehavior = _libraries['llvm'].LLVMModuleFlagEntriesGetFlagBehavior
-    LLVMModuleFlagEntriesGetFlagBehavior.restype = LLVMModuleFlagBehavior
-    LLVMModuleFlagEntriesGetFlagBehavior.argtypes = [ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry), ctypes.c_uint32]
+  LLVMModuleFlagEntriesGetFlagBehavior = _libraries[
+    "llvm"
+  ].LLVMModuleFlagEntriesGetFlagBehavior
+  LLVMModuleFlagEntriesGetFlagBehavior.restype = LLVMModuleFlagBehavior
+  LLVMModuleFlagEntriesGetFlagBehavior.argtypes = [
+    ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry),
+    ctypes.c_uint32,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMModuleFlagEntriesGetKey = _libraries["llvm"].LLVMModuleFlagEntriesGetKey
+  LLVMModuleFlagEntriesGetKey.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMModuleFlagEntriesGetKey.argtypes = [
+    ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMModuleFlagEntriesGetKey = _libraries['llvm'].LLVMModuleFlagEntriesGetKey
-    LLVMModuleFlagEntriesGetKey.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMModuleFlagEntriesGetKey.argtypes = [ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry), ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMModuleFlagEntriesGetMetadata = _libraries["llvm"].LLVMModuleFlagEntriesGetMetadata
+  LLVMModuleFlagEntriesGetMetadata.restype = LLVMMetadataRef
+  LLVMModuleFlagEntriesGetMetadata.argtypes = [
+    ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMModuleFlagEntriesGetMetadata = _libraries['llvm'].LLVMModuleFlagEntriesGetMetadata
-    LLVMModuleFlagEntriesGetMetadata.restype = LLVMMetadataRef
-    LLVMModuleFlagEntriesGetMetadata.argtypes = [ctypes.POINTER(struct_LLVMOpaqueModuleFlagEntry), ctypes.c_uint32]
+  LLVMGetModuleFlag = _libraries["llvm"].LLVMGetModuleFlag
+  LLVMGetModuleFlag.restype = LLVMMetadataRef
+  LLVMGetModuleFlag.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetModuleFlag = _libraries['llvm'].LLVMGetModuleFlag
-    LLVMGetModuleFlag.restype = LLVMMetadataRef
-    LLVMGetModuleFlag.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMAddModuleFlag = _libraries["llvm"].LLVMAddModuleFlag
+  LLVMAddModuleFlag.restype = None
+  LLVMAddModuleFlag.argtypes = [
+    LLVMModuleRef,
+    LLVMModuleFlagBehavior,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddModuleFlag = _libraries['llvm'].LLVMAddModuleFlag
-    LLVMAddModuleFlag.restype = None
-    LLVMAddModuleFlag.argtypes = [LLVMModuleRef, LLVMModuleFlagBehavior, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef]
+  LLVMDumpModule = _libraries["llvm"].LLVMDumpModule
+  LLVMDumpModule.restype = None
+  LLVMDumpModule.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDumpModule = _libraries['llvm'].LLVMDumpModule
-    LLVMDumpModule.restype = None
-    LLVMDumpModule.argtypes = [LLVMModuleRef]
+  LLVMPrintModuleToFile = _libraries["llvm"].LLVMPrintModuleToFile
+  LLVMPrintModuleToFile.restype = LLVMBool
+  LLVMPrintModuleToFile.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPrintModuleToFile = _libraries['llvm'].LLVMPrintModuleToFile
-    LLVMPrintModuleToFile.restype = LLVMBool
-    LLVMPrintModuleToFile.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMPrintModuleToString = _libraries["llvm"].LLVMPrintModuleToString
+  LLVMPrintModuleToString.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMPrintModuleToString.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPrintModuleToString = _libraries['llvm'].LLVMPrintModuleToString
-    LLVMPrintModuleToString.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMPrintModuleToString.argtypes = [LLVMModuleRef]
+  LLVMGetModuleInlineAsm = _libraries["llvm"].LLVMGetModuleInlineAsm
+  LLVMGetModuleInlineAsm.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetModuleInlineAsm.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetModuleInlineAsm = _libraries['llvm'].LLVMGetModuleInlineAsm
-    LLVMGetModuleInlineAsm.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetModuleInlineAsm.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMSetModuleInlineAsm2 = _libraries["llvm"].LLVMSetModuleInlineAsm2
+  LLVMSetModuleInlineAsm2.restype = None
+  LLVMSetModuleInlineAsm2.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetModuleInlineAsm2 = _libraries['llvm'].LLVMSetModuleInlineAsm2
-    LLVMSetModuleInlineAsm2.restype = None
-    LLVMSetModuleInlineAsm2.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMAppendModuleInlineAsm = _libraries["llvm"].LLVMAppendModuleInlineAsm
+  LLVMAppendModuleInlineAsm.restype = None
+  LLVMAppendModuleInlineAsm.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAppendModuleInlineAsm = _libraries['llvm'].LLVMAppendModuleInlineAsm
-    LLVMAppendModuleInlineAsm.restype = None
-    LLVMAppendModuleInlineAsm.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMGetInlineAsm = _libraries["llvm"].LLVMGetInlineAsm
+  LLVMGetInlineAsm.restype = LLVMValueRef
+  LLVMGetInlineAsm.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMBool,
+    LLVMBool,
+    LLVMInlineAsmDialect,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetInlineAsm = _libraries['llvm'].LLVMGetInlineAsm
-    LLVMGetInlineAsm.restype = LLVMValueRef
-    LLVMGetInlineAsm.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t, LLVMBool, LLVMBool, LLVMInlineAsmDialect, LLVMBool]
+  LLVMGetModuleContext = _libraries["llvm"].LLVMGetModuleContext
+  LLVMGetModuleContext.restype = LLVMContextRef
+  LLVMGetModuleContext.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetModuleContext = _libraries['llvm'].LLVMGetModuleContext
-    LLVMGetModuleContext.restype = LLVMContextRef
-    LLVMGetModuleContext.argtypes = [LLVMModuleRef]
+  LLVMGetTypeByName = _libraries["llvm"].LLVMGetTypeByName
+  LLVMGetTypeByName.restype = LLVMTypeRef
+  LLVMGetTypeByName.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTypeByName = _libraries['llvm'].LLVMGetTypeByName
-    LLVMGetTypeByName.restype = LLVMTypeRef
-    LLVMGetTypeByName.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetFirstNamedMetadata = _libraries["llvm"].LLVMGetFirstNamedMetadata
+  LLVMGetFirstNamedMetadata.restype = LLVMNamedMDNodeRef
+  LLVMGetFirstNamedMetadata.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFirstNamedMetadata = _libraries['llvm'].LLVMGetFirstNamedMetadata
-    LLVMGetFirstNamedMetadata.restype = LLVMNamedMDNodeRef
-    LLVMGetFirstNamedMetadata.argtypes = [LLVMModuleRef]
+  LLVMGetLastNamedMetadata = _libraries["llvm"].LLVMGetLastNamedMetadata
+  LLVMGetLastNamedMetadata.restype = LLVMNamedMDNodeRef
+  LLVMGetLastNamedMetadata.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLastNamedMetadata = _libraries['llvm'].LLVMGetLastNamedMetadata
-    LLVMGetLastNamedMetadata.restype = LLVMNamedMDNodeRef
-    LLVMGetLastNamedMetadata.argtypes = [LLVMModuleRef]
+  LLVMGetNextNamedMetadata = _libraries["llvm"].LLVMGetNextNamedMetadata
+  LLVMGetNextNamedMetadata.restype = LLVMNamedMDNodeRef
+  LLVMGetNextNamedMetadata.argtypes = [LLVMNamedMDNodeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextNamedMetadata = _libraries['llvm'].LLVMGetNextNamedMetadata
-    LLVMGetNextNamedMetadata.restype = LLVMNamedMDNodeRef
-    LLVMGetNextNamedMetadata.argtypes = [LLVMNamedMDNodeRef]
+  LLVMGetPreviousNamedMetadata = _libraries["llvm"].LLVMGetPreviousNamedMetadata
+  LLVMGetPreviousNamedMetadata.restype = LLVMNamedMDNodeRef
+  LLVMGetPreviousNamedMetadata.argtypes = [LLVMNamedMDNodeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPreviousNamedMetadata = _libraries['llvm'].LLVMGetPreviousNamedMetadata
-    LLVMGetPreviousNamedMetadata.restype = LLVMNamedMDNodeRef
-    LLVMGetPreviousNamedMetadata.argtypes = [LLVMNamedMDNodeRef]
+  LLVMGetNamedMetadata = _libraries["llvm"].LLVMGetNamedMetadata
+  LLVMGetNamedMetadata.restype = LLVMNamedMDNodeRef
+  LLVMGetNamedMetadata.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNamedMetadata = _libraries['llvm'].LLVMGetNamedMetadata
-    LLVMGetNamedMetadata.restype = LLVMNamedMDNodeRef
-    LLVMGetNamedMetadata.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMGetOrInsertNamedMetadata = _libraries["llvm"].LLVMGetOrInsertNamedMetadata
+  LLVMGetOrInsertNamedMetadata.restype = LLVMNamedMDNodeRef
+  LLVMGetOrInsertNamedMetadata.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetOrInsertNamedMetadata = _libraries['llvm'].LLVMGetOrInsertNamedMetadata
-    LLVMGetOrInsertNamedMetadata.restype = LLVMNamedMDNodeRef
-    LLVMGetOrInsertNamedMetadata.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMGetNamedMetadataName = _libraries["llvm"].LLVMGetNamedMetadataName
+  LLVMGetNamedMetadataName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetNamedMetadataName.argtypes = [
+    LLVMNamedMDNodeRef,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNamedMetadataName = _libraries['llvm'].LLVMGetNamedMetadataName
-    LLVMGetNamedMetadataName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetNamedMetadataName.argtypes = [LLVMNamedMDNodeRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMGetNamedMetadataNumOperands = _libraries["llvm"].LLVMGetNamedMetadataNumOperands
+  LLVMGetNamedMetadataNumOperands.restype = ctypes.c_uint32
+  LLVMGetNamedMetadataNumOperands.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNamedMetadataNumOperands = _libraries['llvm'].LLVMGetNamedMetadataNumOperands
-    LLVMGetNamedMetadataNumOperands.restype = ctypes.c_uint32
-    LLVMGetNamedMetadataNumOperands.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetNamedMetadataOperands = _libraries["llvm"].LLVMGetNamedMetadataOperands
+  LLVMGetNamedMetadataOperands.restype = None
+  LLVMGetNamedMetadataOperands.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNamedMetadataOperands = _libraries['llvm'].LLVMGetNamedMetadataOperands
-    LLVMGetNamedMetadataOperands.restype = None
-    LLVMGetNamedMetadataOperands.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue))]
+  LLVMAddNamedMetadataOperand = _libraries["llvm"].LLVMAddNamedMetadataOperand
+  LLVMAddNamedMetadataOperand.restype = None
+  LLVMAddNamedMetadataOperand.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    LLVMValueRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddNamedMetadataOperand = _libraries['llvm'].LLVMAddNamedMetadataOperand
-    LLVMAddNamedMetadataOperand.restype = None
-    LLVMAddNamedMetadataOperand.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), LLVMValueRef]
+  LLVMGetDebugLocDirectory = _libraries["llvm"].LLVMGetDebugLocDirectory
+  LLVMGetDebugLocDirectory.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetDebugLocDirectory.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint32)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDebugLocDirectory = _libraries['llvm'].LLVMGetDebugLocDirectory
-    LLVMGetDebugLocDirectory.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetDebugLocDirectory.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint32)]
+  LLVMGetDebugLocFilename = _libraries["llvm"].LLVMGetDebugLocFilename
+  LLVMGetDebugLocFilename.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetDebugLocFilename.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint32)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDebugLocFilename = _libraries['llvm'].LLVMGetDebugLocFilename
-    LLVMGetDebugLocFilename.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetDebugLocFilename.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint32)]
+  LLVMGetDebugLocLine = _libraries["llvm"].LLVMGetDebugLocLine
+  LLVMGetDebugLocLine.restype = ctypes.c_uint32
+  LLVMGetDebugLocLine.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDebugLocLine = _libraries['llvm'].LLVMGetDebugLocLine
-    LLVMGetDebugLocLine.restype = ctypes.c_uint32
-    LLVMGetDebugLocLine.argtypes = [LLVMValueRef]
+  LLVMGetDebugLocColumn = _libraries["llvm"].LLVMGetDebugLocColumn
+  LLVMGetDebugLocColumn.restype = ctypes.c_uint32
+  LLVMGetDebugLocColumn.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDebugLocColumn = _libraries['llvm'].LLVMGetDebugLocColumn
-    LLVMGetDebugLocColumn.restype = ctypes.c_uint32
-    LLVMGetDebugLocColumn.argtypes = [LLVMValueRef]
+  LLVMAddFunction = _libraries["llvm"].LLVMAddFunction
+  LLVMAddFunction.restype = LLVMValueRef
+  LLVMAddFunction.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddFunction = _libraries['llvm'].LLVMAddFunction
-    LLVMAddFunction.restype = LLVMValueRef
-    LLVMAddFunction.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), LLVMTypeRef]
+  LLVMGetNamedFunction = _libraries["llvm"].LLVMGetNamedFunction
+  LLVMGetNamedFunction.restype = LLVMValueRef
+  LLVMGetNamedFunction.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNamedFunction = _libraries['llvm'].LLVMGetNamedFunction
-    LLVMGetNamedFunction.restype = LLVMValueRef
-    LLVMGetNamedFunction.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetFirstFunction = _libraries["llvm"].LLVMGetFirstFunction
+  LLVMGetFirstFunction.restype = LLVMValueRef
+  LLVMGetFirstFunction.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFirstFunction = _libraries['llvm'].LLVMGetFirstFunction
-    LLVMGetFirstFunction.restype = LLVMValueRef
-    LLVMGetFirstFunction.argtypes = [LLVMModuleRef]
+  LLVMGetLastFunction = _libraries["llvm"].LLVMGetLastFunction
+  LLVMGetLastFunction.restype = LLVMValueRef
+  LLVMGetLastFunction.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLastFunction = _libraries['llvm'].LLVMGetLastFunction
-    LLVMGetLastFunction.restype = LLVMValueRef
-    LLVMGetLastFunction.argtypes = [LLVMModuleRef]
+  LLVMGetNextFunction = _libraries["llvm"].LLVMGetNextFunction
+  LLVMGetNextFunction.restype = LLVMValueRef
+  LLVMGetNextFunction.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextFunction = _libraries['llvm'].LLVMGetNextFunction
-    LLVMGetNextFunction.restype = LLVMValueRef
-    LLVMGetNextFunction.argtypes = [LLVMValueRef]
+  LLVMGetPreviousFunction = _libraries["llvm"].LLVMGetPreviousFunction
+  LLVMGetPreviousFunction.restype = LLVMValueRef
+  LLVMGetPreviousFunction.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPreviousFunction = _libraries['llvm'].LLVMGetPreviousFunction
-    LLVMGetPreviousFunction.restype = LLVMValueRef
-    LLVMGetPreviousFunction.argtypes = [LLVMValueRef]
+  LLVMSetModuleInlineAsm = _libraries["llvm"].LLVMSetModuleInlineAsm
+  LLVMSetModuleInlineAsm.restype = None
+  LLVMSetModuleInlineAsm.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetModuleInlineAsm = _libraries['llvm'].LLVMSetModuleInlineAsm
-    LLVMSetModuleInlineAsm.restype = None
-    LLVMSetModuleInlineAsm.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetTypeKind = _libraries["llvm"].LLVMGetTypeKind
+  LLVMGetTypeKind.restype = LLVMTypeKind
+  LLVMGetTypeKind.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTypeKind = _libraries['llvm'].LLVMGetTypeKind
-    LLVMGetTypeKind.restype = LLVMTypeKind
-    LLVMGetTypeKind.argtypes = [LLVMTypeRef]
+  LLVMTypeIsSized = _libraries["llvm"].LLVMTypeIsSized
+  LLVMTypeIsSized.restype = LLVMBool
+  LLVMTypeIsSized.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMTypeIsSized = _libraries['llvm'].LLVMTypeIsSized
-    LLVMTypeIsSized.restype = LLVMBool
-    LLVMTypeIsSized.argtypes = [LLVMTypeRef]
+  LLVMGetTypeContext = _libraries["llvm"].LLVMGetTypeContext
+  LLVMGetTypeContext.restype = LLVMContextRef
+  LLVMGetTypeContext.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTypeContext = _libraries['llvm'].LLVMGetTypeContext
-    LLVMGetTypeContext.restype = LLVMContextRef
-    LLVMGetTypeContext.argtypes = [LLVMTypeRef]
+  LLVMDumpType = _libraries["llvm"].LLVMDumpType
+  LLVMDumpType.restype = None
+  LLVMDumpType.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDumpType = _libraries['llvm'].LLVMDumpType
-    LLVMDumpType.restype = None
-    LLVMDumpType.argtypes = [LLVMTypeRef]
+  LLVMPrintTypeToString = _libraries["llvm"].LLVMPrintTypeToString
+  LLVMPrintTypeToString.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMPrintTypeToString.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPrintTypeToString = _libraries['llvm'].LLVMPrintTypeToString
-    LLVMPrintTypeToString.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMPrintTypeToString.argtypes = [LLVMTypeRef]
+  LLVMInt1TypeInContext = _libraries["llvm"].LLVMInt1TypeInContext
+  LLVMInt1TypeInContext.restype = LLVMTypeRef
+  LLVMInt1TypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt1TypeInContext = _libraries['llvm'].LLVMInt1TypeInContext
-    LLVMInt1TypeInContext.restype = LLVMTypeRef
-    LLVMInt1TypeInContext.argtypes = [LLVMContextRef]
+  LLVMInt8TypeInContext = _libraries["llvm"].LLVMInt8TypeInContext
+  LLVMInt8TypeInContext.restype = LLVMTypeRef
+  LLVMInt8TypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt8TypeInContext = _libraries['llvm'].LLVMInt8TypeInContext
-    LLVMInt8TypeInContext.restype = LLVMTypeRef
-    LLVMInt8TypeInContext.argtypes = [LLVMContextRef]
+  LLVMInt16TypeInContext = _libraries["llvm"].LLVMInt16TypeInContext
+  LLVMInt16TypeInContext.restype = LLVMTypeRef
+  LLVMInt16TypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt16TypeInContext = _libraries['llvm'].LLVMInt16TypeInContext
-    LLVMInt16TypeInContext.restype = LLVMTypeRef
-    LLVMInt16TypeInContext.argtypes = [LLVMContextRef]
+  LLVMInt32TypeInContext = _libraries["llvm"].LLVMInt32TypeInContext
+  LLVMInt32TypeInContext.restype = LLVMTypeRef
+  LLVMInt32TypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt32TypeInContext = _libraries['llvm'].LLVMInt32TypeInContext
-    LLVMInt32TypeInContext.restype = LLVMTypeRef
-    LLVMInt32TypeInContext.argtypes = [LLVMContextRef]
+  LLVMInt64TypeInContext = _libraries["llvm"].LLVMInt64TypeInContext
+  LLVMInt64TypeInContext.restype = LLVMTypeRef
+  LLVMInt64TypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt64TypeInContext = _libraries['llvm'].LLVMInt64TypeInContext
-    LLVMInt64TypeInContext.restype = LLVMTypeRef
-    LLVMInt64TypeInContext.argtypes = [LLVMContextRef]
+  LLVMInt128TypeInContext = _libraries["llvm"].LLVMInt128TypeInContext
+  LLVMInt128TypeInContext.restype = LLVMTypeRef
+  LLVMInt128TypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt128TypeInContext = _libraries['llvm'].LLVMInt128TypeInContext
-    LLVMInt128TypeInContext.restype = LLVMTypeRef
-    LLVMInt128TypeInContext.argtypes = [LLVMContextRef]
+  LLVMIntTypeInContext = _libraries["llvm"].LLVMIntTypeInContext
+  LLVMIntTypeInContext.restype = LLVMTypeRef
+  LLVMIntTypeInContext.argtypes = [LLVMContextRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntTypeInContext = _libraries['llvm'].LLVMIntTypeInContext
-    LLVMIntTypeInContext.restype = LLVMTypeRef
-    LLVMIntTypeInContext.argtypes = [LLVMContextRef, ctypes.c_uint32]
+  LLVMInt1Type = _libraries["llvm"].LLVMInt1Type
+  LLVMInt1Type.restype = LLVMTypeRef
+  LLVMInt1Type.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt1Type = _libraries['llvm'].LLVMInt1Type
-    LLVMInt1Type.restype = LLVMTypeRef
-    LLVMInt1Type.argtypes = []
+  LLVMInt8Type = _libraries["llvm"].LLVMInt8Type
+  LLVMInt8Type.restype = LLVMTypeRef
+  LLVMInt8Type.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt8Type = _libraries['llvm'].LLVMInt8Type
-    LLVMInt8Type.restype = LLVMTypeRef
-    LLVMInt8Type.argtypes = []
+  LLVMInt16Type = _libraries["llvm"].LLVMInt16Type
+  LLVMInt16Type.restype = LLVMTypeRef
+  LLVMInt16Type.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt16Type = _libraries['llvm'].LLVMInt16Type
-    LLVMInt16Type.restype = LLVMTypeRef
-    LLVMInt16Type.argtypes = []
+  LLVMInt32Type = _libraries["llvm"].LLVMInt32Type
+  LLVMInt32Type.restype = LLVMTypeRef
+  LLVMInt32Type.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt32Type = _libraries['llvm'].LLVMInt32Type
-    LLVMInt32Type.restype = LLVMTypeRef
-    LLVMInt32Type.argtypes = []
+  LLVMInt64Type = _libraries["llvm"].LLVMInt64Type
+  LLVMInt64Type.restype = LLVMTypeRef
+  LLVMInt64Type.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt64Type = _libraries['llvm'].LLVMInt64Type
-    LLVMInt64Type.restype = LLVMTypeRef
-    LLVMInt64Type.argtypes = []
+  LLVMInt128Type = _libraries["llvm"].LLVMInt128Type
+  LLVMInt128Type.restype = LLVMTypeRef
+  LLVMInt128Type.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInt128Type = _libraries['llvm'].LLVMInt128Type
-    LLVMInt128Type.restype = LLVMTypeRef
-    LLVMInt128Type.argtypes = []
+  LLVMIntType = _libraries["llvm"].LLVMIntType
+  LLVMIntType.restype = LLVMTypeRef
+  LLVMIntType.argtypes = [ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntType = _libraries['llvm'].LLVMIntType
-    LLVMIntType.restype = LLVMTypeRef
-    LLVMIntType.argtypes = [ctypes.c_uint32]
+  LLVMGetIntTypeWidth = _libraries["llvm"].LLVMGetIntTypeWidth
+  LLVMGetIntTypeWidth.restype = ctypes.c_uint32
+  LLVMGetIntTypeWidth.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetIntTypeWidth = _libraries['llvm'].LLVMGetIntTypeWidth
-    LLVMGetIntTypeWidth.restype = ctypes.c_uint32
-    LLVMGetIntTypeWidth.argtypes = [LLVMTypeRef]
+  LLVMHalfTypeInContext = _libraries["llvm"].LLVMHalfTypeInContext
+  LLVMHalfTypeInContext.restype = LLVMTypeRef
+  LLVMHalfTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMHalfTypeInContext = _libraries['llvm'].LLVMHalfTypeInContext
-    LLVMHalfTypeInContext.restype = LLVMTypeRef
-    LLVMHalfTypeInContext.argtypes = [LLVMContextRef]
+  LLVMBFloatTypeInContext = _libraries["llvm"].LLVMBFloatTypeInContext
+  LLVMBFloatTypeInContext.restype = LLVMTypeRef
+  LLVMBFloatTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBFloatTypeInContext = _libraries['llvm'].LLVMBFloatTypeInContext
-    LLVMBFloatTypeInContext.restype = LLVMTypeRef
-    LLVMBFloatTypeInContext.argtypes = [LLVMContextRef]
+  LLVMFloatTypeInContext = _libraries["llvm"].LLVMFloatTypeInContext
+  LLVMFloatTypeInContext.restype = LLVMTypeRef
+  LLVMFloatTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMFloatTypeInContext = _libraries['llvm'].LLVMFloatTypeInContext
-    LLVMFloatTypeInContext.restype = LLVMTypeRef
-    LLVMFloatTypeInContext.argtypes = [LLVMContextRef]
+  LLVMDoubleTypeInContext = _libraries["llvm"].LLVMDoubleTypeInContext
+  LLVMDoubleTypeInContext.restype = LLVMTypeRef
+  LLVMDoubleTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDoubleTypeInContext = _libraries['llvm'].LLVMDoubleTypeInContext
-    LLVMDoubleTypeInContext.restype = LLVMTypeRef
-    LLVMDoubleTypeInContext.argtypes = [LLVMContextRef]
+  LLVMX86FP80TypeInContext = _libraries["llvm"].LLVMX86FP80TypeInContext
+  LLVMX86FP80TypeInContext.restype = LLVMTypeRef
+  LLVMX86FP80TypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMX86FP80TypeInContext = _libraries['llvm'].LLVMX86FP80TypeInContext
-    LLVMX86FP80TypeInContext.restype = LLVMTypeRef
-    LLVMX86FP80TypeInContext.argtypes = [LLVMContextRef]
+  LLVMFP128TypeInContext = _libraries["llvm"].LLVMFP128TypeInContext
+  LLVMFP128TypeInContext.restype = LLVMTypeRef
+  LLVMFP128TypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMFP128TypeInContext = _libraries['llvm'].LLVMFP128TypeInContext
-    LLVMFP128TypeInContext.restype = LLVMTypeRef
-    LLVMFP128TypeInContext.argtypes = [LLVMContextRef]
+  LLVMPPCFP128TypeInContext = _libraries["llvm"].LLVMPPCFP128TypeInContext
+  LLVMPPCFP128TypeInContext.restype = LLVMTypeRef
+  LLVMPPCFP128TypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPPCFP128TypeInContext = _libraries['llvm'].LLVMPPCFP128TypeInContext
-    LLVMPPCFP128TypeInContext.restype = LLVMTypeRef
-    LLVMPPCFP128TypeInContext.argtypes = [LLVMContextRef]
+  LLVMHalfType = _libraries["llvm"].LLVMHalfType
+  LLVMHalfType.restype = LLVMTypeRef
+  LLVMHalfType.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMHalfType = _libraries['llvm'].LLVMHalfType
-    LLVMHalfType.restype = LLVMTypeRef
-    LLVMHalfType.argtypes = []
+  LLVMBFloatType = _libraries["llvm"].LLVMBFloatType
+  LLVMBFloatType.restype = LLVMTypeRef
+  LLVMBFloatType.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBFloatType = _libraries['llvm'].LLVMBFloatType
-    LLVMBFloatType.restype = LLVMTypeRef
-    LLVMBFloatType.argtypes = []
+  LLVMFloatType = _libraries["llvm"].LLVMFloatType
+  LLVMFloatType.restype = LLVMTypeRef
+  LLVMFloatType.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMFloatType = _libraries['llvm'].LLVMFloatType
-    LLVMFloatType.restype = LLVMTypeRef
-    LLVMFloatType.argtypes = []
+  LLVMDoubleType = _libraries["llvm"].LLVMDoubleType
+  LLVMDoubleType.restype = LLVMTypeRef
+  LLVMDoubleType.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDoubleType = _libraries['llvm'].LLVMDoubleType
-    LLVMDoubleType.restype = LLVMTypeRef
-    LLVMDoubleType.argtypes = []
+  LLVMX86FP80Type = _libraries["llvm"].LLVMX86FP80Type
+  LLVMX86FP80Type.restype = LLVMTypeRef
+  LLVMX86FP80Type.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMX86FP80Type = _libraries['llvm'].LLVMX86FP80Type
-    LLVMX86FP80Type.restype = LLVMTypeRef
-    LLVMX86FP80Type.argtypes = []
+  LLVMFP128Type = _libraries["llvm"].LLVMFP128Type
+  LLVMFP128Type.restype = LLVMTypeRef
+  LLVMFP128Type.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMFP128Type = _libraries['llvm'].LLVMFP128Type
-    LLVMFP128Type.restype = LLVMTypeRef
-    LLVMFP128Type.argtypes = []
+  LLVMPPCFP128Type = _libraries["llvm"].LLVMPPCFP128Type
+  LLVMPPCFP128Type.restype = LLVMTypeRef
+  LLVMPPCFP128Type.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPPCFP128Type = _libraries['llvm'].LLVMPPCFP128Type
-    LLVMPPCFP128Type.restype = LLVMTypeRef
-    LLVMPPCFP128Type.argtypes = []
+  LLVMFunctionType = _libraries["llvm"].LLVMFunctionType
+  LLVMFunctionType.restype = LLVMTypeRef
+  LLVMFunctionType.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+    ctypes.c_uint32,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMFunctionType = _libraries['llvm'].LLVMFunctionType
-    LLVMFunctionType.restype = LLVMTypeRef
-    LLVMFunctionType.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)), ctypes.c_uint32, LLVMBool]
+  LLVMIsFunctionVarArg = _libraries["llvm"].LLVMIsFunctionVarArg
+  LLVMIsFunctionVarArg.restype = LLVMBool
+  LLVMIsFunctionVarArg.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsFunctionVarArg = _libraries['llvm'].LLVMIsFunctionVarArg
-    LLVMIsFunctionVarArg.restype = LLVMBool
-    LLVMIsFunctionVarArg.argtypes = [LLVMTypeRef]
+  LLVMGetReturnType = _libraries["llvm"].LLVMGetReturnType
+  LLVMGetReturnType.restype = LLVMTypeRef
+  LLVMGetReturnType.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetReturnType = _libraries['llvm'].LLVMGetReturnType
-    LLVMGetReturnType.restype = LLVMTypeRef
-    LLVMGetReturnType.argtypes = [LLVMTypeRef]
+  LLVMCountParamTypes = _libraries["llvm"].LLVMCountParamTypes
+  LLVMCountParamTypes.restype = ctypes.c_uint32
+  LLVMCountParamTypes.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCountParamTypes = _libraries['llvm'].LLVMCountParamTypes
-    LLVMCountParamTypes.restype = ctypes.c_uint32
-    LLVMCountParamTypes.argtypes = [LLVMTypeRef]
+  LLVMGetParamTypes = _libraries["llvm"].LLVMGetParamTypes
+  LLVMGetParamTypes.restype = None
+  LLVMGetParamTypes.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetParamTypes = _libraries['llvm'].LLVMGetParamTypes
-    LLVMGetParamTypes.restype = None
-    LLVMGetParamTypes.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType))]
+  LLVMStructTypeInContext = _libraries["llvm"].LLVMStructTypeInContext
+  LLVMStructTypeInContext.restype = LLVMTypeRef
+  LLVMStructTypeInContext.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+    ctypes.c_uint32,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMStructTypeInContext = _libraries['llvm'].LLVMStructTypeInContext
-    LLVMStructTypeInContext.restype = LLVMTypeRef
-    LLVMStructTypeInContext.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)), ctypes.c_uint32, LLVMBool]
+  LLVMStructType = _libraries["llvm"].LLVMStructType
+  LLVMStructType.restype = LLVMTypeRef
+  LLVMStructType.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+    ctypes.c_uint32,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMStructType = _libraries['llvm'].LLVMStructType
-    LLVMStructType.restype = LLVMTypeRef
-    LLVMStructType.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)), ctypes.c_uint32, LLVMBool]
+  LLVMStructCreateNamed = _libraries["llvm"].LLVMStructCreateNamed
+  LLVMStructCreateNamed.restype = LLVMTypeRef
+  LLVMStructCreateNamed.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMStructCreateNamed = _libraries['llvm'].LLVMStructCreateNamed
-    LLVMStructCreateNamed.restype = LLVMTypeRef
-    LLVMStructCreateNamed.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetStructName = _libraries["llvm"].LLVMGetStructName
+  LLVMGetStructName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetStructName.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetStructName = _libraries['llvm'].LLVMGetStructName
-    LLVMGetStructName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetStructName.argtypes = [LLVMTypeRef]
+  LLVMStructSetBody = _libraries["llvm"].LLVMStructSetBody
+  LLVMStructSetBody.restype = None
+  LLVMStructSetBody.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+    ctypes.c_uint32,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMStructSetBody = _libraries['llvm'].LLVMStructSetBody
-    LLVMStructSetBody.restype = None
-    LLVMStructSetBody.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)), ctypes.c_uint32, LLVMBool]
+  LLVMCountStructElementTypes = _libraries["llvm"].LLVMCountStructElementTypes
+  LLVMCountStructElementTypes.restype = ctypes.c_uint32
+  LLVMCountStructElementTypes.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCountStructElementTypes = _libraries['llvm'].LLVMCountStructElementTypes
-    LLVMCountStructElementTypes.restype = ctypes.c_uint32
-    LLVMCountStructElementTypes.argtypes = [LLVMTypeRef]
+  LLVMGetStructElementTypes = _libraries["llvm"].LLVMGetStructElementTypes
+  LLVMGetStructElementTypes.restype = None
+  LLVMGetStructElementTypes.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetStructElementTypes = _libraries['llvm'].LLVMGetStructElementTypes
-    LLVMGetStructElementTypes.restype = None
-    LLVMGetStructElementTypes.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType))]
+  LLVMStructGetTypeAtIndex = _libraries["llvm"].LLVMStructGetTypeAtIndex
+  LLVMStructGetTypeAtIndex.restype = LLVMTypeRef
+  LLVMStructGetTypeAtIndex.argtypes = [LLVMTypeRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMStructGetTypeAtIndex = _libraries['llvm'].LLVMStructGetTypeAtIndex
-    LLVMStructGetTypeAtIndex.restype = LLVMTypeRef
-    LLVMStructGetTypeAtIndex.argtypes = [LLVMTypeRef, ctypes.c_uint32]
+  LLVMIsPackedStruct = _libraries["llvm"].LLVMIsPackedStruct
+  LLVMIsPackedStruct.restype = LLVMBool
+  LLVMIsPackedStruct.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsPackedStruct = _libraries['llvm'].LLVMIsPackedStruct
-    LLVMIsPackedStruct.restype = LLVMBool
-    LLVMIsPackedStruct.argtypes = [LLVMTypeRef]
+  LLVMIsOpaqueStruct = _libraries["llvm"].LLVMIsOpaqueStruct
+  LLVMIsOpaqueStruct.restype = LLVMBool
+  LLVMIsOpaqueStruct.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsOpaqueStruct = _libraries['llvm'].LLVMIsOpaqueStruct
-    LLVMIsOpaqueStruct.restype = LLVMBool
-    LLVMIsOpaqueStruct.argtypes = [LLVMTypeRef]
+  LLVMIsLiteralStruct = _libraries["llvm"].LLVMIsLiteralStruct
+  LLVMIsLiteralStruct.restype = LLVMBool
+  LLVMIsLiteralStruct.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsLiteralStruct = _libraries['llvm'].LLVMIsLiteralStruct
-    LLVMIsLiteralStruct.restype = LLVMBool
-    LLVMIsLiteralStruct.argtypes = [LLVMTypeRef]
+  LLVMGetElementType = _libraries["llvm"].LLVMGetElementType
+  LLVMGetElementType.restype = LLVMTypeRef
+  LLVMGetElementType.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetElementType = _libraries['llvm'].LLVMGetElementType
-    LLVMGetElementType.restype = LLVMTypeRef
-    LLVMGetElementType.argtypes = [LLVMTypeRef]
+  LLVMGetSubtypes = _libraries["llvm"].LLVMGetSubtypes
+  LLVMGetSubtypes.restype = None
+  LLVMGetSubtypes.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSubtypes = _libraries['llvm'].LLVMGetSubtypes
-    LLVMGetSubtypes.restype = None
-    LLVMGetSubtypes.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType))]
+  LLVMGetNumContainedTypes = _libraries["llvm"].LLVMGetNumContainedTypes
+  LLVMGetNumContainedTypes.restype = ctypes.c_uint32
+  LLVMGetNumContainedTypes.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNumContainedTypes = _libraries['llvm'].LLVMGetNumContainedTypes
-    LLVMGetNumContainedTypes.restype = ctypes.c_uint32
-    LLVMGetNumContainedTypes.argtypes = [LLVMTypeRef]
+  LLVMArrayType = _libraries["llvm"].LLVMArrayType
+  LLVMArrayType.restype = LLVMTypeRef
+  LLVMArrayType.argtypes = [LLVMTypeRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMArrayType = _libraries['llvm'].LLVMArrayType
-    LLVMArrayType.restype = LLVMTypeRef
-    LLVMArrayType.argtypes = [LLVMTypeRef, ctypes.c_uint32]
+  LLVMGetArrayLength = _libraries["llvm"].LLVMGetArrayLength
+  LLVMGetArrayLength.restype = ctypes.c_uint32
+  LLVMGetArrayLength.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetArrayLength = _libraries['llvm'].LLVMGetArrayLength
-    LLVMGetArrayLength.restype = ctypes.c_uint32
-    LLVMGetArrayLength.argtypes = [LLVMTypeRef]
+  LLVMPointerType = _libraries["llvm"].LLVMPointerType
+  LLVMPointerType.restype = LLVMTypeRef
+  LLVMPointerType.argtypes = [LLVMTypeRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPointerType = _libraries['llvm'].LLVMPointerType
-    LLVMPointerType.restype = LLVMTypeRef
-    LLVMPointerType.argtypes = [LLVMTypeRef, ctypes.c_uint32]
+  LLVMGetPointerAddressSpace = _libraries["llvm"].LLVMGetPointerAddressSpace
+  LLVMGetPointerAddressSpace.restype = ctypes.c_uint32
+  LLVMGetPointerAddressSpace.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPointerAddressSpace = _libraries['llvm'].LLVMGetPointerAddressSpace
-    LLVMGetPointerAddressSpace.restype = ctypes.c_uint32
-    LLVMGetPointerAddressSpace.argtypes = [LLVMTypeRef]
+  LLVMVectorType = _libraries["llvm"].LLVMVectorType
+  LLVMVectorType.restype = LLVMTypeRef
+  LLVMVectorType.argtypes = [LLVMTypeRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMVectorType = _libraries['llvm'].LLVMVectorType
-    LLVMVectorType.restype = LLVMTypeRef
-    LLVMVectorType.argtypes = [LLVMTypeRef, ctypes.c_uint32]
+  LLVMScalableVectorType = _libraries["llvm"].LLVMScalableVectorType
+  LLVMScalableVectorType.restype = LLVMTypeRef
+  LLVMScalableVectorType.argtypes = [LLVMTypeRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMScalableVectorType = _libraries['llvm'].LLVMScalableVectorType
-    LLVMScalableVectorType.restype = LLVMTypeRef
-    LLVMScalableVectorType.argtypes = [LLVMTypeRef, ctypes.c_uint32]
+  LLVMGetVectorSize = _libraries["llvm"].LLVMGetVectorSize
+  LLVMGetVectorSize.restype = ctypes.c_uint32
+  LLVMGetVectorSize.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetVectorSize = _libraries['llvm'].LLVMGetVectorSize
-    LLVMGetVectorSize.restype = ctypes.c_uint32
-    LLVMGetVectorSize.argtypes = [LLVMTypeRef]
+  LLVMVoidTypeInContext = _libraries["llvm"].LLVMVoidTypeInContext
+  LLVMVoidTypeInContext.restype = LLVMTypeRef
+  LLVMVoidTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMVoidTypeInContext = _libraries['llvm'].LLVMVoidTypeInContext
-    LLVMVoidTypeInContext.restype = LLVMTypeRef
-    LLVMVoidTypeInContext.argtypes = [LLVMContextRef]
+  LLVMLabelTypeInContext = _libraries["llvm"].LLVMLabelTypeInContext
+  LLVMLabelTypeInContext.restype = LLVMTypeRef
+  LLVMLabelTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMLabelTypeInContext = _libraries['llvm'].LLVMLabelTypeInContext
-    LLVMLabelTypeInContext.restype = LLVMTypeRef
-    LLVMLabelTypeInContext.argtypes = [LLVMContextRef]
+  LLVMX86MMXTypeInContext = _libraries["llvm"].LLVMX86MMXTypeInContext
+  LLVMX86MMXTypeInContext.restype = LLVMTypeRef
+  LLVMX86MMXTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMX86MMXTypeInContext = _libraries['llvm'].LLVMX86MMXTypeInContext
-    LLVMX86MMXTypeInContext.restype = LLVMTypeRef
-    LLVMX86MMXTypeInContext.argtypes = [LLVMContextRef]
+  LLVMX86AMXTypeInContext = _libraries["llvm"].LLVMX86AMXTypeInContext
+  LLVMX86AMXTypeInContext.restype = LLVMTypeRef
+  LLVMX86AMXTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMX86AMXTypeInContext = _libraries['llvm'].LLVMX86AMXTypeInContext
-    LLVMX86AMXTypeInContext.restype = LLVMTypeRef
-    LLVMX86AMXTypeInContext.argtypes = [LLVMContextRef]
+  LLVMTokenTypeInContext = _libraries["llvm"].LLVMTokenTypeInContext
+  LLVMTokenTypeInContext.restype = LLVMTypeRef
+  LLVMTokenTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMTokenTypeInContext = _libraries['llvm'].LLVMTokenTypeInContext
-    LLVMTokenTypeInContext.restype = LLVMTypeRef
-    LLVMTokenTypeInContext.argtypes = [LLVMContextRef]
+  LLVMMetadataTypeInContext = _libraries["llvm"].LLVMMetadataTypeInContext
+  LLVMMetadataTypeInContext.restype = LLVMTypeRef
+  LLVMMetadataTypeInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMetadataTypeInContext = _libraries['llvm'].LLVMMetadataTypeInContext
-    LLVMMetadataTypeInContext.restype = LLVMTypeRef
-    LLVMMetadataTypeInContext.argtypes = [LLVMContextRef]
+  LLVMVoidType = _libraries["llvm"].LLVMVoidType
+  LLVMVoidType.restype = LLVMTypeRef
+  LLVMVoidType.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMVoidType = _libraries['llvm'].LLVMVoidType
-    LLVMVoidType.restype = LLVMTypeRef
-    LLVMVoidType.argtypes = []
+  LLVMLabelType = _libraries["llvm"].LLVMLabelType
+  LLVMLabelType.restype = LLVMTypeRef
+  LLVMLabelType.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMLabelType = _libraries['llvm'].LLVMLabelType
-    LLVMLabelType.restype = LLVMTypeRef
-    LLVMLabelType.argtypes = []
+  LLVMX86MMXType = _libraries["llvm"].LLVMX86MMXType
+  LLVMX86MMXType.restype = LLVMTypeRef
+  LLVMX86MMXType.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMX86MMXType = _libraries['llvm'].LLVMX86MMXType
-    LLVMX86MMXType.restype = LLVMTypeRef
-    LLVMX86MMXType.argtypes = []
+  LLVMX86AMXType = _libraries["llvm"].LLVMX86AMXType
+  LLVMX86AMXType.restype = LLVMTypeRef
+  LLVMX86AMXType.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMX86AMXType = _libraries['llvm'].LLVMX86AMXType
-    LLVMX86AMXType.restype = LLVMTypeRef
-    LLVMX86AMXType.argtypes = []
+  LLVMTypeOf = _libraries["llvm"].LLVMTypeOf
+  LLVMTypeOf.restype = LLVMTypeRef
+  LLVMTypeOf.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMTypeOf = _libraries['llvm'].LLVMTypeOf
-    LLVMTypeOf.restype = LLVMTypeRef
-    LLVMTypeOf.argtypes = [LLVMValueRef]
+  LLVMGetValueKind = _libraries["llvm"].LLVMGetValueKind
+  LLVMGetValueKind.restype = LLVMValueKind
+  LLVMGetValueKind.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetValueKind = _libraries['llvm'].LLVMGetValueKind
-    LLVMGetValueKind.restype = LLVMValueKind
-    LLVMGetValueKind.argtypes = [LLVMValueRef]
+  LLVMGetValueName2 = _libraries["llvm"].LLVMGetValueName2
+  LLVMGetValueName2.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetValueName2.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetValueName2 = _libraries['llvm'].LLVMGetValueName2
-    LLVMGetValueName2.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetValueName2.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMSetValueName2 = _libraries["llvm"].LLVMSetValueName2
+  LLVMSetValueName2.restype = None
+  LLVMSetValueName2.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char), size_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetValueName2 = _libraries['llvm'].LLVMSetValueName2
-    LLVMSetValueName2.restype = None
-    LLVMSetValueName2.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDumpValue = _libraries["llvm"].LLVMDumpValue
+  LLVMDumpValue.restype = None
+  LLVMDumpValue.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDumpValue = _libraries['llvm'].LLVMDumpValue
-    LLVMDumpValue.restype = None
-    LLVMDumpValue.argtypes = [LLVMValueRef]
+  LLVMPrintValueToString = _libraries["llvm"].LLVMPrintValueToString
+  LLVMPrintValueToString.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMPrintValueToString.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPrintValueToString = _libraries['llvm'].LLVMPrintValueToString
-    LLVMPrintValueToString.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMPrintValueToString.argtypes = [LLVMValueRef]
+  LLVMReplaceAllUsesWith = _libraries["llvm"].LLVMReplaceAllUsesWith
+  LLVMReplaceAllUsesWith.restype = None
+  LLVMReplaceAllUsesWith.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMReplaceAllUsesWith = _libraries['llvm'].LLVMReplaceAllUsesWith
-    LLVMReplaceAllUsesWith.restype = None
-    LLVMReplaceAllUsesWith.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMIsConstant = _libraries["llvm"].LLVMIsConstant
+  LLVMIsConstant.restype = LLVMBool
+  LLVMIsConstant.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsConstant = _libraries['llvm'].LLVMIsConstant
-    LLVMIsConstant.restype = LLVMBool
-    LLVMIsConstant.argtypes = [LLVMValueRef]
+  LLVMIsUndef = _libraries["llvm"].LLVMIsUndef
+  LLVMIsUndef.restype = LLVMBool
+  LLVMIsUndef.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsUndef = _libraries['llvm'].LLVMIsUndef
-    LLVMIsUndef.restype = LLVMBool
-    LLVMIsUndef.argtypes = [LLVMValueRef]
+  LLVMIsPoison = _libraries["llvm"].LLVMIsPoison
+  LLVMIsPoison.restype = LLVMBool
+  LLVMIsPoison.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsPoison = _libraries['llvm'].LLVMIsPoison
-    LLVMIsPoison.restype = LLVMBool
-    LLVMIsPoison.argtypes = [LLVMValueRef]
+  LLVMIsAArgument = _libraries["llvm"].LLVMIsAArgument
+  LLVMIsAArgument.restype = LLVMValueRef
+  LLVMIsAArgument.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAArgument = _libraries['llvm'].LLVMIsAArgument
-    LLVMIsAArgument.restype = LLVMValueRef
-    LLVMIsAArgument.argtypes = [LLVMValueRef]
+  LLVMIsABasicBlock = _libraries["llvm"].LLVMIsABasicBlock
+  LLVMIsABasicBlock.restype = LLVMValueRef
+  LLVMIsABasicBlock.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsABasicBlock = _libraries['llvm'].LLVMIsABasicBlock
-    LLVMIsABasicBlock.restype = LLVMValueRef
-    LLVMIsABasicBlock.argtypes = [LLVMValueRef]
+  LLVMIsAInlineAsm = _libraries["llvm"].LLVMIsAInlineAsm
+  LLVMIsAInlineAsm.restype = LLVMValueRef
+  LLVMIsAInlineAsm.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAInlineAsm = _libraries['llvm'].LLVMIsAInlineAsm
-    LLVMIsAInlineAsm.restype = LLVMValueRef
-    LLVMIsAInlineAsm.argtypes = [LLVMValueRef]
+  LLVMIsAUser = _libraries["llvm"].LLVMIsAUser
+  LLVMIsAUser.restype = LLVMValueRef
+  LLVMIsAUser.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAUser = _libraries['llvm'].LLVMIsAUser
-    LLVMIsAUser.restype = LLVMValueRef
-    LLVMIsAUser.argtypes = [LLVMValueRef]
+  LLVMIsAConstant = _libraries["llvm"].LLVMIsAConstant
+  LLVMIsAConstant.restype = LLVMValueRef
+  LLVMIsAConstant.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstant = _libraries['llvm'].LLVMIsAConstant
-    LLVMIsAConstant.restype = LLVMValueRef
-    LLVMIsAConstant.argtypes = [LLVMValueRef]
+  LLVMIsABlockAddress = _libraries["llvm"].LLVMIsABlockAddress
+  LLVMIsABlockAddress.restype = LLVMValueRef
+  LLVMIsABlockAddress.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsABlockAddress = _libraries['llvm'].LLVMIsABlockAddress
-    LLVMIsABlockAddress.restype = LLVMValueRef
-    LLVMIsABlockAddress.argtypes = [LLVMValueRef]
+  LLVMIsAConstantAggregateZero = _libraries["llvm"].LLVMIsAConstantAggregateZero
+  LLVMIsAConstantAggregateZero.restype = LLVMValueRef
+  LLVMIsAConstantAggregateZero.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantAggregateZero = _libraries['llvm'].LLVMIsAConstantAggregateZero
-    LLVMIsAConstantAggregateZero.restype = LLVMValueRef
-    LLVMIsAConstantAggregateZero.argtypes = [LLVMValueRef]
+  LLVMIsAConstantArray = _libraries["llvm"].LLVMIsAConstantArray
+  LLVMIsAConstantArray.restype = LLVMValueRef
+  LLVMIsAConstantArray.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantArray = _libraries['llvm'].LLVMIsAConstantArray
-    LLVMIsAConstantArray.restype = LLVMValueRef
-    LLVMIsAConstantArray.argtypes = [LLVMValueRef]
+  LLVMIsAConstantDataSequential = _libraries["llvm"].LLVMIsAConstantDataSequential
+  LLVMIsAConstantDataSequential.restype = LLVMValueRef
+  LLVMIsAConstantDataSequential.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantDataSequential = _libraries['llvm'].LLVMIsAConstantDataSequential
-    LLVMIsAConstantDataSequential.restype = LLVMValueRef
-    LLVMIsAConstantDataSequential.argtypes = [LLVMValueRef]
+  LLVMIsAConstantDataArray = _libraries["llvm"].LLVMIsAConstantDataArray
+  LLVMIsAConstantDataArray.restype = LLVMValueRef
+  LLVMIsAConstantDataArray.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantDataArray = _libraries['llvm'].LLVMIsAConstantDataArray
-    LLVMIsAConstantDataArray.restype = LLVMValueRef
-    LLVMIsAConstantDataArray.argtypes = [LLVMValueRef]
+  LLVMIsAConstantDataVector = _libraries["llvm"].LLVMIsAConstantDataVector
+  LLVMIsAConstantDataVector.restype = LLVMValueRef
+  LLVMIsAConstantDataVector.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantDataVector = _libraries['llvm'].LLVMIsAConstantDataVector
-    LLVMIsAConstantDataVector.restype = LLVMValueRef
-    LLVMIsAConstantDataVector.argtypes = [LLVMValueRef]
+  LLVMIsAConstantExpr = _libraries["llvm"].LLVMIsAConstantExpr
+  LLVMIsAConstantExpr.restype = LLVMValueRef
+  LLVMIsAConstantExpr.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantExpr = _libraries['llvm'].LLVMIsAConstantExpr
-    LLVMIsAConstantExpr.restype = LLVMValueRef
-    LLVMIsAConstantExpr.argtypes = [LLVMValueRef]
+  LLVMIsAConstantFP = _libraries["llvm"].LLVMIsAConstantFP
+  LLVMIsAConstantFP.restype = LLVMValueRef
+  LLVMIsAConstantFP.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantFP = _libraries['llvm'].LLVMIsAConstantFP
-    LLVMIsAConstantFP.restype = LLVMValueRef
-    LLVMIsAConstantFP.argtypes = [LLVMValueRef]
+  LLVMIsAConstantInt = _libraries["llvm"].LLVMIsAConstantInt
+  LLVMIsAConstantInt.restype = LLVMValueRef
+  LLVMIsAConstantInt.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantInt = _libraries['llvm'].LLVMIsAConstantInt
-    LLVMIsAConstantInt.restype = LLVMValueRef
-    LLVMIsAConstantInt.argtypes = [LLVMValueRef]
+  LLVMIsAConstantPointerNull = _libraries["llvm"].LLVMIsAConstantPointerNull
+  LLVMIsAConstantPointerNull.restype = LLVMValueRef
+  LLVMIsAConstantPointerNull.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantPointerNull = _libraries['llvm'].LLVMIsAConstantPointerNull
-    LLVMIsAConstantPointerNull.restype = LLVMValueRef
-    LLVMIsAConstantPointerNull.argtypes = [LLVMValueRef]
+  LLVMIsAConstantStruct = _libraries["llvm"].LLVMIsAConstantStruct
+  LLVMIsAConstantStruct.restype = LLVMValueRef
+  LLVMIsAConstantStruct.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantStruct = _libraries['llvm'].LLVMIsAConstantStruct
-    LLVMIsAConstantStruct.restype = LLVMValueRef
-    LLVMIsAConstantStruct.argtypes = [LLVMValueRef]
+  LLVMIsAConstantTokenNone = _libraries["llvm"].LLVMIsAConstantTokenNone
+  LLVMIsAConstantTokenNone.restype = LLVMValueRef
+  LLVMIsAConstantTokenNone.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantTokenNone = _libraries['llvm'].LLVMIsAConstantTokenNone
-    LLVMIsAConstantTokenNone.restype = LLVMValueRef
-    LLVMIsAConstantTokenNone.argtypes = [LLVMValueRef]
+  LLVMIsAConstantVector = _libraries["llvm"].LLVMIsAConstantVector
+  LLVMIsAConstantVector.restype = LLVMValueRef
+  LLVMIsAConstantVector.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAConstantVector = _libraries['llvm'].LLVMIsAConstantVector
-    LLVMIsAConstantVector.restype = LLVMValueRef
-    LLVMIsAConstantVector.argtypes = [LLVMValueRef]
+  LLVMIsAGlobalValue = _libraries["llvm"].LLVMIsAGlobalValue
+  LLVMIsAGlobalValue.restype = LLVMValueRef
+  LLVMIsAGlobalValue.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAGlobalValue = _libraries['llvm'].LLVMIsAGlobalValue
-    LLVMIsAGlobalValue.restype = LLVMValueRef
-    LLVMIsAGlobalValue.argtypes = [LLVMValueRef]
+  LLVMIsAGlobalAlias = _libraries["llvm"].LLVMIsAGlobalAlias
+  LLVMIsAGlobalAlias.restype = LLVMValueRef
+  LLVMIsAGlobalAlias.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAGlobalAlias = _libraries['llvm'].LLVMIsAGlobalAlias
-    LLVMIsAGlobalAlias.restype = LLVMValueRef
-    LLVMIsAGlobalAlias.argtypes = [LLVMValueRef]
+  LLVMIsAGlobalObject = _libraries["llvm"].LLVMIsAGlobalObject
+  LLVMIsAGlobalObject.restype = LLVMValueRef
+  LLVMIsAGlobalObject.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAGlobalObject = _libraries['llvm'].LLVMIsAGlobalObject
-    LLVMIsAGlobalObject.restype = LLVMValueRef
-    LLVMIsAGlobalObject.argtypes = [LLVMValueRef]
+  LLVMIsAFunction = _libraries["llvm"].LLVMIsAFunction
+  LLVMIsAFunction.restype = LLVMValueRef
+  LLVMIsAFunction.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAFunction = _libraries['llvm'].LLVMIsAFunction
-    LLVMIsAFunction.restype = LLVMValueRef
-    LLVMIsAFunction.argtypes = [LLVMValueRef]
+  LLVMIsAGlobalVariable = _libraries["llvm"].LLVMIsAGlobalVariable
+  LLVMIsAGlobalVariable.restype = LLVMValueRef
+  LLVMIsAGlobalVariable.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAGlobalVariable = _libraries['llvm'].LLVMIsAGlobalVariable
-    LLVMIsAGlobalVariable.restype = LLVMValueRef
-    LLVMIsAGlobalVariable.argtypes = [LLVMValueRef]
+  LLVMIsAGlobalIFunc = _libraries["llvm"].LLVMIsAGlobalIFunc
+  LLVMIsAGlobalIFunc.restype = LLVMValueRef
+  LLVMIsAGlobalIFunc.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAGlobalIFunc = _libraries['llvm'].LLVMIsAGlobalIFunc
-    LLVMIsAGlobalIFunc.restype = LLVMValueRef
-    LLVMIsAGlobalIFunc.argtypes = [LLVMValueRef]
+  LLVMIsAUndefValue = _libraries["llvm"].LLVMIsAUndefValue
+  LLVMIsAUndefValue.restype = LLVMValueRef
+  LLVMIsAUndefValue.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAUndefValue = _libraries['llvm'].LLVMIsAUndefValue
-    LLVMIsAUndefValue.restype = LLVMValueRef
-    LLVMIsAUndefValue.argtypes = [LLVMValueRef]
+  LLVMIsAPoisonValue = _libraries["llvm"].LLVMIsAPoisonValue
+  LLVMIsAPoisonValue.restype = LLVMValueRef
+  LLVMIsAPoisonValue.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAPoisonValue = _libraries['llvm'].LLVMIsAPoisonValue
-    LLVMIsAPoisonValue.restype = LLVMValueRef
-    LLVMIsAPoisonValue.argtypes = [LLVMValueRef]
+  LLVMIsAInstruction = _libraries["llvm"].LLVMIsAInstruction
+  LLVMIsAInstruction.restype = LLVMValueRef
+  LLVMIsAInstruction.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAInstruction = _libraries['llvm'].LLVMIsAInstruction
-    LLVMIsAInstruction.restype = LLVMValueRef
-    LLVMIsAInstruction.argtypes = [LLVMValueRef]
+  LLVMIsAUnaryOperator = _libraries["llvm"].LLVMIsAUnaryOperator
+  LLVMIsAUnaryOperator.restype = LLVMValueRef
+  LLVMIsAUnaryOperator.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAUnaryOperator = _libraries['llvm'].LLVMIsAUnaryOperator
-    LLVMIsAUnaryOperator.restype = LLVMValueRef
-    LLVMIsAUnaryOperator.argtypes = [LLVMValueRef]
+  LLVMIsABinaryOperator = _libraries["llvm"].LLVMIsABinaryOperator
+  LLVMIsABinaryOperator.restype = LLVMValueRef
+  LLVMIsABinaryOperator.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsABinaryOperator = _libraries['llvm'].LLVMIsABinaryOperator
-    LLVMIsABinaryOperator.restype = LLVMValueRef
-    LLVMIsABinaryOperator.argtypes = [LLVMValueRef]
+  LLVMIsACallInst = _libraries["llvm"].LLVMIsACallInst
+  LLVMIsACallInst.restype = LLVMValueRef
+  LLVMIsACallInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsACallInst = _libraries['llvm'].LLVMIsACallInst
-    LLVMIsACallInst.restype = LLVMValueRef
-    LLVMIsACallInst.argtypes = [LLVMValueRef]
+  LLVMIsAIntrinsicInst = _libraries["llvm"].LLVMIsAIntrinsicInst
+  LLVMIsAIntrinsicInst.restype = LLVMValueRef
+  LLVMIsAIntrinsicInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAIntrinsicInst = _libraries['llvm'].LLVMIsAIntrinsicInst
-    LLVMIsAIntrinsicInst.restype = LLVMValueRef
-    LLVMIsAIntrinsicInst.argtypes = [LLVMValueRef]
+  LLVMIsADbgInfoIntrinsic = _libraries["llvm"].LLVMIsADbgInfoIntrinsic
+  LLVMIsADbgInfoIntrinsic.restype = LLVMValueRef
+  LLVMIsADbgInfoIntrinsic.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsADbgInfoIntrinsic = _libraries['llvm'].LLVMIsADbgInfoIntrinsic
-    LLVMIsADbgInfoIntrinsic.restype = LLVMValueRef
-    LLVMIsADbgInfoIntrinsic.argtypes = [LLVMValueRef]
+  LLVMIsADbgVariableIntrinsic = _libraries["llvm"].LLVMIsADbgVariableIntrinsic
+  LLVMIsADbgVariableIntrinsic.restype = LLVMValueRef
+  LLVMIsADbgVariableIntrinsic.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsADbgVariableIntrinsic = _libraries['llvm'].LLVMIsADbgVariableIntrinsic
-    LLVMIsADbgVariableIntrinsic.restype = LLVMValueRef
-    LLVMIsADbgVariableIntrinsic.argtypes = [LLVMValueRef]
+  LLVMIsADbgDeclareInst = _libraries["llvm"].LLVMIsADbgDeclareInst
+  LLVMIsADbgDeclareInst.restype = LLVMValueRef
+  LLVMIsADbgDeclareInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsADbgDeclareInst = _libraries['llvm'].LLVMIsADbgDeclareInst
-    LLVMIsADbgDeclareInst.restype = LLVMValueRef
-    LLVMIsADbgDeclareInst.argtypes = [LLVMValueRef]
+  LLVMIsADbgLabelInst = _libraries["llvm"].LLVMIsADbgLabelInst
+  LLVMIsADbgLabelInst.restype = LLVMValueRef
+  LLVMIsADbgLabelInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsADbgLabelInst = _libraries['llvm'].LLVMIsADbgLabelInst
-    LLVMIsADbgLabelInst.restype = LLVMValueRef
-    LLVMIsADbgLabelInst.argtypes = [LLVMValueRef]
+  LLVMIsAMemIntrinsic = _libraries["llvm"].LLVMIsAMemIntrinsic
+  LLVMIsAMemIntrinsic.restype = LLVMValueRef
+  LLVMIsAMemIntrinsic.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAMemIntrinsic = _libraries['llvm'].LLVMIsAMemIntrinsic
-    LLVMIsAMemIntrinsic.restype = LLVMValueRef
-    LLVMIsAMemIntrinsic.argtypes = [LLVMValueRef]
+  LLVMIsAMemCpyInst = _libraries["llvm"].LLVMIsAMemCpyInst
+  LLVMIsAMemCpyInst.restype = LLVMValueRef
+  LLVMIsAMemCpyInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAMemCpyInst = _libraries['llvm'].LLVMIsAMemCpyInst
-    LLVMIsAMemCpyInst.restype = LLVMValueRef
-    LLVMIsAMemCpyInst.argtypes = [LLVMValueRef]
+  LLVMIsAMemMoveInst = _libraries["llvm"].LLVMIsAMemMoveInst
+  LLVMIsAMemMoveInst.restype = LLVMValueRef
+  LLVMIsAMemMoveInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAMemMoveInst = _libraries['llvm'].LLVMIsAMemMoveInst
-    LLVMIsAMemMoveInst.restype = LLVMValueRef
-    LLVMIsAMemMoveInst.argtypes = [LLVMValueRef]
+  LLVMIsAMemSetInst = _libraries["llvm"].LLVMIsAMemSetInst
+  LLVMIsAMemSetInst.restype = LLVMValueRef
+  LLVMIsAMemSetInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAMemSetInst = _libraries['llvm'].LLVMIsAMemSetInst
-    LLVMIsAMemSetInst.restype = LLVMValueRef
-    LLVMIsAMemSetInst.argtypes = [LLVMValueRef]
+  LLVMIsACmpInst = _libraries["llvm"].LLVMIsACmpInst
+  LLVMIsACmpInst.restype = LLVMValueRef
+  LLVMIsACmpInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsACmpInst = _libraries['llvm'].LLVMIsACmpInst
-    LLVMIsACmpInst.restype = LLVMValueRef
-    LLVMIsACmpInst.argtypes = [LLVMValueRef]
+  LLVMIsAFCmpInst = _libraries["llvm"].LLVMIsAFCmpInst
+  LLVMIsAFCmpInst.restype = LLVMValueRef
+  LLVMIsAFCmpInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAFCmpInst = _libraries['llvm'].LLVMIsAFCmpInst
-    LLVMIsAFCmpInst.restype = LLVMValueRef
-    LLVMIsAFCmpInst.argtypes = [LLVMValueRef]
+  LLVMIsAICmpInst = _libraries["llvm"].LLVMIsAICmpInst
+  LLVMIsAICmpInst.restype = LLVMValueRef
+  LLVMIsAICmpInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAICmpInst = _libraries['llvm'].LLVMIsAICmpInst
-    LLVMIsAICmpInst.restype = LLVMValueRef
-    LLVMIsAICmpInst.argtypes = [LLVMValueRef]
+  LLVMIsAExtractElementInst = _libraries["llvm"].LLVMIsAExtractElementInst
+  LLVMIsAExtractElementInst.restype = LLVMValueRef
+  LLVMIsAExtractElementInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAExtractElementInst = _libraries['llvm'].LLVMIsAExtractElementInst
-    LLVMIsAExtractElementInst.restype = LLVMValueRef
-    LLVMIsAExtractElementInst.argtypes = [LLVMValueRef]
+  LLVMIsAGetElementPtrInst = _libraries["llvm"].LLVMIsAGetElementPtrInst
+  LLVMIsAGetElementPtrInst.restype = LLVMValueRef
+  LLVMIsAGetElementPtrInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAGetElementPtrInst = _libraries['llvm'].LLVMIsAGetElementPtrInst
-    LLVMIsAGetElementPtrInst.restype = LLVMValueRef
-    LLVMIsAGetElementPtrInst.argtypes = [LLVMValueRef]
+  LLVMIsAInsertElementInst = _libraries["llvm"].LLVMIsAInsertElementInst
+  LLVMIsAInsertElementInst.restype = LLVMValueRef
+  LLVMIsAInsertElementInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAInsertElementInst = _libraries['llvm'].LLVMIsAInsertElementInst
-    LLVMIsAInsertElementInst.restype = LLVMValueRef
-    LLVMIsAInsertElementInst.argtypes = [LLVMValueRef]
+  LLVMIsAInsertValueInst = _libraries["llvm"].LLVMIsAInsertValueInst
+  LLVMIsAInsertValueInst.restype = LLVMValueRef
+  LLVMIsAInsertValueInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAInsertValueInst = _libraries['llvm'].LLVMIsAInsertValueInst
-    LLVMIsAInsertValueInst.restype = LLVMValueRef
-    LLVMIsAInsertValueInst.argtypes = [LLVMValueRef]
+  LLVMIsALandingPadInst = _libraries["llvm"].LLVMIsALandingPadInst
+  LLVMIsALandingPadInst.restype = LLVMValueRef
+  LLVMIsALandingPadInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsALandingPadInst = _libraries['llvm'].LLVMIsALandingPadInst
-    LLVMIsALandingPadInst.restype = LLVMValueRef
-    LLVMIsALandingPadInst.argtypes = [LLVMValueRef]
+  LLVMIsAPHINode = _libraries["llvm"].LLVMIsAPHINode
+  LLVMIsAPHINode.restype = LLVMValueRef
+  LLVMIsAPHINode.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAPHINode = _libraries['llvm'].LLVMIsAPHINode
-    LLVMIsAPHINode.restype = LLVMValueRef
-    LLVMIsAPHINode.argtypes = [LLVMValueRef]
+  LLVMIsASelectInst = _libraries["llvm"].LLVMIsASelectInst
+  LLVMIsASelectInst.restype = LLVMValueRef
+  LLVMIsASelectInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsASelectInst = _libraries['llvm'].LLVMIsASelectInst
-    LLVMIsASelectInst.restype = LLVMValueRef
-    LLVMIsASelectInst.argtypes = [LLVMValueRef]
+  LLVMIsAShuffleVectorInst = _libraries["llvm"].LLVMIsAShuffleVectorInst
+  LLVMIsAShuffleVectorInst.restype = LLVMValueRef
+  LLVMIsAShuffleVectorInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAShuffleVectorInst = _libraries['llvm'].LLVMIsAShuffleVectorInst
-    LLVMIsAShuffleVectorInst.restype = LLVMValueRef
-    LLVMIsAShuffleVectorInst.argtypes = [LLVMValueRef]
+  LLVMIsAStoreInst = _libraries["llvm"].LLVMIsAStoreInst
+  LLVMIsAStoreInst.restype = LLVMValueRef
+  LLVMIsAStoreInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAStoreInst = _libraries['llvm'].LLVMIsAStoreInst
-    LLVMIsAStoreInst.restype = LLVMValueRef
-    LLVMIsAStoreInst.argtypes = [LLVMValueRef]
+  LLVMIsABranchInst = _libraries["llvm"].LLVMIsABranchInst
+  LLVMIsABranchInst.restype = LLVMValueRef
+  LLVMIsABranchInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsABranchInst = _libraries['llvm'].LLVMIsABranchInst
-    LLVMIsABranchInst.restype = LLVMValueRef
-    LLVMIsABranchInst.argtypes = [LLVMValueRef]
+  LLVMIsAIndirectBrInst = _libraries["llvm"].LLVMIsAIndirectBrInst
+  LLVMIsAIndirectBrInst.restype = LLVMValueRef
+  LLVMIsAIndirectBrInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAIndirectBrInst = _libraries['llvm'].LLVMIsAIndirectBrInst
-    LLVMIsAIndirectBrInst.restype = LLVMValueRef
-    LLVMIsAIndirectBrInst.argtypes = [LLVMValueRef]
+  LLVMIsAInvokeInst = _libraries["llvm"].LLVMIsAInvokeInst
+  LLVMIsAInvokeInst.restype = LLVMValueRef
+  LLVMIsAInvokeInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAInvokeInst = _libraries['llvm'].LLVMIsAInvokeInst
-    LLVMIsAInvokeInst.restype = LLVMValueRef
-    LLVMIsAInvokeInst.argtypes = [LLVMValueRef]
+  LLVMIsAReturnInst = _libraries["llvm"].LLVMIsAReturnInst
+  LLVMIsAReturnInst.restype = LLVMValueRef
+  LLVMIsAReturnInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAReturnInst = _libraries['llvm'].LLVMIsAReturnInst
-    LLVMIsAReturnInst.restype = LLVMValueRef
-    LLVMIsAReturnInst.argtypes = [LLVMValueRef]
+  LLVMIsASwitchInst = _libraries["llvm"].LLVMIsASwitchInst
+  LLVMIsASwitchInst.restype = LLVMValueRef
+  LLVMIsASwitchInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsASwitchInst = _libraries['llvm'].LLVMIsASwitchInst
-    LLVMIsASwitchInst.restype = LLVMValueRef
-    LLVMIsASwitchInst.argtypes = [LLVMValueRef]
+  LLVMIsAUnreachableInst = _libraries["llvm"].LLVMIsAUnreachableInst
+  LLVMIsAUnreachableInst.restype = LLVMValueRef
+  LLVMIsAUnreachableInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAUnreachableInst = _libraries['llvm'].LLVMIsAUnreachableInst
-    LLVMIsAUnreachableInst.restype = LLVMValueRef
-    LLVMIsAUnreachableInst.argtypes = [LLVMValueRef]
+  LLVMIsAResumeInst = _libraries["llvm"].LLVMIsAResumeInst
+  LLVMIsAResumeInst.restype = LLVMValueRef
+  LLVMIsAResumeInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAResumeInst = _libraries['llvm'].LLVMIsAResumeInst
-    LLVMIsAResumeInst.restype = LLVMValueRef
-    LLVMIsAResumeInst.argtypes = [LLVMValueRef]
+  LLVMIsACleanupReturnInst = _libraries["llvm"].LLVMIsACleanupReturnInst
+  LLVMIsACleanupReturnInst.restype = LLVMValueRef
+  LLVMIsACleanupReturnInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsACleanupReturnInst = _libraries['llvm'].LLVMIsACleanupReturnInst
-    LLVMIsACleanupReturnInst.restype = LLVMValueRef
-    LLVMIsACleanupReturnInst.argtypes = [LLVMValueRef]
+  LLVMIsACatchReturnInst = _libraries["llvm"].LLVMIsACatchReturnInst
+  LLVMIsACatchReturnInst.restype = LLVMValueRef
+  LLVMIsACatchReturnInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsACatchReturnInst = _libraries['llvm'].LLVMIsACatchReturnInst
-    LLVMIsACatchReturnInst.restype = LLVMValueRef
-    LLVMIsACatchReturnInst.argtypes = [LLVMValueRef]
+  LLVMIsACatchSwitchInst = _libraries["llvm"].LLVMIsACatchSwitchInst
+  LLVMIsACatchSwitchInst.restype = LLVMValueRef
+  LLVMIsACatchSwitchInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsACatchSwitchInst = _libraries['llvm'].LLVMIsACatchSwitchInst
-    LLVMIsACatchSwitchInst.restype = LLVMValueRef
-    LLVMIsACatchSwitchInst.argtypes = [LLVMValueRef]
+  LLVMIsACallBrInst = _libraries["llvm"].LLVMIsACallBrInst
+  LLVMIsACallBrInst.restype = LLVMValueRef
+  LLVMIsACallBrInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsACallBrInst = _libraries['llvm'].LLVMIsACallBrInst
-    LLVMIsACallBrInst.restype = LLVMValueRef
-    LLVMIsACallBrInst.argtypes = [LLVMValueRef]
+  LLVMIsAFuncletPadInst = _libraries["llvm"].LLVMIsAFuncletPadInst
+  LLVMIsAFuncletPadInst.restype = LLVMValueRef
+  LLVMIsAFuncletPadInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAFuncletPadInst = _libraries['llvm'].LLVMIsAFuncletPadInst
-    LLVMIsAFuncletPadInst.restype = LLVMValueRef
-    LLVMIsAFuncletPadInst.argtypes = [LLVMValueRef]
+  LLVMIsACatchPadInst = _libraries["llvm"].LLVMIsACatchPadInst
+  LLVMIsACatchPadInst.restype = LLVMValueRef
+  LLVMIsACatchPadInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsACatchPadInst = _libraries['llvm'].LLVMIsACatchPadInst
-    LLVMIsACatchPadInst.restype = LLVMValueRef
-    LLVMIsACatchPadInst.argtypes = [LLVMValueRef]
+  LLVMIsACleanupPadInst = _libraries["llvm"].LLVMIsACleanupPadInst
+  LLVMIsACleanupPadInst.restype = LLVMValueRef
+  LLVMIsACleanupPadInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsACleanupPadInst = _libraries['llvm'].LLVMIsACleanupPadInst
-    LLVMIsACleanupPadInst.restype = LLVMValueRef
-    LLVMIsACleanupPadInst.argtypes = [LLVMValueRef]
+  LLVMIsAUnaryInstruction = _libraries["llvm"].LLVMIsAUnaryInstruction
+  LLVMIsAUnaryInstruction.restype = LLVMValueRef
+  LLVMIsAUnaryInstruction.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAUnaryInstruction = _libraries['llvm'].LLVMIsAUnaryInstruction
-    LLVMIsAUnaryInstruction.restype = LLVMValueRef
-    LLVMIsAUnaryInstruction.argtypes = [LLVMValueRef]
+  LLVMIsAAllocaInst = _libraries["llvm"].LLVMIsAAllocaInst
+  LLVMIsAAllocaInst.restype = LLVMValueRef
+  LLVMIsAAllocaInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAAllocaInst = _libraries['llvm'].LLVMIsAAllocaInst
-    LLVMIsAAllocaInst.restype = LLVMValueRef
-    LLVMIsAAllocaInst.argtypes = [LLVMValueRef]
+  LLVMIsACastInst = _libraries["llvm"].LLVMIsACastInst
+  LLVMIsACastInst.restype = LLVMValueRef
+  LLVMIsACastInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsACastInst = _libraries['llvm'].LLVMIsACastInst
-    LLVMIsACastInst.restype = LLVMValueRef
-    LLVMIsACastInst.argtypes = [LLVMValueRef]
+  LLVMIsAAddrSpaceCastInst = _libraries["llvm"].LLVMIsAAddrSpaceCastInst
+  LLVMIsAAddrSpaceCastInst.restype = LLVMValueRef
+  LLVMIsAAddrSpaceCastInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAAddrSpaceCastInst = _libraries['llvm'].LLVMIsAAddrSpaceCastInst
-    LLVMIsAAddrSpaceCastInst.restype = LLVMValueRef
-    LLVMIsAAddrSpaceCastInst.argtypes = [LLVMValueRef]
+  LLVMIsABitCastInst = _libraries["llvm"].LLVMIsABitCastInst
+  LLVMIsABitCastInst.restype = LLVMValueRef
+  LLVMIsABitCastInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsABitCastInst = _libraries['llvm'].LLVMIsABitCastInst
-    LLVMIsABitCastInst.restype = LLVMValueRef
-    LLVMIsABitCastInst.argtypes = [LLVMValueRef]
+  LLVMIsAFPExtInst = _libraries["llvm"].LLVMIsAFPExtInst
+  LLVMIsAFPExtInst.restype = LLVMValueRef
+  LLVMIsAFPExtInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAFPExtInst = _libraries['llvm'].LLVMIsAFPExtInst
-    LLVMIsAFPExtInst.restype = LLVMValueRef
-    LLVMIsAFPExtInst.argtypes = [LLVMValueRef]
+  LLVMIsAFPToSIInst = _libraries["llvm"].LLVMIsAFPToSIInst
+  LLVMIsAFPToSIInst.restype = LLVMValueRef
+  LLVMIsAFPToSIInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAFPToSIInst = _libraries['llvm'].LLVMIsAFPToSIInst
-    LLVMIsAFPToSIInst.restype = LLVMValueRef
-    LLVMIsAFPToSIInst.argtypes = [LLVMValueRef]
+  LLVMIsAFPToUIInst = _libraries["llvm"].LLVMIsAFPToUIInst
+  LLVMIsAFPToUIInst.restype = LLVMValueRef
+  LLVMIsAFPToUIInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAFPToUIInst = _libraries['llvm'].LLVMIsAFPToUIInst
-    LLVMIsAFPToUIInst.restype = LLVMValueRef
-    LLVMIsAFPToUIInst.argtypes = [LLVMValueRef]
+  LLVMIsAFPTruncInst = _libraries["llvm"].LLVMIsAFPTruncInst
+  LLVMIsAFPTruncInst.restype = LLVMValueRef
+  LLVMIsAFPTruncInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAFPTruncInst = _libraries['llvm'].LLVMIsAFPTruncInst
-    LLVMIsAFPTruncInst.restype = LLVMValueRef
-    LLVMIsAFPTruncInst.argtypes = [LLVMValueRef]
+  LLVMIsAIntToPtrInst = _libraries["llvm"].LLVMIsAIntToPtrInst
+  LLVMIsAIntToPtrInst.restype = LLVMValueRef
+  LLVMIsAIntToPtrInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAIntToPtrInst = _libraries['llvm'].LLVMIsAIntToPtrInst
-    LLVMIsAIntToPtrInst.restype = LLVMValueRef
-    LLVMIsAIntToPtrInst.argtypes = [LLVMValueRef]
+  LLVMIsAPtrToIntInst = _libraries["llvm"].LLVMIsAPtrToIntInst
+  LLVMIsAPtrToIntInst.restype = LLVMValueRef
+  LLVMIsAPtrToIntInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAPtrToIntInst = _libraries['llvm'].LLVMIsAPtrToIntInst
-    LLVMIsAPtrToIntInst.restype = LLVMValueRef
-    LLVMIsAPtrToIntInst.argtypes = [LLVMValueRef]
+  LLVMIsASExtInst = _libraries["llvm"].LLVMIsASExtInst
+  LLVMIsASExtInst.restype = LLVMValueRef
+  LLVMIsASExtInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsASExtInst = _libraries['llvm'].LLVMIsASExtInst
-    LLVMIsASExtInst.restype = LLVMValueRef
-    LLVMIsASExtInst.argtypes = [LLVMValueRef]
+  LLVMIsASIToFPInst = _libraries["llvm"].LLVMIsASIToFPInst
+  LLVMIsASIToFPInst.restype = LLVMValueRef
+  LLVMIsASIToFPInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsASIToFPInst = _libraries['llvm'].LLVMIsASIToFPInst
-    LLVMIsASIToFPInst.restype = LLVMValueRef
-    LLVMIsASIToFPInst.argtypes = [LLVMValueRef]
+  LLVMIsATruncInst = _libraries["llvm"].LLVMIsATruncInst
+  LLVMIsATruncInst.restype = LLVMValueRef
+  LLVMIsATruncInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsATruncInst = _libraries['llvm'].LLVMIsATruncInst
-    LLVMIsATruncInst.restype = LLVMValueRef
-    LLVMIsATruncInst.argtypes = [LLVMValueRef]
+  LLVMIsAUIToFPInst = _libraries["llvm"].LLVMIsAUIToFPInst
+  LLVMIsAUIToFPInst.restype = LLVMValueRef
+  LLVMIsAUIToFPInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAUIToFPInst = _libraries['llvm'].LLVMIsAUIToFPInst
-    LLVMIsAUIToFPInst.restype = LLVMValueRef
-    LLVMIsAUIToFPInst.argtypes = [LLVMValueRef]
+  LLVMIsAZExtInst = _libraries["llvm"].LLVMIsAZExtInst
+  LLVMIsAZExtInst.restype = LLVMValueRef
+  LLVMIsAZExtInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAZExtInst = _libraries['llvm'].LLVMIsAZExtInst
-    LLVMIsAZExtInst.restype = LLVMValueRef
-    LLVMIsAZExtInst.argtypes = [LLVMValueRef]
+  LLVMIsAExtractValueInst = _libraries["llvm"].LLVMIsAExtractValueInst
+  LLVMIsAExtractValueInst.restype = LLVMValueRef
+  LLVMIsAExtractValueInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAExtractValueInst = _libraries['llvm'].LLVMIsAExtractValueInst
-    LLVMIsAExtractValueInst.restype = LLVMValueRef
-    LLVMIsAExtractValueInst.argtypes = [LLVMValueRef]
+  LLVMIsALoadInst = _libraries["llvm"].LLVMIsALoadInst
+  LLVMIsALoadInst.restype = LLVMValueRef
+  LLVMIsALoadInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsALoadInst = _libraries['llvm'].LLVMIsALoadInst
-    LLVMIsALoadInst.restype = LLVMValueRef
-    LLVMIsALoadInst.argtypes = [LLVMValueRef]
+  LLVMIsAVAArgInst = _libraries["llvm"].LLVMIsAVAArgInst
+  LLVMIsAVAArgInst.restype = LLVMValueRef
+  LLVMIsAVAArgInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAVAArgInst = _libraries['llvm'].LLVMIsAVAArgInst
-    LLVMIsAVAArgInst.restype = LLVMValueRef
-    LLVMIsAVAArgInst.argtypes = [LLVMValueRef]
+  LLVMIsAFreezeInst = _libraries["llvm"].LLVMIsAFreezeInst
+  LLVMIsAFreezeInst.restype = LLVMValueRef
+  LLVMIsAFreezeInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAFreezeInst = _libraries['llvm'].LLVMIsAFreezeInst
-    LLVMIsAFreezeInst.restype = LLVMValueRef
-    LLVMIsAFreezeInst.argtypes = [LLVMValueRef]
+  LLVMIsAAtomicCmpXchgInst = _libraries["llvm"].LLVMIsAAtomicCmpXchgInst
+  LLVMIsAAtomicCmpXchgInst.restype = LLVMValueRef
+  LLVMIsAAtomicCmpXchgInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAAtomicCmpXchgInst = _libraries['llvm'].LLVMIsAAtomicCmpXchgInst
-    LLVMIsAAtomicCmpXchgInst.restype = LLVMValueRef
-    LLVMIsAAtomicCmpXchgInst.argtypes = [LLVMValueRef]
+  LLVMIsAAtomicRMWInst = _libraries["llvm"].LLVMIsAAtomicRMWInst
+  LLVMIsAAtomicRMWInst.restype = LLVMValueRef
+  LLVMIsAAtomicRMWInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAAtomicRMWInst = _libraries['llvm'].LLVMIsAAtomicRMWInst
-    LLVMIsAAtomicRMWInst.restype = LLVMValueRef
-    LLVMIsAAtomicRMWInst.argtypes = [LLVMValueRef]
+  LLVMIsAFenceInst = _libraries["llvm"].LLVMIsAFenceInst
+  LLVMIsAFenceInst.restype = LLVMValueRef
+  LLVMIsAFenceInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAFenceInst = _libraries['llvm'].LLVMIsAFenceInst
-    LLVMIsAFenceInst.restype = LLVMValueRef
-    LLVMIsAFenceInst.argtypes = [LLVMValueRef]
+  LLVMIsAMDNode = _libraries["llvm"].LLVMIsAMDNode
+  LLVMIsAMDNode.restype = LLVMValueRef
+  LLVMIsAMDNode.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAMDNode = _libraries['llvm'].LLVMIsAMDNode
-    LLVMIsAMDNode.restype = LLVMValueRef
-    LLVMIsAMDNode.argtypes = [LLVMValueRef]
+  LLVMIsAMDString = _libraries["llvm"].LLVMIsAMDString
+  LLVMIsAMDString.restype = LLVMValueRef
+  LLVMIsAMDString.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAMDString = _libraries['llvm'].LLVMIsAMDString
-    LLVMIsAMDString.restype = LLVMValueRef
-    LLVMIsAMDString.argtypes = [LLVMValueRef]
+  LLVMGetValueName = _libraries["llvm"].LLVMGetValueName
+  LLVMGetValueName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetValueName.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetValueName = _libraries['llvm'].LLVMGetValueName
-    LLVMGetValueName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetValueName.argtypes = [LLVMValueRef]
+  LLVMSetValueName = _libraries["llvm"].LLVMSetValueName
+  LLVMSetValueName.restype = None
+  LLVMSetValueName.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetValueName = _libraries['llvm'].LLVMSetValueName
-    LLVMSetValueName.restype = None
-    LLVMSetValueName.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetFirstUse = _libraries["llvm"].LLVMGetFirstUse
+  LLVMGetFirstUse.restype = LLVMUseRef
+  LLVMGetFirstUse.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFirstUse = _libraries['llvm'].LLVMGetFirstUse
-    LLVMGetFirstUse.restype = LLVMUseRef
-    LLVMGetFirstUse.argtypes = [LLVMValueRef]
+  LLVMGetNextUse = _libraries["llvm"].LLVMGetNextUse
+  LLVMGetNextUse.restype = LLVMUseRef
+  LLVMGetNextUse.argtypes = [LLVMUseRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextUse = _libraries['llvm'].LLVMGetNextUse
-    LLVMGetNextUse.restype = LLVMUseRef
-    LLVMGetNextUse.argtypes = [LLVMUseRef]
+  LLVMGetUser = _libraries["llvm"].LLVMGetUser
+  LLVMGetUser.restype = LLVMValueRef
+  LLVMGetUser.argtypes = [LLVMUseRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetUser = _libraries['llvm'].LLVMGetUser
-    LLVMGetUser.restype = LLVMValueRef
-    LLVMGetUser.argtypes = [LLVMUseRef]
+  LLVMGetUsedValue = _libraries["llvm"].LLVMGetUsedValue
+  LLVMGetUsedValue.restype = LLVMValueRef
+  LLVMGetUsedValue.argtypes = [LLVMUseRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetUsedValue = _libraries['llvm'].LLVMGetUsedValue
-    LLVMGetUsedValue.restype = LLVMValueRef
-    LLVMGetUsedValue.argtypes = [LLVMUseRef]
+  LLVMGetOperand = _libraries["llvm"].LLVMGetOperand
+  LLVMGetOperand.restype = LLVMValueRef
+  LLVMGetOperand.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetOperand = _libraries['llvm'].LLVMGetOperand
-    LLVMGetOperand.restype = LLVMValueRef
-    LLVMGetOperand.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetOperandUse = _libraries["llvm"].LLVMGetOperandUse
+  LLVMGetOperandUse.restype = LLVMUseRef
+  LLVMGetOperandUse.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetOperandUse = _libraries['llvm'].LLVMGetOperandUse
-    LLVMGetOperandUse.restype = LLVMUseRef
-    LLVMGetOperandUse.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMSetOperand = _libraries["llvm"].LLVMSetOperand
+  LLVMSetOperand.restype = None
+  LLVMSetOperand.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetOperand = _libraries['llvm'].LLVMSetOperand
-    LLVMSetOperand.restype = None
-    LLVMSetOperand.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMValueRef]
+  LLVMGetNumOperands = _libraries["llvm"].LLVMGetNumOperands
+  LLVMGetNumOperands.restype = ctypes.c_int32
+  LLVMGetNumOperands.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNumOperands = _libraries['llvm'].LLVMGetNumOperands
-    LLVMGetNumOperands.restype = ctypes.c_int32
-    LLVMGetNumOperands.argtypes = [LLVMValueRef]
+  LLVMConstNull = _libraries["llvm"].LLVMConstNull
+  LLVMConstNull.restype = LLVMValueRef
+  LLVMConstNull.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNull = _libraries['llvm'].LLVMConstNull
-    LLVMConstNull.restype = LLVMValueRef
-    LLVMConstNull.argtypes = [LLVMTypeRef]
+  LLVMConstAllOnes = _libraries["llvm"].LLVMConstAllOnes
+  LLVMConstAllOnes.restype = LLVMValueRef
+  LLVMConstAllOnes.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstAllOnes = _libraries['llvm'].LLVMConstAllOnes
-    LLVMConstAllOnes.restype = LLVMValueRef
-    LLVMConstAllOnes.argtypes = [LLVMTypeRef]
+  LLVMGetUndef = _libraries["llvm"].LLVMGetUndef
+  LLVMGetUndef.restype = LLVMValueRef
+  LLVMGetUndef.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetUndef = _libraries['llvm'].LLVMGetUndef
-    LLVMGetUndef.restype = LLVMValueRef
-    LLVMGetUndef.argtypes = [LLVMTypeRef]
+  LLVMGetPoison = _libraries["llvm"].LLVMGetPoison
+  LLVMGetPoison.restype = LLVMValueRef
+  LLVMGetPoison.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPoison = _libraries['llvm'].LLVMGetPoison
-    LLVMGetPoison.restype = LLVMValueRef
-    LLVMGetPoison.argtypes = [LLVMTypeRef]
+  LLVMIsNull = _libraries["llvm"].LLVMIsNull
+  LLVMIsNull.restype = LLVMBool
+  LLVMIsNull.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsNull = _libraries['llvm'].LLVMIsNull
-    LLVMIsNull.restype = LLVMBool
-    LLVMIsNull.argtypes = [LLVMValueRef]
+  LLVMConstPointerNull = _libraries["llvm"].LLVMConstPointerNull
+  LLVMConstPointerNull.restype = LLVMValueRef
+  LLVMConstPointerNull.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstPointerNull = _libraries['llvm'].LLVMConstPointerNull
-    LLVMConstPointerNull.restype = LLVMValueRef
-    LLVMConstPointerNull.argtypes = [LLVMTypeRef]
+  LLVMConstInt = _libraries["llvm"].LLVMConstInt
+  LLVMConstInt.restype = LLVMValueRef
+  LLVMConstInt.argtypes = [LLVMTypeRef, ctypes.c_uint64, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstInt = _libraries['llvm'].LLVMConstInt
-    LLVMConstInt.restype = LLVMValueRef
-    LLVMConstInt.argtypes = [LLVMTypeRef, ctypes.c_uint64, LLVMBool]
+  LLVMConstIntOfArbitraryPrecision = _libraries["llvm"].LLVMConstIntOfArbitraryPrecision
+  LLVMConstIntOfArbitraryPrecision.restype = LLVMValueRef
+  LLVMConstIntOfArbitraryPrecision.argtypes = [
+    LLVMTypeRef,
+    ctypes.c_uint32,
+    ctypes.c_uint64 * 0,
+  ]
 except AttributeError:
-    pass
-try:
-    LLVMConstIntOfArbitraryPrecision = _libraries['llvm'].LLVMConstIntOfArbitraryPrecision
-    LLVMConstIntOfArbitraryPrecision.restype = LLVMValueRef
-    LLVMConstIntOfArbitraryPrecision.argtypes = [LLVMTypeRef, ctypes.c_uint32, ctypes.c_uint64 * 0]
-except AttributeError:
-    pass
+  pass
 uint8_t = ctypes.c_uint8
 try:
-    LLVMConstIntOfString = _libraries['llvm'].LLVMConstIntOfString
-    LLVMConstIntOfString.restype = LLVMValueRef
-    LLVMConstIntOfString.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.c_char), uint8_t]
+  LLVMConstIntOfString = _libraries["llvm"].LLVMConstIntOfString
+  LLVMConstIntOfString.restype = LLVMValueRef
+  LLVMConstIntOfString.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.c_char), uint8_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstIntOfStringAndSize = _libraries['llvm'].LLVMConstIntOfStringAndSize
-    LLVMConstIntOfStringAndSize.restype = LLVMValueRef
-    LLVMConstIntOfStringAndSize.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32, uint8_t]
-except AttributeError:
-    pass
-try:
-    LLVMConstReal = _libraries['llvm'].LLVMConstReal
-    LLVMConstReal.restype = LLVMValueRef
-    LLVMConstReal.argtypes = [LLVMTypeRef, ctypes.c_double]
-except AttributeError:
-    pass
+  LLVMConstIntOfStringAndSize = _libraries["llvm"].LLVMConstIntOfStringAndSize
+  LLVMConstIntOfStringAndSize.restype = LLVMValueRef
+  LLVMConstIntOfStringAndSize.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+    uint8_t,
+  ]
+except AttributeError:
+  pass
 try:
-    LLVMConstRealOfString = _libraries['llvm'].LLVMConstRealOfString
-    LLVMConstRealOfString.restype = LLVMValueRef
-    LLVMConstRealOfString.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMConstReal = _libraries["llvm"].LLVMConstReal
+  LLVMConstReal.restype = LLVMValueRef
+  LLVMConstReal.argtypes = [LLVMTypeRef, ctypes.c_double]
 except AttributeError:
-    pass
+  pass
+try:
+  LLVMConstRealOfString = _libraries["llvm"].LLVMConstRealOfString
+  LLVMConstRealOfString.restype = LLVMValueRef
+  LLVMConstRealOfString.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+except AttributeError:
+  pass
 try:
-    LLVMConstRealOfStringAndSize = _libraries['llvm'].LLVMConstRealOfStringAndSize
-    LLVMConstRealOfStringAndSize.restype = LLVMValueRef
-    LLVMConstRealOfStringAndSize.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMConstRealOfStringAndSize = _libraries["llvm"].LLVMConstRealOfStringAndSize
+  LLVMConstRealOfStringAndSize.restype = LLVMValueRef
+  LLVMConstRealOfStringAndSize.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
-try:
-    LLVMConstIntGetZExtValue = _libraries['llvm'].LLVMConstIntGetZExtValue
-    LLVMConstIntGetZExtValue.restype = ctypes.c_uint64
-    LLVMConstIntGetZExtValue.argtypes = [LLVMValueRef]
+  pass
+try:
+  LLVMConstIntGetZExtValue = _libraries["llvm"].LLVMConstIntGetZExtValue
+  LLVMConstIntGetZExtValue.restype = ctypes.c_uint64
+  LLVMConstIntGetZExtValue.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstIntGetSExtValue = _libraries['llvm'].LLVMConstIntGetSExtValue
-    LLVMConstIntGetSExtValue.restype = ctypes.c_int64
-    LLVMConstIntGetSExtValue.argtypes = [LLVMValueRef]
+  LLVMConstIntGetSExtValue = _libraries["llvm"].LLVMConstIntGetSExtValue
+  LLVMConstIntGetSExtValue.restype = ctypes.c_int64
+  LLVMConstIntGetSExtValue.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstRealGetDouble = _libraries['llvm'].LLVMConstRealGetDouble
-    LLVMConstRealGetDouble.restype = ctypes.c_double
-    LLVMConstRealGetDouble.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_int32)]
+  LLVMConstRealGetDouble = _libraries["llvm"].LLVMConstRealGetDouble
+  LLVMConstRealGetDouble.restype = ctypes.c_double
+  LLVMConstRealGetDouble.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_int32)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstStringInContext = _libraries['llvm'].LLVMConstStringInContext
-    LLVMConstStringInContext.restype = LLVMValueRef
-    LLVMConstStringInContext.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32, LLVMBool]
+  LLVMConstStringInContext = _libraries["llvm"].LLVMConstStringInContext
+  LLVMConstStringInContext.restype = LLVMValueRef
+  LLVMConstStringInContext.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstString = _libraries['llvm'].LLVMConstString
-    LLVMConstString.restype = LLVMValueRef
-    LLVMConstString.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.c_uint32, LLVMBool]
+  LLVMConstString = _libraries["llvm"].LLVMConstString
+  LLVMConstString.restype = LLVMValueRef
+  LLVMConstString.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.c_uint32, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsConstantString = _libraries['llvm'].LLVMIsConstantString
-    LLVMIsConstantString.restype = LLVMBool
-    LLVMIsConstantString.argtypes = [LLVMValueRef]
+  LLVMIsConstantString = _libraries["llvm"].LLVMIsConstantString
+  LLVMIsConstantString.restype = LLVMBool
+  LLVMIsConstantString.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetAsString = _libraries['llvm'].LLVMGetAsString
-    LLVMGetAsString.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetAsString.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMGetAsString = _libraries["llvm"].LLVMGetAsString
+  LLVMGetAsString.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetAsString.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstStructInContext = _libraries['llvm'].LLVMConstStructInContext
-    LLVMConstStructInContext.restype = LLVMValueRef
-    LLVMConstStructInContext.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, LLVMBool]
+  LLVMConstStructInContext = _libraries["llvm"].LLVMConstStructInContext
+  LLVMConstStructInContext.restype = LLVMValueRef
+  LLVMConstStructInContext.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstStruct = _libraries['llvm'].LLVMConstStruct
-    LLVMConstStruct.restype = LLVMValueRef
-    LLVMConstStruct.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, LLVMBool]
+  LLVMConstStruct = _libraries["llvm"].LLVMConstStruct
+  LLVMConstStruct.restype = LLVMValueRef
+  LLVMConstStruct.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstArray = _libraries['llvm'].LLVMConstArray
-    LLVMConstArray.restype = LLVMValueRef
-    LLVMConstArray.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMConstArray = _libraries["llvm"].LLVMConstArray
+  LLVMConstArray.restype = LLVMValueRef
+  LLVMConstArray.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNamedStruct = _libraries['llvm'].LLVMConstNamedStruct
-    LLVMConstNamedStruct.restype = LLVMValueRef
-    LLVMConstNamedStruct.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMConstNamedStruct = _libraries["llvm"].LLVMConstNamedStruct
+  LLVMConstNamedStruct.restype = LLVMValueRef
+  LLVMConstNamedStruct.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetElementAsConstant = _libraries['llvm'].LLVMGetElementAsConstant
-    LLVMGetElementAsConstant.restype = LLVMValueRef
-    LLVMGetElementAsConstant.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetElementAsConstant = _libraries["llvm"].LLVMGetElementAsConstant
+  LLVMGetElementAsConstant.restype = LLVMValueRef
+  LLVMGetElementAsConstant.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstVector = _libraries['llvm'].LLVMConstVector
-    LLVMConstVector.restype = LLVMValueRef
-    LLVMConstVector.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMConstVector = _libraries["llvm"].LLVMConstVector
+  LLVMConstVector.restype = LLVMValueRef
+  LLVMConstVector.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetConstOpcode = _libraries['llvm'].LLVMGetConstOpcode
-    LLVMGetConstOpcode.restype = LLVMOpcode
-    LLVMGetConstOpcode.argtypes = [LLVMValueRef]
+  LLVMGetConstOpcode = _libraries["llvm"].LLVMGetConstOpcode
+  LLVMGetConstOpcode.restype = LLVMOpcode
+  LLVMGetConstOpcode.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAlignOf = _libraries['llvm'].LLVMAlignOf
-    LLVMAlignOf.restype = LLVMValueRef
-    LLVMAlignOf.argtypes = [LLVMTypeRef]
+  LLVMAlignOf = _libraries["llvm"].LLVMAlignOf
+  LLVMAlignOf.restype = LLVMValueRef
+  LLVMAlignOf.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSizeOf = _libraries['llvm'].LLVMSizeOf
-    LLVMSizeOf.restype = LLVMValueRef
-    LLVMSizeOf.argtypes = [LLVMTypeRef]
+  LLVMSizeOf = _libraries["llvm"].LLVMSizeOf
+  LLVMSizeOf.restype = LLVMValueRef
+  LLVMSizeOf.argtypes = [LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNeg = _libraries['llvm'].LLVMConstNeg
-    LLVMConstNeg.restype = LLVMValueRef
-    LLVMConstNeg.argtypes = [LLVMValueRef]
+  LLVMConstNeg = _libraries["llvm"].LLVMConstNeg
+  LLVMConstNeg.restype = LLVMValueRef
+  LLVMConstNeg.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNSWNeg = _libraries['llvm'].LLVMConstNSWNeg
-    LLVMConstNSWNeg.restype = LLVMValueRef
-    LLVMConstNSWNeg.argtypes = [LLVMValueRef]
+  LLVMConstNSWNeg = _libraries["llvm"].LLVMConstNSWNeg
+  LLVMConstNSWNeg.restype = LLVMValueRef
+  LLVMConstNSWNeg.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNUWNeg = _libraries['llvm'].LLVMConstNUWNeg
-    LLVMConstNUWNeg.restype = LLVMValueRef
-    LLVMConstNUWNeg.argtypes = [LLVMValueRef]
+  LLVMConstNUWNeg = _libraries["llvm"].LLVMConstNUWNeg
+  LLVMConstNUWNeg.restype = LLVMValueRef
+  LLVMConstNUWNeg.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFNeg = _libraries['llvm'].LLVMConstFNeg
-    LLVMConstFNeg.restype = LLVMValueRef
-    LLVMConstFNeg.argtypes = [LLVMValueRef]
+  LLVMConstFNeg = _libraries["llvm"].LLVMConstFNeg
+  LLVMConstFNeg.restype = LLVMValueRef
+  LLVMConstFNeg.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNot = _libraries['llvm'].LLVMConstNot
-    LLVMConstNot.restype = LLVMValueRef
-    LLVMConstNot.argtypes = [LLVMValueRef]
+  LLVMConstNot = _libraries["llvm"].LLVMConstNot
+  LLVMConstNot.restype = LLVMValueRef
+  LLVMConstNot.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstAdd = _libraries['llvm'].LLVMConstAdd
-    LLVMConstAdd.restype = LLVMValueRef
-    LLVMConstAdd.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstAdd = _libraries["llvm"].LLVMConstAdd
+  LLVMConstAdd.restype = LLVMValueRef
+  LLVMConstAdd.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNSWAdd = _libraries['llvm'].LLVMConstNSWAdd
-    LLVMConstNSWAdd.restype = LLVMValueRef
-    LLVMConstNSWAdd.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstNSWAdd = _libraries["llvm"].LLVMConstNSWAdd
+  LLVMConstNSWAdd.restype = LLVMValueRef
+  LLVMConstNSWAdd.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNUWAdd = _libraries['llvm'].LLVMConstNUWAdd
-    LLVMConstNUWAdd.restype = LLVMValueRef
-    LLVMConstNUWAdd.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstNUWAdd = _libraries["llvm"].LLVMConstNUWAdd
+  LLVMConstNUWAdd.restype = LLVMValueRef
+  LLVMConstNUWAdd.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFAdd = _libraries['llvm'].LLVMConstFAdd
-    LLVMConstFAdd.restype = LLVMValueRef
-    LLVMConstFAdd.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstFAdd = _libraries["llvm"].LLVMConstFAdd
+  LLVMConstFAdd.restype = LLVMValueRef
+  LLVMConstFAdd.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstSub = _libraries['llvm'].LLVMConstSub
-    LLVMConstSub.restype = LLVMValueRef
-    LLVMConstSub.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstSub = _libraries["llvm"].LLVMConstSub
+  LLVMConstSub.restype = LLVMValueRef
+  LLVMConstSub.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNSWSub = _libraries['llvm'].LLVMConstNSWSub
-    LLVMConstNSWSub.restype = LLVMValueRef
-    LLVMConstNSWSub.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstNSWSub = _libraries["llvm"].LLVMConstNSWSub
+  LLVMConstNSWSub.restype = LLVMValueRef
+  LLVMConstNSWSub.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNUWSub = _libraries['llvm'].LLVMConstNUWSub
-    LLVMConstNUWSub.restype = LLVMValueRef
-    LLVMConstNUWSub.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstNUWSub = _libraries["llvm"].LLVMConstNUWSub
+  LLVMConstNUWSub.restype = LLVMValueRef
+  LLVMConstNUWSub.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFSub = _libraries['llvm'].LLVMConstFSub
-    LLVMConstFSub.restype = LLVMValueRef
-    LLVMConstFSub.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstFSub = _libraries["llvm"].LLVMConstFSub
+  LLVMConstFSub.restype = LLVMValueRef
+  LLVMConstFSub.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstMul = _libraries['llvm'].LLVMConstMul
-    LLVMConstMul.restype = LLVMValueRef
-    LLVMConstMul.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstMul = _libraries["llvm"].LLVMConstMul
+  LLVMConstMul.restype = LLVMValueRef
+  LLVMConstMul.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNSWMul = _libraries['llvm'].LLVMConstNSWMul
-    LLVMConstNSWMul.restype = LLVMValueRef
-    LLVMConstNSWMul.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstNSWMul = _libraries["llvm"].LLVMConstNSWMul
+  LLVMConstNSWMul.restype = LLVMValueRef
+  LLVMConstNSWMul.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstNUWMul = _libraries['llvm'].LLVMConstNUWMul
-    LLVMConstNUWMul.restype = LLVMValueRef
-    LLVMConstNUWMul.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstNUWMul = _libraries["llvm"].LLVMConstNUWMul
+  LLVMConstNUWMul.restype = LLVMValueRef
+  LLVMConstNUWMul.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFMul = _libraries['llvm'].LLVMConstFMul
-    LLVMConstFMul.restype = LLVMValueRef
-    LLVMConstFMul.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstFMul = _libraries["llvm"].LLVMConstFMul
+  LLVMConstFMul.restype = LLVMValueRef
+  LLVMConstFMul.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstUDiv = _libraries['llvm'].LLVMConstUDiv
-    LLVMConstUDiv.restype = LLVMValueRef
-    LLVMConstUDiv.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstUDiv = _libraries["llvm"].LLVMConstUDiv
+  LLVMConstUDiv.restype = LLVMValueRef
+  LLVMConstUDiv.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstExactUDiv = _libraries['llvm'].LLVMConstExactUDiv
-    LLVMConstExactUDiv.restype = LLVMValueRef
-    LLVMConstExactUDiv.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstExactUDiv = _libraries["llvm"].LLVMConstExactUDiv
+  LLVMConstExactUDiv.restype = LLVMValueRef
+  LLVMConstExactUDiv.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstSDiv = _libraries['llvm'].LLVMConstSDiv
-    LLVMConstSDiv.restype = LLVMValueRef
-    LLVMConstSDiv.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstSDiv = _libraries["llvm"].LLVMConstSDiv
+  LLVMConstSDiv.restype = LLVMValueRef
+  LLVMConstSDiv.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstExactSDiv = _libraries['llvm'].LLVMConstExactSDiv
-    LLVMConstExactSDiv.restype = LLVMValueRef
-    LLVMConstExactSDiv.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstExactSDiv = _libraries["llvm"].LLVMConstExactSDiv
+  LLVMConstExactSDiv.restype = LLVMValueRef
+  LLVMConstExactSDiv.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFDiv = _libraries['llvm'].LLVMConstFDiv
-    LLVMConstFDiv.restype = LLVMValueRef
-    LLVMConstFDiv.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstFDiv = _libraries["llvm"].LLVMConstFDiv
+  LLVMConstFDiv.restype = LLVMValueRef
+  LLVMConstFDiv.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstURem = _libraries['llvm'].LLVMConstURem
-    LLVMConstURem.restype = LLVMValueRef
-    LLVMConstURem.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstURem = _libraries["llvm"].LLVMConstURem
+  LLVMConstURem.restype = LLVMValueRef
+  LLVMConstURem.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstSRem = _libraries['llvm'].LLVMConstSRem
-    LLVMConstSRem.restype = LLVMValueRef
-    LLVMConstSRem.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstSRem = _libraries["llvm"].LLVMConstSRem
+  LLVMConstSRem.restype = LLVMValueRef
+  LLVMConstSRem.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFRem = _libraries['llvm'].LLVMConstFRem
-    LLVMConstFRem.restype = LLVMValueRef
-    LLVMConstFRem.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstFRem = _libraries["llvm"].LLVMConstFRem
+  LLVMConstFRem.restype = LLVMValueRef
+  LLVMConstFRem.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstAnd = _libraries['llvm'].LLVMConstAnd
-    LLVMConstAnd.restype = LLVMValueRef
-    LLVMConstAnd.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstAnd = _libraries["llvm"].LLVMConstAnd
+  LLVMConstAnd.restype = LLVMValueRef
+  LLVMConstAnd.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstOr = _libraries['llvm'].LLVMConstOr
-    LLVMConstOr.restype = LLVMValueRef
-    LLVMConstOr.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstOr = _libraries["llvm"].LLVMConstOr
+  LLVMConstOr.restype = LLVMValueRef
+  LLVMConstOr.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstXor = _libraries['llvm'].LLVMConstXor
-    LLVMConstXor.restype = LLVMValueRef
-    LLVMConstXor.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstXor = _libraries["llvm"].LLVMConstXor
+  LLVMConstXor.restype = LLVMValueRef
+  LLVMConstXor.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstICmp = _libraries['llvm'].LLVMConstICmp
-    LLVMConstICmp.restype = LLVMValueRef
-    LLVMConstICmp.argtypes = [LLVMIntPredicate, LLVMValueRef, LLVMValueRef]
+  LLVMConstICmp = _libraries["llvm"].LLVMConstICmp
+  LLVMConstICmp.restype = LLVMValueRef
+  LLVMConstICmp.argtypes = [LLVMIntPredicate, LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFCmp = _libraries['llvm'].LLVMConstFCmp
-    LLVMConstFCmp.restype = LLVMValueRef
-    LLVMConstFCmp.argtypes = [LLVMRealPredicate, LLVMValueRef, LLVMValueRef]
+  LLVMConstFCmp = _libraries["llvm"].LLVMConstFCmp
+  LLVMConstFCmp.restype = LLVMValueRef
+  LLVMConstFCmp.argtypes = [LLVMRealPredicate, LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstShl = _libraries['llvm'].LLVMConstShl
-    LLVMConstShl.restype = LLVMValueRef
-    LLVMConstShl.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstShl = _libraries["llvm"].LLVMConstShl
+  LLVMConstShl.restype = LLVMValueRef
+  LLVMConstShl.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstLShr = _libraries['llvm'].LLVMConstLShr
-    LLVMConstLShr.restype = LLVMValueRef
-    LLVMConstLShr.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstLShr = _libraries["llvm"].LLVMConstLShr
+  LLVMConstLShr.restype = LLVMValueRef
+  LLVMConstLShr.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstAShr = _libraries['llvm'].LLVMConstAShr
-    LLVMConstAShr.restype = LLVMValueRef
-    LLVMConstAShr.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstAShr = _libraries["llvm"].LLVMConstAShr
+  LLVMConstAShr.restype = LLVMValueRef
+  LLVMConstAShr.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstGEP = _libraries['llvm'].LLVMConstGEP
-    LLVMConstGEP.restype = LLVMValueRef
-    LLVMConstGEP.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMConstGEP = _libraries["llvm"].LLVMConstGEP
+  LLVMConstGEP.restype = LLVMValueRef
+  LLVMConstGEP.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstGEP2 = _libraries['llvm'].LLVMConstGEP2
-    LLVMConstGEP2.restype = LLVMValueRef
-    LLVMConstGEP2.argtypes = [LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMConstGEP2 = _libraries["llvm"].LLVMConstGEP2
+  LLVMConstGEP2.restype = LLVMValueRef
+  LLVMConstGEP2.argtypes = [
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstInBoundsGEP = _libraries['llvm'].LLVMConstInBoundsGEP
-    LLVMConstInBoundsGEP.restype = LLVMValueRef
-    LLVMConstInBoundsGEP.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMConstInBoundsGEP = _libraries["llvm"].LLVMConstInBoundsGEP
+  LLVMConstInBoundsGEP.restype = LLVMValueRef
+  LLVMConstInBoundsGEP.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstInBoundsGEP2 = _libraries['llvm'].LLVMConstInBoundsGEP2
-    LLVMConstInBoundsGEP2.restype = LLVMValueRef
-    LLVMConstInBoundsGEP2.argtypes = [LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMConstInBoundsGEP2 = _libraries["llvm"].LLVMConstInBoundsGEP2
+  LLVMConstInBoundsGEP2.restype = LLVMValueRef
+  LLVMConstInBoundsGEP2.argtypes = [
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstTrunc = _libraries['llvm'].LLVMConstTrunc
-    LLVMConstTrunc.restype = LLVMValueRef
-    LLVMConstTrunc.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstTrunc = _libraries["llvm"].LLVMConstTrunc
+  LLVMConstTrunc.restype = LLVMValueRef
+  LLVMConstTrunc.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstSExt = _libraries['llvm'].LLVMConstSExt
-    LLVMConstSExt.restype = LLVMValueRef
-    LLVMConstSExt.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstSExt = _libraries["llvm"].LLVMConstSExt
+  LLVMConstSExt.restype = LLVMValueRef
+  LLVMConstSExt.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstZExt = _libraries['llvm'].LLVMConstZExt
-    LLVMConstZExt.restype = LLVMValueRef
-    LLVMConstZExt.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstZExt = _libraries["llvm"].LLVMConstZExt
+  LLVMConstZExt.restype = LLVMValueRef
+  LLVMConstZExt.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFPTrunc = _libraries['llvm'].LLVMConstFPTrunc
-    LLVMConstFPTrunc.restype = LLVMValueRef
-    LLVMConstFPTrunc.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstFPTrunc = _libraries["llvm"].LLVMConstFPTrunc
+  LLVMConstFPTrunc.restype = LLVMValueRef
+  LLVMConstFPTrunc.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFPExt = _libraries['llvm'].LLVMConstFPExt
-    LLVMConstFPExt.restype = LLVMValueRef
-    LLVMConstFPExt.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstFPExt = _libraries["llvm"].LLVMConstFPExt
+  LLVMConstFPExt.restype = LLVMValueRef
+  LLVMConstFPExt.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstUIToFP = _libraries['llvm'].LLVMConstUIToFP
-    LLVMConstUIToFP.restype = LLVMValueRef
-    LLVMConstUIToFP.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstUIToFP = _libraries["llvm"].LLVMConstUIToFP
+  LLVMConstUIToFP.restype = LLVMValueRef
+  LLVMConstUIToFP.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstSIToFP = _libraries['llvm'].LLVMConstSIToFP
-    LLVMConstSIToFP.restype = LLVMValueRef
-    LLVMConstSIToFP.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstSIToFP = _libraries["llvm"].LLVMConstSIToFP
+  LLVMConstSIToFP.restype = LLVMValueRef
+  LLVMConstSIToFP.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFPToUI = _libraries['llvm'].LLVMConstFPToUI
-    LLVMConstFPToUI.restype = LLVMValueRef
-    LLVMConstFPToUI.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstFPToUI = _libraries["llvm"].LLVMConstFPToUI
+  LLVMConstFPToUI.restype = LLVMValueRef
+  LLVMConstFPToUI.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFPToSI = _libraries['llvm'].LLVMConstFPToSI
-    LLVMConstFPToSI.restype = LLVMValueRef
-    LLVMConstFPToSI.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstFPToSI = _libraries["llvm"].LLVMConstFPToSI
+  LLVMConstFPToSI.restype = LLVMValueRef
+  LLVMConstFPToSI.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstPtrToInt = _libraries['llvm'].LLVMConstPtrToInt
-    LLVMConstPtrToInt.restype = LLVMValueRef
-    LLVMConstPtrToInt.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstPtrToInt = _libraries["llvm"].LLVMConstPtrToInt
+  LLVMConstPtrToInt.restype = LLVMValueRef
+  LLVMConstPtrToInt.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstIntToPtr = _libraries['llvm'].LLVMConstIntToPtr
-    LLVMConstIntToPtr.restype = LLVMValueRef
-    LLVMConstIntToPtr.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstIntToPtr = _libraries["llvm"].LLVMConstIntToPtr
+  LLVMConstIntToPtr.restype = LLVMValueRef
+  LLVMConstIntToPtr.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstBitCast = _libraries['llvm'].LLVMConstBitCast
-    LLVMConstBitCast.restype = LLVMValueRef
-    LLVMConstBitCast.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstBitCast = _libraries["llvm"].LLVMConstBitCast
+  LLVMConstBitCast.restype = LLVMValueRef
+  LLVMConstBitCast.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstAddrSpaceCast = _libraries['llvm'].LLVMConstAddrSpaceCast
-    LLVMConstAddrSpaceCast.restype = LLVMValueRef
-    LLVMConstAddrSpaceCast.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstAddrSpaceCast = _libraries["llvm"].LLVMConstAddrSpaceCast
+  LLVMConstAddrSpaceCast.restype = LLVMValueRef
+  LLVMConstAddrSpaceCast.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstZExtOrBitCast = _libraries['llvm'].LLVMConstZExtOrBitCast
-    LLVMConstZExtOrBitCast.restype = LLVMValueRef
-    LLVMConstZExtOrBitCast.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstZExtOrBitCast = _libraries["llvm"].LLVMConstZExtOrBitCast
+  LLVMConstZExtOrBitCast.restype = LLVMValueRef
+  LLVMConstZExtOrBitCast.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstSExtOrBitCast = _libraries['llvm'].LLVMConstSExtOrBitCast
-    LLVMConstSExtOrBitCast.restype = LLVMValueRef
-    LLVMConstSExtOrBitCast.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstSExtOrBitCast = _libraries["llvm"].LLVMConstSExtOrBitCast
+  LLVMConstSExtOrBitCast.restype = LLVMValueRef
+  LLVMConstSExtOrBitCast.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstTruncOrBitCast = _libraries['llvm'].LLVMConstTruncOrBitCast
-    LLVMConstTruncOrBitCast.restype = LLVMValueRef
-    LLVMConstTruncOrBitCast.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstTruncOrBitCast = _libraries["llvm"].LLVMConstTruncOrBitCast
+  LLVMConstTruncOrBitCast.restype = LLVMValueRef
+  LLVMConstTruncOrBitCast.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstPointerCast = _libraries['llvm'].LLVMConstPointerCast
-    LLVMConstPointerCast.restype = LLVMValueRef
-    LLVMConstPointerCast.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstPointerCast = _libraries["llvm"].LLVMConstPointerCast
+  LLVMConstPointerCast.restype = LLVMValueRef
+  LLVMConstPointerCast.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstIntCast = _libraries['llvm'].LLVMConstIntCast
-    LLVMConstIntCast.restype = LLVMValueRef
-    LLVMConstIntCast.argtypes = [LLVMValueRef, LLVMTypeRef, LLVMBool]
+  LLVMConstIntCast = _libraries["llvm"].LLVMConstIntCast
+  LLVMConstIntCast.restype = LLVMValueRef
+  LLVMConstIntCast.argtypes = [LLVMValueRef, LLVMTypeRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstFPCast = _libraries['llvm'].LLVMConstFPCast
-    LLVMConstFPCast.restype = LLVMValueRef
-    LLVMConstFPCast.argtypes = [LLVMValueRef, LLVMTypeRef]
+  LLVMConstFPCast = _libraries["llvm"].LLVMConstFPCast
+  LLVMConstFPCast.restype = LLVMValueRef
+  LLVMConstFPCast.argtypes = [LLVMValueRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstSelect = _libraries['llvm'].LLVMConstSelect
-    LLVMConstSelect.restype = LLVMValueRef
-    LLVMConstSelect.argtypes = [LLVMValueRef, LLVMValueRef, LLVMValueRef]
+  LLVMConstSelect = _libraries["llvm"].LLVMConstSelect
+  LLVMConstSelect.restype = LLVMValueRef
+  LLVMConstSelect.argtypes = [LLVMValueRef, LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstExtractElement = _libraries['llvm'].LLVMConstExtractElement
-    LLVMConstExtractElement.restype = LLVMValueRef
-    LLVMConstExtractElement.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMConstExtractElement = _libraries["llvm"].LLVMConstExtractElement
+  LLVMConstExtractElement.restype = LLVMValueRef
+  LLVMConstExtractElement.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstInsertElement = _libraries['llvm'].LLVMConstInsertElement
-    LLVMConstInsertElement.restype = LLVMValueRef
-    LLVMConstInsertElement.argtypes = [LLVMValueRef, LLVMValueRef, LLVMValueRef]
+  LLVMConstInsertElement = _libraries["llvm"].LLVMConstInsertElement
+  LLVMConstInsertElement.restype = LLVMValueRef
+  LLVMConstInsertElement.argtypes = [LLVMValueRef, LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstShuffleVector = _libraries['llvm'].LLVMConstShuffleVector
-    LLVMConstShuffleVector.restype = LLVMValueRef
-    LLVMConstShuffleVector.argtypes = [LLVMValueRef, LLVMValueRef, LLVMValueRef]
+  LLVMConstShuffleVector = _libraries["llvm"].LLVMConstShuffleVector
+  LLVMConstShuffleVector.restype = LLVMValueRef
+  LLVMConstShuffleVector.argtypes = [LLVMValueRef, LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstExtractValue = _libraries['llvm'].LLVMConstExtractValue
-    LLVMConstExtractValue.restype = LLVMValueRef
-    LLVMConstExtractValue.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint32]
+  LLVMConstExtractValue = _libraries["llvm"].LLVMConstExtractValue
+  LLVMConstExtractValue.restype = LLVMValueRef
+  LLVMConstExtractValue.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_uint32),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstInsertValue = _libraries['llvm'].LLVMConstInsertValue
-    LLVMConstInsertValue.restype = LLVMValueRef
-    LLVMConstInsertValue.argtypes = [LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint32]
+  LLVMConstInsertValue = _libraries["llvm"].LLVMConstInsertValue
+  LLVMConstInsertValue.restype = LLVMValueRef
+  LLVMConstInsertValue.argtypes = [
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_uint32),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBlockAddress = _libraries['llvm'].LLVMBlockAddress
-    LLVMBlockAddress.restype = LLVMValueRef
-    LLVMBlockAddress.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
+  LLVMBlockAddress = _libraries["llvm"].LLVMBlockAddress
+  LLVMBlockAddress.restype = LLVMValueRef
+  LLVMBlockAddress.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConstInlineAsm = _libraries['llvm'].LLVMConstInlineAsm
-    LLVMConstInlineAsm.restype = LLVMValueRef
-    LLVMConstInlineAsm.argtypes = [LLVMTypeRef, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char), LLVMBool, LLVMBool]
+  LLVMConstInlineAsm = _libraries["llvm"].LLVMConstInlineAsm
+  LLVMConstInlineAsm.restype = LLVMValueRef
+  LLVMConstInlineAsm.argtypes = [
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+    LLVMBool,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetGlobalParent = _libraries['llvm'].LLVMGetGlobalParent
-    LLVMGetGlobalParent.restype = LLVMModuleRef
-    LLVMGetGlobalParent.argtypes = [LLVMValueRef]
+  LLVMGetGlobalParent = _libraries["llvm"].LLVMGetGlobalParent
+  LLVMGetGlobalParent.restype = LLVMModuleRef
+  LLVMGetGlobalParent.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsDeclaration = _libraries['llvm'].LLVMIsDeclaration
-    LLVMIsDeclaration.restype = LLVMBool
-    LLVMIsDeclaration.argtypes = [LLVMValueRef]
+  LLVMIsDeclaration = _libraries["llvm"].LLVMIsDeclaration
+  LLVMIsDeclaration.restype = LLVMBool
+  LLVMIsDeclaration.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLinkage = _libraries['llvm'].LLVMGetLinkage
-    LLVMGetLinkage.restype = LLVMLinkage
-    LLVMGetLinkage.argtypes = [LLVMValueRef]
+  LLVMGetLinkage = _libraries["llvm"].LLVMGetLinkage
+  LLVMGetLinkage.restype = LLVMLinkage
+  LLVMGetLinkage.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetLinkage = _libraries['llvm'].LLVMSetLinkage
-    LLVMSetLinkage.restype = None
-    LLVMSetLinkage.argtypes = [LLVMValueRef, LLVMLinkage]
+  LLVMSetLinkage = _libraries["llvm"].LLVMSetLinkage
+  LLVMSetLinkage.restype = None
+  LLVMSetLinkage.argtypes = [LLVMValueRef, LLVMLinkage]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSection = _libraries['llvm'].LLVMGetSection
-    LLVMGetSection.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetSection.argtypes = [LLVMValueRef]
+  LLVMGetSection = _libraries["llvm"].LLVMGetSection
+  LLVMGetSection.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetSection.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetSection = _libraries['llvm'].LLVMSetSection
-    LLVMSetSection.restype = None
-    LLVMSetSection.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMSetSection = _libraries["llvm"].LLVMSetSection
+  LLVMSetSection.restype = None
+  LLVMSetSection.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetVisibility = _libraries['llvm'].LLVMGetVisibility
-    LLVMGetVisibility.restype = LLVMVisibility
-    LLVMGetVisibility.argtypes = [LLVMValueRef]
+  LLVMGetVisibility = _libraries["llvm"].LLVMGetVisibility
+  LLVMGetVisibility.restype = LLVMVisibility
+  LLVMGetVisibility.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetVisibility = _libraries['llvm'].LLVMSetVisibility
-    LLVMSetVisibility.restype = None
-    LLVMSetVisibility.argtypes = [LLVMValueRef, LLVMVisibility]
+  LLVMSetVisibility = _libraries["llvm"].LLVMSetVisibility
+  LLVMSetVisibility.restype = None
+  LLVMSetVisibility.argtypes = [LLVMValueRef, LLVMVisibility]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDLLStorageClass = _libraries['llvm'].LLVMGetDLLStorageClass
-    LLVMGetDLLStorageClass.restype = LLVMDLLStorageClass
-    LLVMGetDLLStorageClass.argtypes = [LLVMValueRef]
+  LLVMGetDLLStorageClass = _libraries["llvm"].LLVMGetDLLStorageClass
+  LLVMGetDLLStorageClass.restype = LLVMDLLStorageClass
+  LLVMGetDLLStorageClass.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetDLLStorageClass = _libraries['llvm'].LLVMSetDLLStorageClass
-    LLVMSetDLLStorageClass.restype = None
-    LLVMSetDLLStorageClass.argtypes = [LLVMValueRef, LLVMDLLStorageClass]
+  LLVMSetDLLStorageClass = _libraries["llvm"].LLVMSetDLLStorageClass
+  LLVMSetDLLStorageClass.restype = None
+  LLVMSetDLLStorageClass.argtypes = [LLVMValueRef, LLVMDLLStorageClass]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetUnnamedAddress = _libraries['llvm'].LLVMGetUnnamedAddress
-    LLVMGetUnnamedAddress.restype = LLVMUnnamedAddr
-    LLVMGetUnnamedAddress.argtypes = [LLVMValueRef]
+  LLVMGetUnnamedAddress = _libraries["llvm"].LLVMGetUnnamedAddress
+  LLVMGetUnnamedAddress.restype = LLVMUnnamedAddr
+  LLVMGetUnnamedAddress.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetUnnamedAddress = _libraries['llvm'].LLVMSetUnnamedAddress
-    LLVMSetUnnamedAddress.restype = None
-    LLVMSetUnnamedAddress.argtypes = [LLVMValueRef, LLVMUnnamedAddr]
+  LLVMSetUnnamedAddress = _libraries["llvm"].LLVMSetUnnamedAddress
+  LLVMSetUnnamedAddress.restype = None
+  LLVMSetUnnamedAddress.argtypes = [LLVMValueRef, LLVMUnnamedAddr]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGlobalGetValueType = _libraries['llvm'].LLVMGlobalGetValueType
-    LLVMGlobalGetValueType.restype = LLVMTypeRef
-    LLVMGlobalGetValueType.argtypes = [LLVMValueRef]
+  LLVMGlobalGetValueType = _libraries["llvm"].LLVMGlobalGetValueType
+  LLVMGlobalGetValueType.restype = LLVMTypeRef
+  LLVMGlobalGetValueType.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMHasUnnamedAddr = _libraries['llvm'].LLVMHasUnnamedAddr
-    LLVMHasUnnamedAddr.restype = LLVMBool
-    LLVMHasUnnamedAddr.argtypes = [LLVMValueRef]
+  LLVMHasUnnamedAddr = _libraries["llvm"].LLVMHasUnnamedAddr
+  LLVMHasUnnamedAddr.restype = LLVMBool
+  LLVMHasUnnamedAddr.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetUnnamedAddr = _libraries['llvm'].LLVMSetUnnamedAddr
-    LLVMSetUnnamedAddr.restype = None
-    LLVMSetUnnamedAddr.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetUnnamedAddr = _libraries["llvm"].LLVMSetUnnamedAddr
+  LLVMSetUnnamedAddr.restype = None
+  LLVMSetUnnamedAddr.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetAlignment = _libraries['llvm'].LLVMGetAlignment
-    LLVMGetAlignment.restype = ctypes.c_uint32
-    LLVMGetAlignment.argtypes = [LLVMValueRef]
+  LLVMGetAlignment = _libraries["llvm"].LLVMGetAlignment
+  LLVMGetAlignment.restype = ctypes.c_uint32
+  LLVMGetAlignment.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetAlignment = _libraries['llvm'].LLVMSetAlignment
-    LLVMSetAlignment.restype = None
-    LLVMSetAlignment.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMSetAlignment = _libraries["llvm"].LLVMSetAlignment
+  LLVMSetAlignment.restype = None
+  LLVMSetAlignment.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGlobalSetMetadata = _libraries['llvm'].LLVMGlobalSetMetadata
-    LLVMGlobalSetMetadata.restype = None
-    LLVMGlobalSetMetadata.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMMetadataRef]
+  LLVMGlobalSetMetadata = _libraries["llvm"].LLVMGlobalSetMetadata
+  LLVMGlobalSetMetadata.restype = None
+  LLVMGlobalSetMetadata.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGlobalEraseMetadata = _libraries['llvm'].LLVMGlobalEraseMetadata
-    LLVMGlobalEraseMetadata.restype = None
-    LLVMGlobalEraseMetadata.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGlobalEraseMetadata = _libraries["llvm"].LLVMGlobalEraseMetadata
+  LLVMGlobalEraseMetadata.restype = None
+  LLVMGlobalEraseMetadata.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGlobalClearMetadata = _libraries['llvm'].LLVMGlobalClearMetadata
-    LLVMGlobalClearMetadata.restype = None
-    LLVMGlobalClearMetadata.argtypes = [LLVMValueRef]
+  LLVMGlobalClearMetadata = _libraries["llvm"].LLVMGlobalClearMetadata
+  LLVMGlobalClearMetadata.restype = None
+  LLVMGlobalClearMetadata.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGlobalCopyAllMetadata = _libraries['llvm'].LLVMGlobalCopyAllMetadata
-    LLVMGlobalCopyAllMetadata.restype = ctypes.POINTER(struct_LLVMOpaqueValueMetadataEntry)
-    LLVMGlobalCopyAllMetadata.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMGlobalCopyAllMetadata = _libraries["llvm"].LLVMGlobalCopyAllMetadata
+  LLVMGlobalCopyAllMetadata.restype = ctypes.POINTER(
+    struct_LLVMOpaqueValueMetadataEntry
+  )
+  LLVMGlobalCopyAllMetadata.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeValueMetadataEntries = _libraries['llvm'].LLVMDisposeValueMetadataEntries
-    LLVMDisposeValueMetadataEntries.restype = None
-    LLVMDisposeValueMetadataEntries.argtypes = [ctypes.POINTER(struct_LLVMOpaqueValueMetadataEntry)]
+  LLVMDisposeValueMetadataEntries = _libraries["llvm"].LLVMDisposeValueMetadataEntries
+  LLVMDisposeValueMetadataEntries.restype = None
+  LLVMDisposeValueMetadataEntries.argtypes = [
+    ctypes.POINTER(struct_LLVMOpaqueValueMetadataEntry)
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMValueMetadataEntriesGetKind = _libraries['llvm'].LLVMValueMetadataEntriesGetKind
-    LLVMValueMetadataEntriesGetKind.restype = ctypes.c_uint32
-    LLVMValueMetadataEntriesGetKind.argtypes = [ctypes.POINTER(struct_LLVMOpaqueValueMetadataEntry), ctypes.c_uint32]
+  LLVMValueMetadataEntriesGetKind = _libraries["llvm"].LLVMValueMetadataEntriesGetKind
+  LLVMValueMetadataEntriesGetKind.restype = ctypes.c_uint32
+  LLVMValueMetadataEntriesGetKind.argtypes = [
+    ctypes.POINTER(struct_LLVMOpaqueValueMetadataEntry),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMValueMetadataEntriesGetMetadata = _libraries['llvm'].LLVMValueMetadataEntriesGetMetadata
-    LLVMValueMetadataEntriesGetMetadata.restype = LLVMMetadataRef
-    LLVMValueMetadataEntriesGetMetadata.argtypes = [ctypes.POINTER(struct_LLVMOpaqueValueMetadataEntry), ctypes.c_uint32]
+  LLVMValueMetadataEntriesGetMetadata = _libraries[
+    "llvm"
+  ].LLVMValueMetadataEntriesGetMetadata
+  LLVMValueMetadataEntriesGetMetadata.restype = LLVMMetadataRef
+  LLVMValueMetadataEntriesGetMetadata.argtypes = [
+    ctypes.POINTER(struct_LLVMOpaqueValueMetadataEntry),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddGlobal = _libraries['llvm'].LLVMAddGlobal
-    LLVMAddGlobal.restype = LLVMValueRef
-    LLVMAddGlobal.argtypes = [LLVMModuleRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMAddGlobal = _libraries["llvm"].LLVMAddGlobal
+  LLVMAddGlobal.restype = LLVMValueRef
+  LLVMAddGlobal.argtypes = [LLVMModuleRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddGlobalInAddressSpace = _libraries['llvm'].LLVMAddGlobalInAddressSpace
-    LLVMAddGlobalInAddressSpace.restype = LLVMValueRef
-    LLVMAddGlobalInAddressSpace.argtypes = [LLVMModuleRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMAddGlobalInAddressSpace = _libraries["llvm"].LLVMAddGlobalInAddressSpace
+  LLVMAddGlobalInAddressSpace.restype = LLVMValueRef
+  LLVMAddGlobalInAddressSpace.argtypes = [
+    LLVMModuleRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNamedGlobal = _libraries['llvm'].LLVMGetNamedGlobal
-    LLVMGetNamedGlobal.restype = LLVMValueRef
-    LLVMGetNamedGlobal.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetNamedGlobal = _libraries["llvm"].LLVMGetNamedGlobal
+  LLVMGetNamedGlobal.restype = LLVMValueRef
+  LLVMGetNamedGlobal.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFirstGlobal = _libraries['llvm'].LLVMGetFirstGlobal
-    LLVMGetFirstGlobal.restype = LLVMValueRef
-    LLVMGetFirstGlobal.argtypes = [LLVMModuleRef]
+  LLVMGetFirstGlobal = _libraries["llvm"].LLVMGetFirstGlobal
+  LLVMGetFirstGlobal.restype = LLVMValueRef
+  LLVMGetFirstGlobal.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLastGlobal = _libraries['llvm'].LLVMGetLastGlobal
-    LLVMGetLastGlobal.restype = LLVMValueRef
-    LLVMGetLastGlobal.argtypes = [LLVMModuleRef]
+  LLVMGetLastGlobal = _libraries["llvm"].LLVMGetLastGlobal
+  LLVMGetLastGlobal.restype = LLVMValueRef
+  LLVMGetLastGlobal.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextGlobal = _libraries['llvm'].LLVMGetNextGlobal
-    LLVMGetNextGlobal.restype = LLVMValueRef
-    LLVMGetNextGlobal.argtypes = [LLVMValueRef]
+  LLVMGetNextGlobal = _libraries["llvm"].LLVMGetNextGlobal
+  LLVMGetNextGlobal.restype = LLVMValueRef
+  LLVMGetNextGlobal.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPreviousGlobal = _libraries['llvm'].LLVMGetPreviousGlobal
-    LLVMGetPreviousGlobal.restype = LLVMValueRef
-    LLVMGetPreviousGlobal.argtypes = [LLVMValueRef]
+  LLVMGetPreviousGlobal = _libraries["llvm"].LLVMGetPreviousGlobal
+  LLVMGetPreviousGlobal.restype = LLVMValueRef
+  LLVMGetPreviousGlobal.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDeleteGlobal = _libraries['llvm'].LLVMDeleteGlobal
-    LLVMDeleteGlobal.restype = None
-    LLVMDeleteGlobal.argtypes = [LLVMValueRef]
+  LLVMDeleteGlobal = _libraries["llvm"].LLVMDeleteGlobal
+  LLVMDeleteGlobal.restype = None
+  LLVMDeleteGlobal.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetInitializer = _libraries['llvm'].LLVMGetInitializer
-    LLVMGetInitializer.restype = LLVMValueRef
-    LLVMGetInitializer.argtypes = [LLVMValueRef]
+  LLVMGetInitializer = _libraries["llvm"].LLVMGetInitializer
+  LLVMGetInitializer.restype = LLVMValueRef
+  LLVMGetInitializer.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetInitializer = _libraries['llvm'].LLVMSetInitializer
-    LLVMSetInitializer.restype = None
-    LLVMSetInitializer.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMSetInitializer = _libraries["llvm"].LLVMSetInitializer
+  LLVMSetInitializer.restype = None
+  LLVMSetInitializer.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsThreadLocal = _libraries['llvm'].LLVMIsThreadLocal
-    LLVMIsThreadLocal.restype = LLVMBool
-    LLVMIsThreadLocal.argtypes = [LLVMValueRef]
+  LLVMIsThreadLocal = _libraries["llvm"].LLVMIsThreadLocal
+  LLVMIsThreadLocal.restype = LLVMBool
+  LLVMIsThreadLocal.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetThreadLocal = _libraries['llvm'].LLVMSetThreadLocal
-    LLVMSetThreadLocal.restype = None
-    LLVMSetThreadLocal.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetThreadLocal = _libraries["llvm"].LLVMSetThreadLocal
+  LLVMSetThreadLocal.restype = None
+  LLVMSetThreadLocal.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsGlobalConstant = _libraries['llvm'].LLVMIsGlobalConstant
-    LLVMIsGlobalConstant.restype = LLVMBool
-    LLVMIsGlobalConstant.argtypes = [LLVMValueRef]
+  LLVMIsGlobalConstant = _libraries["llvm"].LLVMIsGlobalConstant
+  LLVMIsGlobalConstant.restype = LLVMBool
+  LLVMIsGlobalConstant.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetGlobalConstant = _libraries['llvm'].LLVMSetGlobalConstant
-    LLVMSetGlobalConstant.restype = None
-    LLVMSetGlobalConstant.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetGlobalConstant = _libraries["llvm"].LLVMSetGlobalConstant
+  LLVMSetGlobalConstant.restype = None
+  LLVMSetGlobalConstant.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetThreadLocalMode = _libraries['llvm'].LLVMGetThreadLocalMode
-    LLVMGetThreadLocalMode.restype = LLVMThreadLocalMode
-    LLVMGetThreadLocalMode.argtypes = [LLVMValueRef]
+  LLVMGetThreadLocalMode = _libraries["llvm"].LLVMGetThreadLocalMode
+  LLVMGetThreadLocalMode.restype = LLVMThreadLocalMode
+  LLVMGetThreadLocalMode.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetThreadLocalMode = _libraries['llvm'].LLVMSetThreadLocalMode
-    LLVMSetThreadLocalMode.restype = None
-    LLVMSetThreadLocalMode.argtypes = [LLVMValueRef, LLVMThreadLocalMode]
+  LLVMSetThreadLocalMode = _libraries["llvm"].LLVMSetThreadLocalMode
+  LLVMSetThreadLocalMode.restype = None
+  LLVMSetThreadLocalMode.argtypes = [LLVMValueRef, LLVMThreadLocalMode]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsExternallyInitialized = _libraries['llvm'].LLVMIsExternallyInitialized
-    LLVMIsExternallyInitialized.restype = LLVMBool
-    LLVMIsExternallyInitialized.argtypes = [LLVMValueRef]
+  LLVMIsExternallyInitialized = _libraries["llvm"].LLVMIsExternallyInitialized
+  LLVMIsExternallyInitialized.restype = LLVMBool
+  LLVMIsExternallyInitialized.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetExternallyInitialized = _libraries['llvm'].LLVMSetExternallyInitialized
-    LLVMSetExternallyInitialized.restype = None
-    LLVMSetExternallyInitialized.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetExternallyInitialized = _libraries["llvm"].LLVMSetExternallyInitialized
+  LLVMSetExternallyInitialized.restype = None
+  LLVMSetExternallyInitialized.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddAlias = _libraries['llvm'].LLVMAddAlias
-    LLVMAddAlias.restype = LLVMValueRef
-    LLVMAddAlias.argtypes = [LLVMModuleRef, LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMAddAlias = _libraries["llvm"].LLVMAddAlias
+  LLVMAddAlias.restype = LLVMValueRef
+  LLVMAddAlias.argtypes = [
+    LLVMModuleRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddAlias2 = _libraries['llvm'].LLVMAddAlias2
-    LLVMAddAlias2.restype = LLVMValueRef
-    LLVMAddAlias2.argtypes = [LLVMModuleRef, LLVMTypeRef, ctypes.c_uint32, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMAddAlias2 = _libraries["llvm"].LLVMAddAlias2
+  LLVMAddAlias2.restype = LLVMValueRef
+  LLVMAddAlias2.argtypes = [
+    LLVMModuleRef,
+    LLVMTypeRef,
+    ctypes.c_uint32,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNamedGlobalAlias = _libraries['llvm'].LLVMGetNamedGlobalAlias
-    LLVMGetNamedGlobalAlias.restype = LLVMValueRef
-    LLVMGetNamedGlobalAlias.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMGetNamedGlobalAlias = _libraries["llvm"].LLVMGetNamedGlobalAlias
+  LLVMGetNamedGlobalAlias.restype = LLVMValueRef
+  LLVMGetNamedGlobalAlias.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFirstGlobalAlias = _libraries['llvm'].LLVMGetFirstGlobalAlias
-    LLVMGetFirstGlobalAlias.restype = LLVMValueRef
-    LLVMGetFirstGlobalAlias.argtypes = [LLVMModuleRef]
+  LLVMGetFirstGlobalAlias = _libraries["llvm"].LLVMGetFirstGlobalAlias
+  LLVMGetFirstGlobalAlias.restype = LLVMValueRef
+  LLVMGetFirstGlobalAlias.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLastGlobalAlias = _libraries['llvm'].LLVMGetLastGlobalAlias
-    LLVMGetLastGlobalAlias.restype = LLVMValueRef
-    LLVMGetLastGlobalAlias.argtypes = [LLVMModuleRef]
+  LLVMGetLastGlobalAlias = _libraries["llvm"].LLVMGetLastGlobalAlias
+  LLVMGetLastGlobalAlias.restype = LLVMValueRef
+  LLVMGetLastGlobalAlias.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextGlobalAlias = _libraries['llvm'].LLVMGetNextGlobalAlias
-    LLVMGetNextGlobalAlias.restype = LLVMValueRef
-    LLVMGetNextGlobalAlias.argtypes = [LLVMValueRef]
+  LLVMGetNextGlobalAlias = _libraries["llvm"].LLVMGetNextGlobalAlias
+  LLVMGetNextGlobalAlias.restype = LLVMValueRef
+  LLVMGetNextGlobalAlias.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPreviousGlobalAlias = _libraries['llvm'].LLVMGetPreviousGlobalAlias
-    LLVMGetPreviousGlobalAlias.restype = LLVMValueRef
-    LLVMGetPreviousGlobalAlias.argtypes = [LLVMValueRef]
+  LLVMGetPreviousGlobalAlias = _libraries["llvm"].LLVMGetPreviousGlobalAlias
+  LLVMGetPreviousGlobalAlias.restype = LLVMValueRef
+  LLVMGetPreviousGlobalAlias.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAliasGetAliasee = _libraries['llvm'].LLVMAliasGetAliasee
-    LLVMAliasGetAliasee.restype = LLVMValueRef
-    LLVMAliasGetAliasee.argtypes = [LLVMValueRef]
+  LLVMAliasGetAliasee = _libraries["llvm"].LLVMAliasGetAliasee
+  LLVMAliasGetAliasee.restype = LLVMValueRef
+  LLVMAliasGetAliasee.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAliasSetAliasee = _libraries['llvm'].LLVMAliasSetAliasee
-    LLVMAliasSetAliasee.restype = None
-    LLVMAliasSetAliasee.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMAliasSetAliasee = _libraries["llvm"].LLVMAliasSetAliasee
+  LLVMAliasSetAliasee.restype = None
+  LLVMAliasSetAliasee.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDeleteFunction = _libraries['llvm'].LLVMDeleteFunction
-    LLVMDeleteFunction.restype = None
-    LLVMDeleteFunction.argtypes = [LLVMValueRef]
+  LLVMDeleteFunction = _libraries["llvm"].LLVMDeleteFunction
+  LLVMDeleteFunction.restype = None
+  LLVMDeleteFunction.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMHasPersonalityFn = _libraries['llvm'].LLVMHasPersonalityFn
-    LLVMHasPersonalityFn.restype = LLVMBool
-    LLVMHasPersonalityFn.argtypes = [LLVMValueRef]
+  LLVMHasPersonalityFn = _libraries["llvm"].LLVMHasPersonalityFn
+  LLVMHasPersonalityFn.restype = LLVMBool
+  LLVMHasPersonalityFn.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPersonalityFn = _libraries['llvm'].LLVMGetPersonalityFn
-    LLVMGetPersonalityFn.restype = LLVMValueRef
-    LLVMGetPersonalityFn.argtypes = [LLVMValueRef]
+  LLVMGetPersonalityFn = _libraries["llvm"].LLVMGetPersonalityFn
+  LLVMGetPersonalityFn.restype = LLVMValueRef
+  LLVMGetPersonalityFn.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetPersonalityFn = _libraries['llvm'].LLVMSetPersonalityFn
-    LLVMSetPersonalityFn.restype = None
-    LLVMSetPersonalityFn.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMSetPersonalityFn = _libraries["llvm"].LLVMSetPersonalityFn
+  LLVMSetPersonalityFn.restype = None
+  LLVMSetPersonalityFn.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMLookupIntrinsicID = _libraries['llvm'].LLVMLookupIntrinsicID
-    LLVMLookupIntrinsicID.restype = ctypes.c_uint32
-    LLVMLookupIntrinsicID.argtypes = [ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMLookupIntrinsicID = _libraries["llvm"].LLVMLookupIntrinsicID
+  LLVMLookupIntrinsicID.restype = ctypes.c_uint32
+  LLVMLookupIntrinsicID.argtypes = [ctypes.POINTER(ctypes.c_char), size_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetIntrinsicID = _libraries['llvm'].LLVMGetIntrinsicID
-    LLVMGetIntrinsicID.restype = ctypes.c_uint32
-    LLVMGetIntrinsicID.argtypes = [LLVMValueRef]
+  LLVMGetIntrinsicID = _libraries["llvm"].LLVMGetIntrinsicID
+  LLVMGetIntrinsicID.restype = ctypes.c_uint32
+  LLVMGetIntrinsicID.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetIntrinsicDeclaration = _libraries['llvm'].LLVMGetIntrinsicDeclaration
-    LLVMGetIntrinsicDeclaration.restype = LLVMValueRef
-    LLVMGetIntrinsicDeclaration.argtypes = [LLVMModuleRef, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)), size_t]
+  LLVMGetIntrinsicDeclaration = _libraries["llvm"].LLVMGetIntrinsicDeclaration
+  LLVMGetIntrinsicDeclaration.restype = LLVMValueRef
+  LLVMGetIntrinsicDeclaration.argtypes = [
+    LLVMModuleRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntrinsicGetType = _libraries['llvm'].LLVMIntrinsicGetType
-    LLVMIntrinsicGetType.restype = LLVMTypeRef
-    LLVMIntrinsicGetType.argtypes = [LLVMContextRef, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)), size_t]
+  LLVMIntrinsicGetType = _libraries["llvm"].LLVMIntrinsicGetType
+  LLVMIntrinsicGetType.restype = LLVMTypeRef
+  LLVMIntrinsicGetType.argtypes = [
+    LLVMContextRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntrinsicGetName = _libraries['llvm'].LLVMIntrinsicGetName
-    LLVMIntrinsicGetName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMIntrinsicGetName.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMIntrinsicGetName = _libraries["llvm"].LLVMIntrinsicGetName
+  LLVMIntrinsicGetName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMIntrinsicGetName.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntrinsicCopyOverloadedName = _libraries['llvm'].LLVMIntrinsicCopyOverloadedName
-    LLVMIntrinsicCopyOverloadedName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMIntrinsicCopyOverloadedName.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)), size_t, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMIntrinsicCopyOverloadedName = _libraries["llvm"].LLVMIntrinsicCopyOverloadedName
+  LLVMIntrinsicCopyOverloadedName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMIntrinsicCopyOverloadedName.argtypes = [
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+    size_t,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntrinsicCopyOverloadedName2 = _libraries['llvm'].LLVMIntrinsicCopyOverloadedName2
-    LLVMIntrinsicCopyOverloadedName2.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMIntrinsicCopyOverloadedName2.argtypes = [LLVMModuleRef, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)), size_t, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMIntrinsicCopyOverloadedName2 = _libraries["llvm"].LLVMIntrinsicCopyOverloadedName2
+  LLVMIntrinsicCopyOverloadedName2.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMIntrinsicCopyOverloadedName2.argtypes = [
+    LLVMModuleRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueType)),
+    size_t,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntrinsicIsOverloaded = _libraries['llvm'].LLVMIntrinsicIsOverloaded
-    LLVMIntrinsicIsOverloaded.restype = LLVMBool
-    LLVMIntrinsicIsOverloaded.argtypes = [ctypes.c_uint32]
+  LLVMIntrinsicIsOverloaded = _libraries["llvm"].LLVMIntrinsicIsOverloaded
+  LLVMIntrinsicIsOverloaded.restype = LLVMBool
+  LLVMIntrinsicIsOverloaded.argtypes = [ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFunctionCallConv = _libraries['llvm'].LLVMGetFunctionCallConv
-    LLVMGetFunctionCallConv.restype = ctypes.c_uint32
-    LLVMGetFunctionCallConv.argtypes = [LLVMValueRef]
+  LLVMGetFunctionCallConv = _libraries["llvm"].LLVMGetFunctionCallConv
+  LLVMGetFunctionCallConv.restype = ctypes.c_uint32
+  LLVMGetFunctionCallConv.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetFunctionCallConv = _libraries['llvm'].LLVMSetFunctionCallConv
-    LLVMSetFunctionCallConv.restype = None
-    LLVMSetFunctionCallConv.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMSetFunctionCallConv = _libraries["llvm"].LLVMSetFunctionCallConv
+  LLVMSetFunctionCallConv.restype = None
+  LLVMSetFunctionCallConv.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetGC = _libraries['llvm'].LLVMGetGC
-    LLVMGetGC.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetGC.argtypes = [LLVMValueRef]
+  LLVMGetGC = _libraries["llvm"].LLVMGetGC
+  LLVMGetGC.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetGC.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetGC = _libraries['llvm'].LLVMSetGC
-    LLVMSetGC.restype = None
-    LLVMSetGC.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMSetGC = _libraries["llvm"].LLVMSetGC
+  LLVMSetGC.restype = None
+  LLVMSetGC.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddAttributeAtIndex = _libraries['llvm'].LLVMAddAttributeAtIndex
-    LLVMAddAttributeAtIndex.restype = None
-    LLVMAddAttributeAtIndex.argtypes = [LLVMValueRef, LLVMAttributeIndex, LLVMAttributeRef]
+  LLVMAddAttributeAtIndex = _libraries["llvm"].LLVMAddAttributeAtIndex
+  LLVMAddAttributeAtIndex.restype = None
+  LLVMAddAttributeAtIndex.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    LLVMAttributeRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetAttributeCountAtIndex = _libraries['llvm'].LLVMGetAttributeCountAtIndex
-    LLVMGetAttributeCountAtIndex.restype = ctypes.c_uint32
-    LLVMGetAttributeCountAtIndex.argtypes = [LLVMValueRef, LLVMAttributeIndex]
+  LLVMGetAttributeCountAtIndex = _libraries["llvm"].LLVMGetAttributeCountAtIndex
+  LLVMGetAttributeCountAtIndex.restype = ctypes.c_uint32
+  LLVMGetAttributeCountAtIndex.argtypes = [LLVMValueRef, LLVMAttributeIndex]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetAttributesAtIndex = _libraries['llvm'].LLVMGetAttributesAtIndex
-    LLVMGetAttributesAtIndex.restype = None
-    LLVMGetAttributesAtIndex.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueAttributeRef))]
+  LLVMGetAttributesAtIndex = _libraries["llvm"].LLVMGetAttributesAtIndex
+  LLVMGetAttributesAtIndex.restype = None
+  LLVMGetAttributesAtIndex.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueAttributeRef)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetEnumAttributeAtIndex = _libraries['llvm'].LLVMGetEnumAttributeAtIndex
-    LLVMGetEnumAttributeAtIndex.restype = LLVMAttributeRef
-    LLVMGetEnumAttributeAtIndex.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.c_uint32]
+  LLVMGetEnumAttributeAtIndex = _libraries["llvm"].LLVMGetEnumAttributeAtIndex
+  LLVMGetEnumAttributeAtIndex.restype = LLVMAttributeRef
+  LLVMGetEnumAttributeAtIndex.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetStringAttributeAtIndex = _libraries['llvm'].LLVMGetStringAttributeAtIndex
-    LLVMGetStringAttributeAtIndex.restype = LLVMAttributeRef
-    LLVMGetStringAttributeAtIndex.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMGetStringAttributeAtIndex = _libraries["llvm"].LLVMGetStringAttributeAtIndex
+  LLVMGetStringAttributeAtIndex.restype = LLVMAttributeRef
+  LLVMGetStringAttributeAtIndex.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemoveEnumAttributeAtIndex = _libraries['llvm'].LLVMRemoveEnumAttributeAtIndex
-    LLVMRemoveEnumAttributeAtIndex.restype = None
-    LLVMRemoveEnumAttributeAtIndex.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.c_uint32]
+  LLVMRemoveEnumAttributeAtIndex = _libraries["llvm"].LLVMRemoveEnumAttributeAtIndex
+  LLVMRemoveEnumAttributeAtIndex.restype = None
+  LLVMRemoveEnumAttributeAtIndex.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemoveStringAttributeAtIndex = _libraries['llvm'].LLVMRemoveStringAttributeAtIndex
-    LLVMRemoveStringAttributeAtIndex.restype = None
-    LLVMRemoveStringAttributeAtIndex.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMRemoveStringAttributeAtIndex = _libraries["llvm"].LLVMRemoveStringAttributeAtIndex
+  LLVMRemoveStringAttributeAtIndex.restype = None
+  LLVMRemoveStringAttributeAtIndex.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddTargetDependentFunctionAttr = _libraries['llvm'].LLVMAddTargetDependentFunctionAttr
-    LLVMAddTargetDependentFunctionAttr.restype = None
-    LLVMAddTargetDependentFunctionAttr.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char)]
+  LLVMAddTargetDependentFunctionAttr = _libraries[
+    "llvm"
+  ].LLVMAddTargetDependentFunctionAttr
+  LLVMAddTargetDependentFunctionAttr.restype = None
+  LLVMAddTargetDependentFunctionAttr.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCountParams = _libraries['llvm'].LLVMCountParams
-    LLVMCountParams.restype = ctypes.c_uint32
-    LLVMCountParams.argtypes = [LLVMValueRef]
+  LLVMCountParams = _libraries["llvm"].LLVMCountParams
+  LLVMCountParams.restype = ctypes.c_uint32
+  LLVMCountParams.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetParams = _libraries['llvm'].LLVMGetParams
-    LLVMGetParams.restype = None
-    LLVMGetParams.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue))]
+  LLVMGetParams = _libraries["llvm"].LLVMGetParams
+  LLVMGetParams.restype = None
+  LLVMGetParams.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetParam = _libraries['llvm'].LLVMGetParam
-    LLVMGetParam.restype = LLVMValueRef
-    LLVMGetParam.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetParam = _libraries["llvm"].LLVMGetParam
+  LLVMGetParam.restype = LLVMValueRef
+  LLVMGetParam.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetParamParent = _libraries['llvm'].LLVMGetParamParent
-    LLVMGetParamParent.restype = LLVMValueRef
-    LLVMGetParamParent.argtypes = [LLVMValueRef]
+  LLVMGetParamParent = _libraries["llvm"].LLVMGetParamParent
+  LLVMGetParamParent.restype = LLVMValueRef
+  LLVMGetParamParent.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFirstParam = _libraries['llvm'].LLVMGetFirstParam
-    LLVMGetFirstParam.restype = LLVMValueRef
-    LLVMGetFirstParam.argtypes = [LLVMValueRef]
+  LLVMGetFirstParam = _libraries["llvm"].LLVMGetFirstParam
+  LLVMGetFirstParam.restype = LLVMValueRef
+  LLVMGetFirstParam.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLastParam = _libraries['llvm'].LLVMGetLastParam
-    LLVMGetLastParam.restype = LLVMValueRef
-    LLVMGetLastParam.argtypes = [LLVMValueRef]
+  LLVMGetLastParam = _libraries["llvm"].LLVMGetLastParam
+  LLVMGetLastParam.restype = LLVMValueRef
+  LLVMGetLastParam.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextParam = _libraries['llvm'].LLVMGetNextParam
-    LLVMGetNextParam.restype = LLVMValueRef
-    LLVMGetNextParam.argtypes = [LLVMValueRef]
+  LLVMGetNextParam = _libraries["llvm"].LLVMGetNextParam
+  LLVMGetNextParam.restype = LLVMValueRef
+  LLVMGetNextParam.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPreviousParam = _libraries['llvm'].LLVMGetPreviousParam
-    LLVMGetPreviousParam.restype = LLVMValueRef
-    LLVMGetPreviousParam.argtypes = [LLVMValueRef]
+  LLVMGetPreviousParam = _libraries["llvm"].LLVMGetPreviousParam
+  LLVMGetPreviousParam.restype = LLVMValueRef
+  LLVMGetPreviousParam.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetParamAlignment = _libraries['llvm'].LLVMSetParamAlignment
-    LLVMSetParamAlignment.restype = None
-    LLVMSetParamAlignment.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMSetParamAlignment = _libraries["llvm"].LLVMSetParamAlignment
+  LLVMSetParamAlignment.restype = None
+  LLVMSetParamAlignment.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddGlobalIFunc = _libraries['llvm'].LLVMAddGlobalIFunc
-    LLVMAddGlobalIFunc.restype = LLVMValueRef
-    LLVMAddGlobalIFunc.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMTypeRef, ctypes.c_uint32, LLVMValueRef]
+  LLVMAddGlobalIFunc = _libraries["llvm"].LLVMAddGlobalIFunc
+  LLVMAddGlobalIFunc.restype = LLVMValueRef
+  LLVMAddGlobalIFunc.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMTypeRef,
+    ctypes.c_uint32,
+    LLVMValueRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNamedGlobalIFunc = _libraries['llvm'].LLVMGetNamedGlobalIFunc
-    LLVMGetNamedGlobalIFunc.restype = LLVMValueRef
-    LLVMGetNamedGlobalIFunc.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMGetNamedGlobalIFunc = _libraries["llvm"].LLVMGetNamedGlobalIFunc
+  LLVMGetNamedGlobalIFunc.restype = LLVMValueRef
+  LLVMGetNamedGlobalIFunc.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFirstGlobalIFunc = _libraries['llvm'].LLVMGetFirstGlobalIFunc
-    LLVMGetFirstGlobalIFunc.restype = LLVMValueRef
-    LLVMGetFirstGlobalIFunc.argtypes = [LLVMModuleRef]
+  LLVMGetFirstGlobalIFunc = _libraries["llvm"].LLVMGetFirstGlobalIFunc
+  LLVMGetFirstGlobalIFunc.restype = LLVMValueRef
+  LLVMGetFirstGlobalIFunc.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLastGlobalIFunc = _libraries['llvm'].LLVMGetLastGlobalIFunc
-    LLVMGetLastGlobalIFunc.restype = LLVMValueRef
-    LLVMGetLastGlobalIFunc.argtypes = [LLVMModuleRef]
+  LLVMGetLastGlobalIFunc = _libraries["llvm"].LLVMGetLastGlobalIFunc
+  LLVMGetLastGlobalIFunc.restype = LLVMValueRef
+  LLVMGetLastGlobalIFunc.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextGlobalIFunc = _libraries['llvm'].LLVMGetNextGlobalIFunc
-    LLVMGetNextGlobalIFunc.restype = LLVMValueRef
-    LLVMGetNextGlobalIFunc.argtypes = [LLVMValueRef]
+  LLVMGetNextGlobalIFunc = _libraries["llvm"].LLVMGetNextGlobalIFunc
+  LLVMGetNextGlobalIFunc.restype = LLVMValueRef
+  LLVMGetNextGlobalIFunc.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPreviousGlobalIFunc = _libraries['llvm'].LLVMGetPreviousGlobalIFunc
-    LLVMGetPreviousGlobalIFunc.restype = LLVMValueRef
-    LLVMGetPreviousGlobalIFunc.argtypes = [LLVMValueRef]
+  LLVMGetPreviousGlobalIFunc = _libraries["llvm"].LLVMGetPreviousGlobalIFunc
+  LLVMGetPreviousGlobalIFunc.restype = LLVMValueRef
+  LLVMGetPreviousGlobalIFunc.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetGlobalIFuncResolver = _libraries['llvm'].LLVMGetGlobalIFuncResolver
-    LLVMGetGlobalIFuncResolver.restype = LLVMValueRef
-    LLVMGetGlobalIFuncResolver.argtypes = [LLVMValueRef]
+  LLVMGetGlobalIFuncResolver = _libraries["llvm"].LLVMGetGlobalIFuncResolver
+  LLVMGetGlobalIFuncResolver.restype = LLVMValueRef
+  LLVMGetGlobalIFuncResolver.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetGlobalIFuncResolver = _libraries['llvm'].LLVMSetGlobalIFuncResolver
-    LLVMSetGlobalIFuncResolver.restype = None
-    LLVMSetGlobalIFuncResolver.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMSetGlobalIFuncResolver = _libraries["llvm"].LLVMSetGlobalIFuncResolver
+  LLVMSetGlobalIFuncResolver.restype = None
+  LLVMSetGlobalIFuncResolver.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMEraseGlobalIFunc = _libraries['llvm'].LLVMEraseGlobalIFunc
-    LLVMEraseGlobalIFunc.restype = None
-    LLVMEraseGlobalIFunc.argtypes = [LLVMValueRef]
+  LLVMEraseGlobalIFunc = _libraries["llvm"].LLVMEraseGlobalIFunc
+  LLVMEraseGlobalIFunc.restype = None
+  LLVMEraseGlobalIFunc.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemoveGlobalIFunc = _libraries['llvm'].LLVMRemoveGlobalIFunc
-    LLVMRemoveGlobalIFunc.restype = None
-    LLVMRemoveGlobalIFunc.argtypes = [LLVMValueRef]
+  LLVMRemoveGlobalIFunc = _libraries["llvm"].LLVMRemoveGlobalIFunc
+  LLVMRemoveGlobalIFunc.restype = None
+  LLVMRemoveGlobalIFunc.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMDStringInContext2 = _libraries['llvm'].LLVMMDStringInContext2
-    LLVMMDStringInContext2.restype = LLVMMetadataRef
-    LLVMMDStringInContext2.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMMDStringInContext2 = _libraries["llvm"].LLVMMDStringInContext2
+  LLVMMDStringInContext2.restype = LLVMMetadataRef
+  LLVMMDStringInContext2.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMDNodeInContext2 = _libraries['llvm'].LLVMMDNodeInContext2
-    LLVMMDNodeInContext2.restype = LLVMMetadataRef
-    LLVMMDNodeInContext2.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), size_t]
+  LLVMMDNodeInContext2 = _libraries["llvm"].LLVMMDNodeInContext2
+  LLVMMDNodeInContext2.restype = LLVMMetadataRef
+  LLVMMDNodeInContext2.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMetadataAsValue = _libraries['llvm'].LLVMMetadataAsValue
-    LLVMMetadataAsValue.restype = LLVMValueRef
-    LLVMMetadataAsValue.argtypes = [LLVMContextRef, LLVMMetadataRef]
+  LLVMMetadataAsValue = _libraries["llvm"].LLVMMetadataAsValue
+  LLVMMetadataAsValue.restype = LLVMValueRef
+  LLVMMetadataAsValue.argtypes = [LLVMContextRef, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMValueAsMetadata = _libraries['llvm'].LLVMValueAsMetadata
-    LLVMValueAsMetadata.restype = LLVMMetadataRef
-    LLVMValueAsMetadata.argtypes = [LLVMValueRef]
+  LLVMValueAsMetadata = _libraries["llvm"].LLVMValueAsMetadata
+  LLVMValueAsMetadata.restype = LLVMMetadataRef
+  LLVMValueAsMetadata.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetMDString = _libraries['llvm'].LLVMGetMDString
-    LLVMGetMDString.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetMDString.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint32)]
+  LLVMGetMDString = _libraries["llvm"].LLVMGetMDString
+  LLVMGetMDString.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetMDString.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint32)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetMDNodeNumOperands = _libraries['llvm'].LLVMGetMDNodeNumOperands
-    LLVMGetMDNodeNumOperands.restype = ctypes.c_uint32
-    LLVMGetMDNodeNumOperands.argtypes = [LLVMValueRef]
+  LLVMGetMDNodeNumOperands = _libraries["llvm"].LLVMGetMDNodeNumOperands
+  LLVMGetMDNodeNumOperands.restype = ctypes.c_uint32
+  LLVMGetMDNodeNumOperands.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetMDNodeOperands = _libraries['llvm'].LLVMGetMDNodeOperands
-    LLVMGetMDNodeOperands.restype = None
-    LLVMGetMDNodeOperands.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue))]
+  LLVMGetMDNodeOperands = _libraries["llvm"].LLVMGetMDNodeOperands
+  LLVMGetMDNodeOperands.restype = None
+  LLVMGetMDNodeOperands.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMDStringInContext = _libraries['llvm'].LLVMMDStringInContext
-    LLVMMDStringInContext.restype = LLVMValueRef
-    LLVMMDStringInContext.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMMDStringInContext = _libraries["llvm"].LLVMMDStringInContext
+  LLVMMDStringInContext.restype = LLVMValueRef
+  LLVMMDStringInContext.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMDString = _libraries['llvm'].LLVMMDString
-    LLVMMDString.restype = LLVMValueRef
-    LLVMMDString.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMMDString = _libraries["llvm"].LLVMMDString
+  LLVMMDString.restype = LLVMValueRef
+  LLVMMDString.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMDNodeInContext = _libraries['llvm'].LLVMMDNodeInContext
-    LLVMMDNodeInContext.restype = LLVMValueRef
-    LLVMMDNodeInContext.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMMDNodeInContext = _libraries["llvm"].LLVMMDNodeInContext
+  LLVMMDNodeInContext.restype = LLVMValueRef
+  LLVMMDNodeInContext.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMDNode = _libraries['llvm'].LLVMMDNode
-    LLVMMDNode.restype = LLVMValueRef
-    LLVMMDNode.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMMDNode = _libraries["llvm"].LLVMMDNode
+  LLVMMDNode.restype = LLVMValueRef
+  LLVMMDNode.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBasicBlockAsValue = _libraries['llvm'].LLVMBasicBlockAsValue
-    LLVMBasicBlockAsValue.restype = LLVMValueRef
-    LLVMBasicBlockAsValue.argtypes = [LLVMBasicBlockRef]
+  LLVMBasicBlockAsValue = _libraries["llvm"].LLVMBasicBlockAsValue
+  LLVMBasicBlockAsValue.restype = LLVMValueRef
+  LLVMBasicBlockAsValue.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMValueIsBasicBlock = _libraries['llvm'].LLVMValueIsBasicBlock
-    LLVMValueIsBasicBlock.restype = LLVMBool
-    LLVMValueIsBasicBlock.argtypes = [LLVMValueRef]
+  LLVMValueIsBasicBlock = _libraries["llvm"].LLVMValueIsBasicBlock
+  LLVMValueIsBasicBlock.restype = LLVMBool
+  LLVMValueIsBasicBlock.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMValueAsBasicBlock = _libraries['llvm'].LLVMValueAsBasicBlock
-    LLVMValueAsBasicBlock.restype = LLVMBasicBlockRef
-    LLVMValueAsBasicBlock.argtypes = [LLVMValueRef]
+  LLVMValueAsBasicBlock = _libraries["llvm"].LLVMValueAsBasicBlock
+  LLVMValueAsBasicBlock.restype = LLVMBasicBlockRef
+  LLVMValueAsBasicBlock.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBasicBlockName = _libraries['llvm'].LLVMGetBasicBlockName
-    LLVMGetBasicBlockName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetBasicBlockName.argtypes = [LLVMBasicBlockRef]
+  LLVMGetBasicBlockName = _libraries["llvm"].LLVMGetBasicBlockName
+  LLVMGetBasicBlockName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetBasicBlockName.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBasicBlockParent = _libraries['llvm'].LLVMGetBasicBlockParent
-    LLVMGetBasicBlockParent.restype = LLVMValueRef
-    LLVMGetBasicBlockParent.argtypes = [LLVMBasicBlockRef]
+  LLVMGetBasicBlockParent = _libraries["llvm"].LLVMGetBasicBlockParent
+  LLVMGetBasicBlockParent.restype = LLVMValueRef
+  LLVMGetBasicBlockParent.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBasicBlockTerminator = _libraries['llvm'].LLVMGetBasicBlockTerminator
-    LLVMGetBasicBlockTerminator.restype = LLVMValueRef
-    LLVMGetBasicBlockTerminator.argtypes = [LLVMBasicBlockRef]
+  LLVMGetBasicBlockTerminator = _libraries["llvm"].LLVMGetBasicBlockTerminator
+  LLVMGetBasicBlockTerminator.restype = LLVMValueRef
+  LLVMGetBasicBlockTerminator.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCountBasicBlocks = _libraries['llvm'].LLVMCountBasicBlocks
-    LLVMCountBasicBlocks.restype = ctypes.c_uint32
-    LLVMCountBasicBlocks.argtypes = [LLVMValueRef]
+  LLVMCountBasicBlocks = _libraries["llvm"].LLVMCountBasicBlocks
+  LLVMCountBasicBlocks.restype = ctypes.c_uint32
+  LLVMCountBasicBlocks.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBasicBlocks = _libraries['llvm'].LLVMGetBasicBlocks
-    LLVMGetBasicBlocks.restype = None
-    LLVMGetBasicBlocks.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueBasicBlock))]
+  LLVMGetBasicBlocks = _libraries["llvm"].LLVMGetBasicBlocks
+  LLVMGetBasicBlocks.restype = None
+  LLVMGetBasicBlocks.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueBasicBlock)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFirstBasicBlock = _libraries['llvm'].LLVMGetFirstBasicBlock
-    LLVMGetFirstBasicBlock.restype = LLVMBasicBlockRef
-    LLVMGetFirstBasicBlock.argtypes = [LLVMValueRef]
+  LLVMGetFirstBasicBlock = _libraries["llvm"].LLVMGetFirstBasicBlock
+  LLVMGetFirstBasicBlock.restype = LLVMBasicBlockRef
+  LLVMGetFirstBasicBlock.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLastBasicBlock = _libraries['llvm'].LLVMGetLastBasicBlock
-    LLVMGetLastBasicBlock.restype = LLVMBasicBlockRef
-    LLVMGetLastBasicBlock.argtypes = [LLVMValueRef]
+  LLVMGetLastBasicBlock = _libraries["llvm"].LLVMGetLastBasicBlock
+  LLVMGetLastBasicBlock.restype = LLVMBasicBlockRef
+  LLVMGetLastBasicBlock.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextBasicBlock = _libraries['llvm'].LLVMGetNextBasicBlock
-    LLVMGetNextBasicBlock.restype = LLVMBasicBlockRef
-    LLVMGetNextBasicBlock.argtypes = [LLVMBasicBlockRef]
+  LLVMGetNextBasicBlock = _libraries["llvm"].LLVMGetNextBasicBlock
+  LLVMGetNextBasicBlock.restype = LLVMBasicBlockRef
+  LLVMGetNextBasicBlock.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPreviousBasicBlock = _libraries['llvm'].LLVMGetPreviousBasicBlock
-    LLVMGetPreviousBasicBlock.restype = LLVMBasicBlockRef
-    LLVMGetPreviousBasicBlock.argtypes = [LLVMBasicBlockRef]
+  LLVMGetPreviousBasicBlock = _libraries["llvm"].LLVMGetPreviousBasicBlock
+  LLVMGetPreviousBasicBlock.restype = LLVMBasicBlockRef
+  LLVMGetPreviousBasicBlock.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetEntryBasicBlock = _libraries['llvm'].LLVMGetEntryBasicBlock
-    LLVMGetEntryBasicBlock.restype = LLVMBasicBlockRef
-    LLVMGetEntryBasicBlock.argtypes = [LLVMValueRef]
+  LLVMGetEntryBasicBlock = _libraries["llvm"].LLVMGetEntryBasicBlock
+  LLVMGetEntryBasicBlock.restype = LLVMBasicBlockRef
+  LLVMGetEntryBasicBlock.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInsertExistingBasicBlockAfterInsertBlock = _libraries['llvm'].LLVMInsertExistingBasicBlockAfterInsertBlock
-    LLVMInsertExistingBasicBlockAfterInsertBlock.restype = None
-    LLVMInsertExistingBasicBlockAfterInsertBlock.argtypes = [LLVMBuilderRef, LLVMBasicBlockRef]
+  LLVMInsertExistingBasicBlockAfterInsertBlock = _libraries[
+    "llvm"
+  ].LLVMInsertExistingBasicBlockAfterInsertBlock
+  LLVMInsertExistingBasicBlockAfterInsertBlock.restype = None
+  LLVMInsertExistingBasicBlockAfterInsertBlock.argtypes = [
+    LLVMBuilderRef,
+    LLVMBasicBlockRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAppendExistingBasicBlock = _libraries['llvm'].LLVMAppendExistingBasicBlock
-    LLVMAppendExistingBasicBlock.restype = None
-    LLVMAppendExistingBasicBlock.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
+  LLVMAppendExistingBasicBlock = _libraries["llvm"].LLVMAppendExistingBasicBlock
+  LLVMAppendExistingBasicBlock.restype = None
+  LLVMAppendExistingBasicBlock.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateBasicBlockInContext = _libraries['llvm'].LLVMCreateBasicBlockInContext
-    LLVMCreateBasicBlockInContext.restype = LLVMBasicBlockRef
-    LLVMCreateBasicBlockInContext.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMCreateBasicBlockInContext = _libraries["llvm"].LLVMCreateBasicBlockInContext
+  LLVMCreateBasicBlockInContext.restype = LLVMBasicBlockRef
+  LLVMCreateBasicBlockInContext.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAppendBasicBlockInContext = _libraries['llvm'].LLVMAppendBasicBlockInContext
-    LLVMAppendBasicBlockInContext.restype = LLVMBasicBlockRef
-    LLVMAppendBasicBlockInContext.argtypes = [LLVMContextRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMAppendBasicBlockInContext = _libraries["llvm"].LLVMAppendBasicBlockInContext
+  LLVMAppendBasicBlockInContext.restype = LLVMBasicBlockRef
+  LLVMAppendBasicBlockInContext.argtypes = [
+    LLVMContextRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAppendBasicBlock = _libraries['llvm'].LLVMAppendBasicBlock
-    LLVMAppendBasicBlock.restype = LLVMBasicBlockRef
-    LLVMAppendBasicBlock.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMAppendBasicBlock = _libraries["llvm"].LLVMAppendBasicBlock
+  LLVMAppendBasicBlock.restype = LLVMBasicBlockRef
+  LLVMAppendBasicBlock.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInsertBasicBlockInContext = _libraries['llvm'].LLVMInsertBasicBlockInContext
-    LLVMInsertBasicBlockInContext.restype = LLVMBasicBlockRef
-    LLVMInsertBasicBlockInContext.argtypes = [LLVMContextRef, LLVMBasicBlockRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMInsertBasicBlockInContext = _libraries["llvm"].LLVMInsertBasicBlockInContext
+  LLVMInsertBasicBlockInContext.restype = LLVMBasicBlockRef
+  LLVMInsertBasicBlockInContext.argtypes = [
+    LLVMContextRef,
+    LLVMBasicBlockRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInsertBasicBlock = _libraries['llvm'].LLVMInsertBasicBlock
-    LLVMInsertBasicBlock.restype = LLVMBasicBlockRef
-    LLVMInsertBasicBlock.argtypes = [LLVMBasicBlockRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMInsertBasicBlock = _libraries["llvm"].LLVMInsertBasicBlock
+  LLVMInsertBasicBlock.restype = LLVMBasicBlockRef
+  LLVMInsertBasicBlock.argtypes = [LLVMBasicBlockRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDeleteBasicBlock = _libraries['llvm'].LLVMDeleteBasicBlock
-    LLVMDeleteBasicBlock.restype = None
-    LLVMDeleteBasicBlock.argtypes = [LLVMBasicBlockRef]
+  LLVMDeleteBasicBlock = _libraries["llvm"].LLVMDeleteBasicBlock
+  LLVMDeleteBasicBlock.restype = None
+  LLVMDeleteBasicBlock.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemoveBasicBlockFromParent = _libraries['llvm'].LLVMRemoveBasicBlockFromParent
-    LLVMRemoveBasicBlockFromParent.restype = None
-    LLVMRemoveBasicBlockFromParent.argtypes = [LLVMBasicBlockRef]
+  LLVMRemoveBasicBlockFromParent = _libraries["llvm"].LLVMRemoveBasicBlockFromParent
+  LLVMRemoveBasicBlockFromParent.restype = None
+  LLVMRemoveBasicBlockFromParent.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMoveBasicBlockBefore = _libraries['llvm'].LLVMMoveBasicBlockBefore
-    LLVMMoveBasicBlockBefore.restype = None
-    LLVMMoveBasicBlockBefore.argtypes = [LLVMBasicBlockRef, LLVMBasicBlockRef]
+  LLVMMoveBasicBlockBefore = _libraries["llvm"].LLVMMoveBasicBlockBefore
+  LLVMMoveBasicBlockBefore.restype = None
+  LLVMMoveBasicBlockBefore.argtypes = [LLVMBasicBlockRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMoveBasicBlockAfter = _libraries['llvm'].LLVMMoveBasicBlockAfter
-    LLVMMoveBasicBlockAfter.restype = None
-    LLVMMoveBasicBlockAfter.argtypes = [LLVMBasicBlockRef, LLVMBasicBlockRef]
+  LLVMMoveBasicBlockAfter = _libraries["llvm"].LLVMMoveBasicBlockAfter
+  LLVMMoveBasicBlockAfter.restype = None
+  LLVMMoveBasicBlockAfter.argtypes = [LLVMBasicBlockRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFirstInstruction = _libraries['llvm'].LLVMGetFirstInstruction
-    LLVMGetFirstInstruction.restype = LLVMValueRef
-    LLVMGetFirstInstruction.argtypes = [LLVMBasicBlockRef]
+  LLVMGetFirstInstruction = _libraries["llvm"].LLVMGetFirstInstruction
+  LLVMGetFirstInstruction.restype = LLVMValueRef
+  LLVMGetFirstInstruction.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetLastInstruction = _libraries['llvm'].LLVMGetLastInstruction
-    LLVMGetLastInstruction.restype = LLVMValueRef
-    LLVMGetLastInstruction.argtypes = [LLVMBasicBlockRef]
+  LLVMGetLastInstruction = _libraries["llvm"].LLVMGetLastInstruction
+  LLVMGetLastInstruction.restype = LLVMValueRef
+  LLVMGetLastInstruction.argtypes = [LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMHasMetadata = _libraries['llvm'].LLVMHasMetadata
-    LLVMHasMetadata.restype = ctypes.c_int32
-    LLVMHasMetadata.argtypes = [LLVMValueRef]
+  LLVMHasMetadata = _libraries["llvm"].LLVMHasMetadata
+  LLVMHasMetadata.restype = ctypes.c_int32
+  LLVMHasMetadata.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetMetadata = _libraries['llvm'].LLVMGetMetadata
-    LLVMGetMetadata.restype = LLVMValueRef
-    LLVMGetMetadata.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetMetadata = _libraries["llvm"].LLVMGetMetadata
+  LLVMGetMetadata.restype = LLVMValueRef
+  LLVMGetMetadata.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetMetadata = _libraries['llvm'].LLVMSetMetadata
-    LLVMSetMetadata.restype = None
-    LLVMSetMetadata.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMValueRef]
+  LLVMSetMetadata = _libraries["llvm"].LLVMSetMetadata
+  LLVMSetMetadata.restype = None
+  LLVMSetMetadata.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInstructionGetAllMetadataOtherThanDebugLoc = _libraries['llvm'].LLVMInstructionGetAllMetadataOtherThanDebugLoc
-    LLVMInstructionGetAllMetadataOtherThanDebugLoc.restype = ctypes.POINTER(struct_LLVMOpaqueValueMetadataEntry)
-    LLVMInstructionGetAllMetadataOtherThanDebugLoc.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMInstructionGetAllMetadataOtherThanDebugLoc = _libraries[
+    "llvm"
+  ].LLVMInstructionGetAllMetadataOtherThanDebugLoc
+  LLVMInstructionGetAllMetadataOtherThanDebugLoc.restype = ctypes.POINTER(
+    struct_LLVMOpaqueValueMetadataEntry
+  )
+  LLVMInstructionGetAllMetadataOtherThanDebugLoc.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetInstructionParent = _libraries['llvm'].LLVMGetInstructionParent
-    LLVMGetInstructionParent.restype = LLVMBasicBlockRef
-    LLVMGetInstructionParent.argtypes = [LLVMValueRef]
+  LLVMGetInstructionParent = _libraries["llvm"].LLVMGetInstructionParent
+  LLVMGetInstructionParent.restype = LLVMBasicBlockRef
+  LLVMGetInstructionParent.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextInstruction = _libraries['llvm'].LLVMGetNextInstruction
-    LLVMGetNextInstruction.restype = LLVMValueRef
-    LLVMGetNextInstruction.argtypes = [LLVMValueRef]
+  LLVMGetNextInstruction = _libraries["llvm"].LLVMGetNextInstruction
+  LLVMGetNextInstruction.restype = LLVMValueRef
+  LLVMGetNextInstruction.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPreviousInstruction = _libraries['llvm'].LLVMGetPreviousInstruction
-    LLVMGetPreviousInstruction.restype = LLVMValueRef
-    LLVMGetPreviousInstruction.argtypes = [LLVMValueRef]
+  LLVMGetPreviousInstruction = _libraries["llvm"].LLVMGetPreviousInstruction
+  LLVMGetPreviousInstruction.restype = LLVMValueRef
+  LLVMGetPreviousInstruction.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInstructionRemoveFromParent = _libraries['llvm'].LLVMInstructionRemoveFromParent
-    LLVMInstructionRemoveFromParent.restype = None
-    LLVMInstructionRemoveFromParent.argtypes = [LLVMValueRef]
+  LLVMInstructionRemoveFromParent = _libraries["llvm"].LLVMInstructionRemoveFromParent
+  LLVMInstructionRemoveFromParent.restype = None
+  LLVMInstructionRemoveFromParent.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInstructionEraseFromParent = _libraries['llvm'].LLVMInstructionEraseFromParent
-    LLVMInstructionEraseFromParent.restype = None
-    LLVMInstructionEraseFromParent.argtypes = [LLVMValueRef]
+  LLVMInstructionEraseFromParent = _libraries["llvm"].LLVMInstructionEraseFromParent
+  LLVMInstructionEraseFromParent.restype = None
+  LLVMInstructionEraseFromParent.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetInstructionOpcode = _libraries['llvm'].LLVMGetInstructionOpcode
-    LLVMGetInstructionOpcode.restype = LLVMOpcode
-    LLVMGetInstructionOpcode.argtypes = [LLVMValueRef]
+  LLVMGetInstructionOpcode = _libraries["llvm"].LLVMGetInstructionOpcode
+  LLVMGetInstructionOpcode.restype = LLVMOpcode
+  LLVMGetInstructionOpcode.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetICmpPredicate = _libraries['llvm'].LLVMGetICmpPredicate
-    LLVMGetICmpPredicate.restype = LLVMIntPredicate
-    LLVMGetICmpPredicate.argtypes = [LLVMValueRef]
+  LLVMGetICmpPredicate = _libraries["llvm"].LLVMGetICmpPredicate
+  LLVMGetICmpPredicate.restype = LLVMIntPredicate
+  LLVMGetICmpPredicate.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFCmpPredicate = _libraries['llvm'].LLVMGetFCmpPredicate
-    LLVMGetFCmpPredicate.restype = LLVMRealPredicate
-    LLVMGetFCmpPredicate.argtypes = [LLVMValueRef]
+  LLVMGetFCmpPredicate = _libraries["llvm"].LLVMGetFCmpPredicate
+  LLVMGetFCmpPredicate.restype = LLVMRealPredicate
+  LLVMGetFCmpPredicate.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInstructionClone = _libraries['llvm'].LLVMInstructionClone
-    LLVMInstructionClone.restype = LLVMValueRef
-    LLVMInstructionClone.argtypes = [LLVMValueRef]
+  LLVMInstructionClone = _libraries["llvm"].LLVMInstructionClone
+  LLVMInstructionClone.restype = LLVMValueRef
+  LLVMInstructionClone.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsATerminatorInst = _libraries['llvm'].LLVMIsATerminatorInst
-    LLVMIsATerminatorInst.restype = LLVMValueRef
-    LLVMIsATerminatorInst.argtypes = [LLVMValueRef]
+  LLVMIsATerminatorInst = _libraries["llvm"].LLVMIsATerminatorInst
+  LLVMIsATerminatorInst.restype = LLVMValueRef
+  LLVMIsATerminatorInst.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNumArgOperands = _libraries['llvm'].LLVMGetNumArgOperands
-    LLVMGetNumArgOperands.restype = ctypes.c_uint32
-    LLVMGetNumArgOperands.argtypes = [LLVMValueRef]
+  LLVMGetNumArgOperands = _libraries["llvm"].LLVMGetNumArgOperands
+  LLVMGetNumArgOperands.restype = ctypes.c_uint32
+  LLVMGetNumArgOperands.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetInstructionCallConv = _libraries['llvm'].LLVMSetInstructionCallConv
-    LLVMSetInstructionCallConv.restype = None
-    LLVMSetInstructionCallConv.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMSetInstructionCallConv = _libraries["llvm"].LLVMSetInstructionCallConv
+  LLVMSetInstructionCallConv.restype = None
+  LLVMSetInstructionCallConv.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetInstructionCallConv = _libraries['llvm'].LLVMGetInstructionCallConv
-    LLVMGetInstructionCallConv.restype = ctypes.c_uint32
-    LLVMGetInstructionCallConv.argtypes = [LLVMValueRef]
+  LLVMGetInstructionCallConv = _libraries["llvm"].LLVMGetInstructionCallConv
+  LLVMGetInstructionCallConv.restype = ctypes.c_uint32
+  LLVMGetInstructionCallConv.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetInstrParamAlignment = _libraries['llvm'].LLVMSetInstrParamAlignment
-    LLVMSetInstrParamAlignment.restype = None
-    LLVMSetInstrParamAlignment.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.c_uint32]
+  LLVMSetInstrParamAlignment = _libraries["llvm"].LLVMSetInstrParamAlignment
+  LLVMSetInstrParamAlignment.restype = None
+  LLVMSetInstrParamAlignment.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddCallSiteAttribute = _libraries['llvm'].LLVMAddCallSiteAttribute
-    LLVMAddCallSiteAttribute.restype = None
-    LLVMAddCallSiteAttribute.argtypes = [LLVMValueRef, LLVMAttributeIndex, LLVMAttributeRef]
+  LLVMAddCallSiteAttribute = _libraries["llvm"].LLVMAddCallSiteAttribute
+  LLVMAddCallSiteAttribute.restype = None
+  LLVMAddCallSiteAttribute.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    LLVMAttributeRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCallSiteAttributeCount = _libraries['llvm'].LLVMGetCallSiteAttributeCount
-    LLVMGetCallSiteAttributeCount.restype = ctypes.c_uint32
-    LLVMGetCallSiteAttributeCount.argtypes = [LLVMValueRef, LLVMAttributeIndex]
+  LLVMGetCallSiteAttributeCount = _libraries["llvm"].LLVMGetCallSiteAttributeCount
+  LLVMGetCallSiteAttributeCount.restype = ctypes.c_uint32
+  LLVMGetCallSiteAttributeCount.argtypes = [LLVMValueRef, LLVMAttributeIndex]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCallSiteAttributes = _libraries['llvm'].LLVMGetCallSiteAttributes
-    LLVMGetCallSiteAttributes.restype = None
-    LLVMGetCallSiteAttributes.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueAttributeRef))]
+  LLVMGetCallSiteAttributes = _libraries["llvm"].LLVMGetCallSiteAttributes
+  LLVMGetCallSiteAttributes.restype = None
+  LLVMGetCallSiteAttributes.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueAttributeRef)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCallSiteEnumAttribute = _libraries['llvm'].LLVMGetCallSiteEnumAttribute
-    LLVMGetCallSiteEnumAttribute.restype = LLVMAttributeRef
-    LLVMGetCallSiteEnumAttribute.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.c_uint32]
+  LLVMGetCallSiteEnumAttribute = _libraries["llvm"].LLVMGetCallSiteEnumAttribute
+  LLVMGetCallSiteEnumAttribute.restype = LLVMAttributeRef
+  LLVMGetCallSiteEnumAttribute.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCallSiteStringAttribute = _libraries['llvm'].LLVMGetCallSiteStringAttribute
-    LLVMGetCallSiteStringAttribute.restype = LLVMAttributeRef
-    LLVMGetCallSiteStringAttribute.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMGetCallSiteStringAttribute = _libraries["llvm"].LLVMGetCallSiteStringAttribute
+  LLVMGetCallSiteStringAttribute.restype = LLVMAttributeRef
+  LLVMGetCallSiteStringAttribute.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemoveCallSiteEnumAttribute = _libraries['llvm'].LLVMRemoveCallSiteEnumAttribute
-    LLVMRemoveCallSiteEnumAttribute.restype = None
-    LLVMRemoveCallSiteEnumAttribute.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.c_uint32]
+  LLVMRemoveCallSiteEnumAttribute = _libraries["llvm"].LLVMRemoveCallSiteEnumAttribute
+  LLVMRemoveCallSiteEnumAttribute.restype = None
+  LLVMRemoveCallSiteEnumAttribute.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemoveCallSiteStringAttribute = _libraries['llvm'].LLVMRemoveCallSiteStringAttribute
-    LLVMRemoveCallSiteStringAttribute.restype = None
-    LLVMRemoveCallSiteStringAttribute.argtypes = [LLVMValueRef, LLVMAttributeIndex, ctypes.POINTER(ctypes.c_char), ctypes.c_uint32]
+  LLVMRemoveCallSiteStringAttribute = _libraries[
+    "llvm"
+  ].LLVMRemoveCallSiteStringAttribute
+  LLVMRemoveCallSiteStringAttribute.restype = None
+  LLVMRemoveCallSiteStringAttribute.argtypes = [
+    LLVMValueRef,
+    LLVMAttributeIndex,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCalledFunctionType = _libraries['llvm'].LLVMGetCalledFunctionType
-    LLVMGetCalledFunctionType.restype = LLVMTypeRef
-    LLVMGetCalledFunctionType.argtypes = [LLVMValueRef]
+  LLVMGetCalledFunctionType = _libraries["llvm"].LLVMGetCalledFunctionType
+  LLVMGetCalledFunctionType.restype = LLVMTypeRef
+  LLVMGetCalledFunctionType.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCalledValue = _libraries['llvm'].LLVMGetCalledValue
-    LLVMGetCalledValue.restype = LLVMValueRef
-    LLVMGetCalledValue.argtypes = [LLVMValueRef]
+  LLVMGetCalledValue = _libraries["llvm"].LLVMGetCalledValue
+  LLVMGetCalledValue.restype = LLVMValueRef
+  LLVMGetCalledValue.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsTailCall = _libraries['llvm'].LLVMIsTailCall
-    LLVMIsTailCall.restype = LLVMBool
-    LLVMIsTailCall.argtypes = [LLVMValueRef]
+  LLVMIsTailCall = _libraries["llvm"].LLVMIsTailCall
+  LLVMIsTailCall.restype = LLVMBool
+  LLVMIsTailCall.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetTailCall = _libraries['llvm'].LLVMSetTailCall
-    LLVMSetTailCall.restype = None
-    LLVMSetTailCall.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetTailCall = _libraries["llvm"].LLVMSetTailCall
+  LLVMSetTailCall.restype = None
+  LLVMSetTailCall.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNormalDest = _libraries['llvm'].LLVMGetNormalDest
-    LLVMGetNormalDest.restype = LLVMBasicBlockRef
-    LLVMGetNormalDest.argtypes = [LLVMValueRef]
+  LLVMGetNormalDest = _libraries["llvm"].LLVMGetNormalDest
+  LLVMGetNormalDest.restype = LLVMBasicBlockRef
+  LLVMGetNormalDest.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetUnwindDest = _libraries['llvm'].LLVMGetUnwindDest
-    LLVMGetUnwindDest.restype = LLVMBasicBlockRef
-    LLVMGetUnwindDest.argtypes = [LLVMValueRef]
+  LLVMGetUnwindDest = _libraries["llvm"].LLVMGetUnwindDest
+  LLVMGetUnwindDest.restype = LLVMBasicBlockRef
+  LLVMGetUnwindDest.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetNormalDest = _libraries['llvm'].LLVMSetNormalDest
-    LLVMSetNormalDest.restype = None
-    LLVMSetNormalDest.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
+  LLVMSetNormalDest = _libraries["llvm"].LLVMSetNormalDest
+  LLVMSetNormalDest.restype = None
+  LLVMSetNormalDest.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetUnwindDest = _libraries['llvm'].LLVMSetUnwindDest
-    LLVMSetUnwindDest.restype = None
-    LLVMSetUnwindDest.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
+  LLVMSetUnwindDest = _libraries["llvm"].LLVMSetUnwindDest
+  LLVMSetUnwindDest.restype = None
+  LLVMSetUnwindDest.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNumSuccessors = _libraries['llvm'].LLVMGetNumSuccessors
-    LLVMGetNumSuccessors.restype = ctypes.c_uint32
-    LLVMGetNumSuccessors.argtypes = [LLVMValueRef]
+  LLVMGetNumSuccessors = _libraries["llvm"].LLVMGetNumSuccessors
+  LLVMGetNumSuccessors.restype = ctypes.c_uint32
+  LLVMGetNumSuccessors.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSuccessor = _libraries['llvm'].LLVMGetSuccessor
-    LLVMGetSuccessor.restype = LLVMBasicBlockRef
-    LLVMGetSuccessor.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetSuccessor = _libraries["llvm"].LLVMGetSuccessor
+  LLVMGetSuccessor.restype = LLVMBasicBlockRef
+  LLVMGetSuccessor.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetSuccessor = _libraries['llvm'].LLVMSetSuccessor
-    LLVMSetSuccessor.restype = None
-    LLVMSetSuccessor.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMBasicBlockRef]
+  LLVMSetSuccessor = _libraries["llvm"].LLVMSetSuccessor
+  LLVMSetSuccessor.restype = None
+  LLVMSetSuccessor.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsConditional = _libraries['llvm'].LLVMIsConditional
-    LLVMIsConditional.restype = LLVMBool
-    LLVMIsConditional.argtypes = [LLVMValueRef]
+  LLVMIsConditional = _libraries["llvm"].LLVMIsConditional
+  LLVMIsConditional.restype = LLVMBool
+  LLVMIsConditional.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCondition = _libraries['llvm'].LLVMGetCondition
-    LLVMGetCondition.restype = LLVMValueRef
-    LLVMGetCondition.argtypes = [LLVMValueRef]
+  LLVMGetCondition = _libraries["llvm"].LLVMGetCondition
+  LLVMGetCondition.restype = LLVMValueRef
+  LLVMGetCondition.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetCondition = _libraries['llvm'].LLVMSetCondition
-    LLVMSetCondition.restype = None
-    LLVMSetCondition.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMSetCondition = _libraries["llvm"].LLVMSetCondition
+  LLVMSetCondition.restype = None
+  LLVMSetCondition.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSwitchDefaultDest = _libraries['llvm'].LLVMGetSwitchDefaultDest
-    LLVMGetSwitchDefaultDest.restype = LLVMBasicBlockRef
-    LLVMGetSwitchDefaultDest.argtypes = [LLVMValueRef]
+  LLVMGetSwitchDefaultDest = _libraries["llvm"].LLVMGetSwitchDefaultDest
+  LLVMGetSwitchDefaultDest.restype = LLVMBasicBlockRef
+  LLVMGetSwitchDefaultDest.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetAllocatedType = _libraries['llvm'].LLVMGetAllocatedType
-    LLVMGetAllocatedType.restype = LLVMTypeRef
-    LLVMGetAllocatedType.argtypes = [LLVMValueRef]
+  LLVMGetAllocatedType = _libraries["llvm"].LLVMGetAllocatedType
+  LLVMGetAllocatedType.restype = LLVMTypeRef
+  LLVMGetAllocatedType.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsInBounds = _libraries['llvm'].LLVMIsInBounds
-    LLVMIsInBounds.restype = LLVMBool
-    LLVMIsInBounds.argtypes = [LLVMValueRef]
+  LLVMIsInBounds = _libraries["llvm"].LLVMIsInBounds
+  LLVMIsInBounds.restype = LLVMBool
+  LLVMIsInBounds.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetIsInBounds = _libraries['llvm'].LLVMSetIsInBounds
-    LLVMSetIsInBounds.restype = None
-    LLVMSetIsInBounds.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetIsInBounds = _libraries["llvm"].LLVMSetIsInBounds
+  LLVMSetIsInBounds.restype = None
+  LLVMSetIsInBounds.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetGEPSourceElementType = _libraries['llvm'].LLVMGetGEPSourceElementType
-    LLVMGetGEPSourceElementType.restype = LLVMTypeRef
-    LLVMGetGEPSourceElementType.argtypes = [LLVMValueRef]
+  LLVMGetGEPSourceElementType = _libraries["llvm"].LLVMGetGEPSourceElementType
+  LLVMGetGEPSourceElementType.restype = LLVMTypeRef
+  LLVMGetGEPSourceElementType.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddIncoming = _libraries['llvm'].LLVMAddIncoming
-    LLVMAddIncoming.restype = None
-    LLVMAddIncoming.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueBasicBlock)), ctypes.c_uint32]
+  LLVMAddIncoming = _libraries["llvm"].LLVMAddIncoming
+  LLVMAddIncoming.restype = None
+  LLVMAddIncoming.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueBasicBlock)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCountIncoming = _libraries['llvm'].LLVMCountIncoming
-    LLVMCountIncoming.restype = ctypes.c_uint32
-    LLVMCountIncoming.argtypes = [LLVMValueRef]
+  LLVMCountIncoming = _libraries["llvm"].LLVMCountIncoming
+  LLVMCountIncoming.restype = ctypes.c_uint32
+  LLVMCountIncoming.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetIncomingValue = _libraries['llvm'].LLVMGetIncomingValue
-    LLVMGetIncomingValue.restype = LLVMValueRef
-    LLVMGetIncomingValue.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetIncomingValue = _libraries["llvm"].LLVMGetIncomingValue
+  LLVMGetIncomingValue.restype = LLVMValueRef
+  LLVMGetIncomingValue.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetIncomingBlock = _libraries['llvm'].LLVMGetIncomingBlock
-    LLVMGetIncomingBlock.restype = LLVMBasicBlockRef
-    LLVMGetIncomingBlock.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetIncomingBlock = _libraries["llvm"].LLVMGetIncomingBlock
+  LLVMGetIncomingBlock.restype = LLVMBasicBlockRef
+  LLVMGetIncomingBlock.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNumIndices = _libraries['llvm'].LLVMGetNumIndices
-    LLVMGetNumIndices.restype = ctypes.c_uint32
-    LLVMGetNumIndices.argtypes = [LLVMValueRef]
+  LLVMGetNumIndices = _libraries["llvm"].LLVMGetNumIndices
+  LLVMGetNumIndices.restype = ctypes.c_uint32
+  LLVMGetNumIndices.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetIndices = _libraries['llvm'].LLVMGetIndices
-    LLVMGetIndices.restype = ctypes.POINTER(ctypes.c_uint32)
-    LLVMGetIndices.argtypes = [LLVMValueRef]
+  LLVMGetIndices = _libraries["llvm"].LLVMGetIndices
+  LLVMGetIndices.restype = ctypes.POINTER(ctypes.c_uint32)
+  LLVMGetIndices.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateBuilderInContext = _libraries['llvm'].LLVMCreateBuilderInContext
-    LLVMCreateBuilderInContext.restype = LLVMBuilderRef
-    LLVMCreateBuilderInContext.argtypes = [LLVMContextRef]
+  LLVMCreateBuilderInContext = _libraries["llvm"].LLVMCreateBuilderInContext
+  LLVMCreateBuilderInContext.restype = LLVMBuilderRef
+  LLVMCreateBuilderInContext.argtypes = [LLVMContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateBuilder = _libraries['llvm'].LLVMCreateBuilder
-    LLVMCreateBuilder.restype = LLVMBuilderRef
-    LLVMCreateBuilder.argtypes = []
+  LLVMCreateBuilder = _libraries["llvm"].LLVMCreateBuilder
+  LLVMCreateBuilder.restype = LLVMBuilderRef
+  LLVMCreateBuilder.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPositionBuilder = _libraries['llvm'].LLVMPositionBuilder
-    LLVMPositionBuilder.restype = None
-    LLVMPositionBuilder.argtypes = [LLVMBuilderRef, LLVMBasicBlockRef, LLVMValueRef]
+  LLVMPositionBuilder = _libraries["llvm"].LLVMPositionBuilder
+  LLVMPositionBuilder.restype = None
+  LLVMPositionBuilder.argtypes = [LLVMBuilderRef, LLVMBasicBlockRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPositionBuilderBefore = _libraries['llvm'].LLVMPositionBuilderBefore
-    LLVMPositionBuilderBefore.restype = None
-    LLVMPositionBuilderBefore.argtypes = [LLVMBuilderRef, LLVMValueRef]
+  LLVMPositionBuilderBefore = _libraries["llvm"].LLVMPositionBuilderBefore
+  LLVMPositionBuilderBefore.restype = None
+  LLVMPositionBuilderBefore.argtypes = [LLVMBuilderRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPositionBuilderAtEnd = _libraries['llvm'].LLVMPositionBuilderAtEnd
-    LLVMPositionBuilderAtEnd.restype = None
-    LLVMPositionBuilderAtEnd.argtypes = [LLVMBuilderRef, LLVMBasicBlockRef]
+  LLVMPositionBuilderAtEnd = _libraries["llvm"].LLVMPositionBuilderAtEnd
+  LLVMPositionBuilderAtEnd.restype = None
+  LLVMPositionBuilderAtEnd.argtypes = [LLVMBuilderRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetInsertBlock = _libraries['llvm'].LLVMGetInsertBlock
-    LLVMGetInsertBlock.restype = LLVMBasicBlockRef
-    LLVMGetInsertBlock.argtypes = [LLVMBuilderRef]
+  LLVMGetInsertBlock = _libraries["llvm"].LLVMGetInsertBlock
+  LLVMGetInsertBlock.restype = LLVMBasicBlockRef
+  LLVMGetInsertBlock.argtypes = [LLVMBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMClearInsertionPosition = _libraries['llvm'].LLVMClearInsertionPosition
-    LLVMClearInsertionPosition.restype = None
-    LLVMClearInsertionPosition.argtypes = [LLVMBuilderRef]
+  LLVMClearInsertionPosition = _libraries["llvm"].LLVMClearInsertionPosition
+  LLVMClearInsertionPosition.restype = None
+  LLVMClearInsertionPosition.argtypes = [LLVMBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInsertIntoBuilder = _libraries['llvm'].LLVMInsertIntoBuilder
-    LLVMInsertIntoBuilder.restype = None
-    LLVMInsertIntoBuilder.argtypes = [LLVMBuilderRef, LLVMValueRef]
+  LLVMInsertIntoBuilder = _libraries["llvm"].LLVMInsertIntoBuilder
+  LLVMInsertIntoBuilder.restype = None
+  LLVMInsertIntoBuilder.argtypes = [LLVMBuilderRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInsertIntoBuilderWithName = _libraries['llvm'].LLVMInsertIntoBuilderWithName
-    LLVMInsertIntoBuilderWithName.restype = None
-    LLVMInsertIntoBuilderWithName.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMInsertIntoBuilderWithName = _libraries["llvm"].LLVMInsertIntoBuilderWithName
+  LLVMInsertIntoBuilderWithName.restype = None
+  LLVMInsertIntoBuilderWithName.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeBuilder = _libraries['llvm'].LLVMDisposeBuilder
-    LLVMDisposeBuilder.restype = None
-    LLVMDisposeBuilder.argtypes = [LLVMBuilderRef]
+  LLVMDisposeBuilder = _libraries["llvm"].LLVMDisposeBuilder
+  LLVMDisposeBuilder.restype = None
+  LLVMDisposeBuilder.argtypes = [LLVMBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCurrentDebugLocation2 = _libraries['llvm'].LLVMGetCurrentDebugLocation2
-    LLVMGetCurrentDebugLocation2.restype = LLVMMetadataRef
-    LLVMGetCurrentDebugLocation2.argtypes = [LLVMBuilderRef]
+  LLVMGetCurrentDebugLocation2 = _libraries["llvm"].LLVMGetCurrentDebugLocation2
+  LLVMGetCurrentDebugLocation2.restype = LLVMMetadataRef
+  LLVMGetCurrentDebugLocation2.argtypes = [LLVMBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetCurrentDebugLocation2 = _libraries['llvm'].LLVMSetCurrentDebugLocation2
-    LLVMSetCurrentDebugLocation2.restype = None
-    LLVMSetCurrentDebugLocation2.argtypes = [LLVMBuilderRef, LLVMMetadataRef]
+  LLVMSetCurrentDebugLocation2 = _libraries["llvm"].LLVMSetCurrentDebugLocation2
+  LLVMSetCurrentDebugLocation2.restype = None
+  LLVMSetCurrentDebugLocation2.argtypes = [LLVMBuilderRef, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetInstDebugLocation = _libraries['llvm'].LLVMSetInstDebugLocation
-    LLVMSetInstDebugLocation.restype = None
-    LLVMSetInstDebugLocation.argtypes = [LLVMBuilderRef, LLVMValueRef]
+  LLVMSetInstDebugLocation = _libraries["llvm"].LLVMSetInstDebugLocation
+  LLVMSetInstDebugLocation.restype = None
+  LLVMSetInstDebugLocation.argtypes = [LLVMBuilderRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddMetadataToInst = _libraries['llvm'].LLVMAddMetadataToInst
-    LLVMAddMetadataToInst.restype = None
-    LLVMAddMetadataToInst.argtypes = [LLVMBuilderRef, LLVMValueRef]
+  LLVMAddMetadataToInst = _libraries["llvm"].LLVMAddMetadataToInst
+  LLVMAddMetadataToInst.restype = None
+  LLVMAddMetadataToInst.argtypes = [LLVMBuilderRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuilderGetDefaultFPMathTag = _libraries['llvm'].LLVMBuilderGetDefaultFPMathTag
-    LLVMBuilderGetDefaultFPMathTag.restype = LLVMMetadataRef
-    LLVMBuilderGetDefaultFPMathTag.argtypes = [LLVMBuilderRef]
+  LLVMBuilderGetDefaultFPMathTag = _libraries["llvm"].LLVMBuilderGetDefaultFPMathTag
+  LLVMBuilderGetDefaultFPMathTag.restype = LLVMMetadataRef
+  LLVMBuilderGetDefaultFPMathTag.argtypes = [LLVMBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuilderSetDefaultFPMathTag = _libraries['llvm'].LLVMBuilderSetDefaultFPMathTag
-    LLVMBuilderSetDefaultFPMathTag.restype = None
-    LLVMBuilderSetDefaultFPMathTag.argtypes = [LLVMBuilderRef, LLVMMetadataRef]
+  LLVMBuilderSetDefaultFPMathTag = _libraries["llvm"].LLVMBuilderSetDefaultFPMathTag
+  LLVMBuilderSetDefaultFPMathTag.restype = None
+  LLVMBuilderSetDefaultFPMathTag.argtypes = [LLVMBuilderRef, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetCurrentDebugLocation = _libraries['llvm'].LLVMSetCurrentDebugLocation
-    LLVMSetCurrentDebugLocation.restype = None
-    LLVMSetCurrentDebugLocation.argtypes = [LLVMBuilderRef, LLVMValueRef]
+  LLVMSetCurrentDebugLocation = _libraries["llvm"].LLVMSetCurrentDebugLocation
+  LLVMSetCurrentDebugLocation.restype = None
+  LLVMSetCurrentDebugLocation.argtypes = [LLVMBuilderRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCurrentDebugLocation = _libraries['llvm'].LLVMGetCurrentDebugLocation
-    LLVMGetCurrentDebugLocation.restype = LLVMValueRef
-    LLVMGetCurrentDebugLocation.argtypes = [LLVMBuilderRef]
+  LLVMGetCurrentDebugLocation = _libraries["llvm"].LLVMGetCurrentDebugLocation
+  LLVMGetCurrentDebugLocation.restype = LLVMValueRef
+  LLVMGetCurrentDebugLocation.argtypes = [LLVMBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildRetVoid = _libraries['llvm'].LLVMBuildRetVoid
-    LLVMBuildRetVoid.restype = LLVMValueRef
-    LLVMBuildRetVoid.argtypes = [LLVMBuilderRef]
+  LLVMBuildRetVoid = _libraries["llvm"].LLVMBuildRetVoid
+  LLVMBuildRetVoid.restype = LLVMValueRef
+  LLVMBuildRetVoid.argtypes = [LLVMBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildRet = _libraries['llvm'].LLVMBuildRet
-    LLVMBuildRet.restype = LLVMValueRef
-    LLVMBuildRet.argtypes = [LLVMBuilderRef, LLVMValueRef]
+  LLVMBuildRet = _libraries["llvm"].LLVMBuildRet
+  LLVMBuildRet.restype = LLVMValueRef
+  LLVMBuildRet.argtypes = [LLVMBuilderRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildAggregateRet = _libraries['llvm'].LLVMBuildAggregateRet
-    LLVMBuildAggregateRet.restype = LLVMValueRef
-    LLVMBuildAggregateRet.argtypes = [LLVMBuilderRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32]
+  LLVMBuildAggregateRet = _libraries["llvm"].LLVMBuildAggregateRet
+  LLVMBuildAggregateRet.restype = LLVMValueRef
+  LLVMBuildAggregateRet.argtypes = [
+    LLVMBuilderRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildBr = _libraries['llvm'].LLVMBuildBr
-    LLVMBuildBr.restype = LLVMValueRef
-    LLVMBuildBr.argtypes = [LLVMBuilderRef, LLVMBasicBlockRef]
+  LLVMBuildBr = _libraries["llvm"].LLVMBuildBr
+  LLVMBuildBr.restype = LLVMValueRef
+  LLVMBuildBr.argtypes = [LLVMBuilderRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildCondBr = _libraries['llvm'].LLVMBuildCondBr
-    LLVMBuildCondBr.restype = LLVMValueRef
-    LLVMBuildCondBr.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMBasicBlockRef, LLVMBasicBlockRef]
+  LLVMBuildCondBr = _libraries["llvm"].LLVMBuildCondBr
+  LLVMBuildCondBr.restype = LLVMValueRef
+  LLVMBuildCondBr.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMBasicBlockRef,
+    LLVMBasicBlockRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildSwitch = _libraries['llvm'].LLVMBuildSwitch
-    LLVMBuildSwitch.restype = LLVMValueRef
-    LLVMBuildSwitch.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMBasicBlockRef, ctypes.c_uint32]
+  LLVMBuildSwitch = _libraries["llvm"].LLVMBuildSwitch
+  LLVMBuildSwitch.restype = LLVMValueRef
+  LLVMBuildSwitch.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMBasicBlockRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildIndirectBr = _libraries['llvm'].LLVMBuildIndirectBr
-    LLVMBuildIndirectBr.restype = LLVMValueRef
-    LLVMBuildIndirectBr.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.c_uint32]
+  LLVMBuildIndirectBr = _libraries["llvm"].LLVMBuildIndirectBr
+  LLVMBuildIndirectBr.restype = LLVMValueRef
+  LLVMBuildIndirectBr.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildInvoke = _libraries['llvm'].LLVMBuildInvoke
-    LLVMBuildInvoke.restype = LLVMValueRef
-    LLVMBuildInvoke.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, LLVMBasicBlockRef, LLVMBasicBlockRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildInvoke = _libraries["llvm"].LLVMBuildInvoke
+  LLVMBuildInvoke.restype = LLVMValueRef
+  LLVMBuildInvoke.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    LLVMBasicBlockRef,
+    LLVMBasicBlockRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildInvoke2 = _libraries['llvm'].LLVMBuildInvoke2
-    LLVMBuildInvoke2.restype = LLVMValueRef
-    LLVMBuildInvoke2.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, LLVMBasicBlockRef, LLVMBasicBlockRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildInvoke2 = _libraries["llvm"].LLVMBuildInvoke2
+  LLVMBuildInvoke2.restype = LLVMValueRef
+  LLVMBuildInvoke2.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    LLVMBasicBlockRef,
+    LLVMBasicBlockRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildUnreachable = _libraries['llvm'].LLVMBuildUnreachable
-    LLVMBuildUnreachable.restype = LLVMValueRef
-    LLVMBuildUnreachable.argtypes = [LLVMBuilderRef]
+  LLVMBuildUnreachable = _libraries["llvm"].LLVMBuildUnreachable
+  LLVMBuildUnreachable.restype = LLVMValueRef
+  LLVMBuildUnreachable.argtypes = [LLVMBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildResume = _libraries['llvm'].LLVMBuildResume
-    LLVMBuildResume.restype = LLVMValueRef
-    LLVMBuildResume.argtypes = [LLVMBuilderRef, LLVMValueRef]
+  LLVMBuildResume = _libraries["llvm"].LLVMBuildResume
+  LLVMBuildResume.restype = LLVMValueRef
+  LLVMBuildResume.argtypes = [LLVMBuilderRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildLandingPad = _libraries['llvm'].LLVMBuildLandingPad
-    LLVMBuildLandingPad.restype = LLVMValueRef
-    LLVMBuildLandingPad.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildLandingPad = _libraries["llvm"].LLVMBuildLandingPad
+  LLVMBuildLandingPad.restype = LLVMValueRef
+  LLVMBuildLandingPad.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildCleanupRet = _libraries['llvm'].LLVMBuildCleanupRet
-    LLVMBuildCleanupRet.restype = LLVMValueRef
-    LLVMBuildCleanupRet.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMBasicBlockRef]
+  LLVMBuildCleanupRet = _libraries["llvm"].LLVMBuildCleanupRet
+  LLVMBuildCleanupRet.restype = LLVMValueRef
+  LLVMBuildCleanupRet.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildCatchRet = _libraries['llvm'].LLVMBuildCatchRet
-    LLVMBuildCatchRet.restype = LLVMValueRef
-    LLVMBuildCatchRet.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMBasicBlockRef]
+  LLVMBuildCatchRet = _libraries["llvm"].LLVMBuildCatchRet
+  LLVMBuildCatchRet.restype = LLVMValueRef
+  LLVMBuildCatchRet.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildCatchPad = _libraries['llvm'].LLVMBuildCatchPad
-    LLVMBuildCatchPad.restype = LLVMValueRef
-    LLVMBuildCatchPad.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildCatchPad = _libraries["llvm"].LLVMBuildCatchPad
+  LLVMBuildCatchPad.restype = LLVMValueRef
+  LLVMBuildCatchPad.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildCleanupPad = _libraries['llvm'].LLVMBuildCleanupPad
-    LLVMBuildCleanupPad.restype = LLVMValueRef
-    LLVMBuildCleanupPad.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildCleanupPad = _libraries["llvm"].LLVMBuildCleanupPad
+  LLVMBuildCleanupPad.restype = LLVMValueRef
+  LLVMBuildCleanupPad.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildCatchSwitch = _libraries['llvm'].LLVMBuildCatchSwitch
-    LLVMBuildCatchSwitch.restype = LLVMValueRef
-    LLVMBuildCatchSwitch.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMBasicBlockRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildCatchSwitch = _libraries["llvm"].LLVMBuildCatchSwitch
+  LLVMBuildCatchSwitch.restype = LLVMValueRef
+  LLVMBuildCatchSwitch.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMBasicBlockRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddCase = _libraries['llvm'].LLVMAddCase
-    LLVMAddCase.restype = None
-    LLVMAddCase.argtypes = [LLVMValueRef, LLVMValueRef, LLVMBasicBlockRef]
+  LLVMAddCase = _libraries["llvm"].LLVMAddCase
+  LLVMAddCase.restype = None
+  LLVMAddCase.argtypes = [LLVMValueRef, LLVMValueRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddDestination = _libraries['llvm'].LLVMAddDestination
-    LLVMAddDestination.restype = None
-    LLVMAddDestination.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
+  LLVMAddDestination = _libraries["llvm"].LLVMAddDestination
+  LLVMAddDestination.restype = None
+  LLVMAddDestination.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNumClauses = _libraries['llvm'].LLVMGetNumClauses
-    LLVMGetNumClauses.restype = ctypes.c_uint32
-    LLVMGetNumClauses.argtypes = [LLVMValueRef]
+  LLVMGetNumClauses = _libraries["llvm"].LLVMGetNumClauses
+  LLVMGetNumClauses.restype = ctypes.c_uint32
+  LLVMGetNumClauses.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetClause = _libraries['llvm'].LLVMGetClause
-    LLVMGetClause.restype = LLVMValueRef
-    LLVMGetClause.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetClause = _libraries["llvm"].LLVMGetClause
+  LLVMGetClause.restype = LLVMValueRef
+  LLVMGetClause.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddClause = _libraries['llvm'].LLVMAddClause
-    LLVMAddClause.restype = None
-    LLVMAddClause.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMAddClause = _libraries["llvm"].LLVMAddClause
+  LLVMAddClause.restype = None
+  LLVMAddClause.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsCleanup = _libraries['llvm'].LLVMIsCleanup
-    LLVMIsCleanup.restype = LLVMBool
-    LLVMIsCleanup.argtypes = [LLVMValueRef]
+  LLVMIsCleanup = _libraries["llvm"].LLVMIsCleanup
+  LLVMIsCleanup.restype = LLVMBool
+  LLVMIsCleanup.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetCleanup = _libraries['llvm'].LLVMSetCleanup
-    LLVMSetCleanup.restype = None
-    LLVMSetCleanup.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetCleanup = _libraries["llvm"].LLVMSetCleanup
+  LLVMSetCleanup.restype = None
+  LLVMSetCleanup.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddHandler = _libraries['llvm'].LLVMAddHandler
-    LLVMAddHandler.restype = None
-    LLVMAddHandler.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
+  LLVMAddHandler = _libraries["llvm"].LLVMAddHandler
+  LLVMAddHandler.restype = None
+  LLVMAddHandler.argtypes = [LLVMValueRef, LLVMBasicBlockRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNumHandlers = _libraries['llvm'].LLVMGetNumHandlers
-    LLVMGetNumHandlers.restype = ctypes.c_uint32
-    LLVMGetNumHandlers.argtypes = [LLVMValueRef]
+  LLVMGetNumHandlers = _libraries["llvm"].LLVMGetNumHandlers
+  LLVMGetNumHandlers.restype = ctypes.c_uint32
+  LLVMGetNumHandlers.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetHandlers = _libraries['llvm'].LLVMGetHandlers
-    LLVMGetHandlers.restype = None
-    LLVMGetHandlers.argtypes = [LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueBasicBlock))]
+  LLVMGetHandlers = _libraries["llvm"].LLVMGetHandlers
+  LLVMGetHandlers.restype = None
+  LLVMGetHandlers.argtypes = [
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueBasicBlock)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetArgOperand = _libraries['llvm'].LLVMGetArgOperand
-    LLVMGetArgOperand.restype = LLVMValueRef
-    LLVMGetArgOperand.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetArgOperand = _libraries["llvm"].LLVMGetArgOperand
+  LLVMGetArgOperand.restype = LLVMValueRef
+  LLVMGetArgOperand.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetArgOperand = _libraries['llvm'].LLVMSetArgOperand
-    LLVMSetArgOperand.restype = None
-    LLVMSetArgOperand.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMValueRef]
+  LLVMSetArgOperand = _libraries["llvm"].LLVMSetArgOperand
+  LLVMSetArgOperand.restype = None
+  LLVMSetArgOperand.argtypes = [LLVMValueRef, ctypes.c_uint32, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetParentCatchSwitch = _libraries['llvm'].LLVMGetParentCatchSwitch
-    LLVMGetParentCatchSwitch.restype = LLVMValueRef
-    LLVMGetParentCatchSwitch.argtypes = [LLVMValueRef]
+  LLVMGetParentCatchSwitch = _libraries["llvm"].LLVMGetParentCatchSwitch
+  LLVMGetParentCatchSwitch.restype = LLVMValueRef
+  LLVMGetParentCatchSwitch.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetParentCatchSwitch = _libraries['llvm'].LLVMSetParentCatchSwitch
-    LLVMSetParentCatchSwitch.restype = None
-    LLVMSetParentCatchSwitch.argtypes = [LLVMValueRef, LLVMValueRef]
+  LLVMSetParentCatchSwitch = _libraries["llvm"].LLVMSetParentCatchSwitch
+  LLVMSetParentCatchSwitch.restype = None
+  LLVMSetParentCatchSwitch.argtypes = [LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildAdd = _libraries['llvm'].LLVMBuildAdd
-    LLVMBuildAdd.restype = LLVMValueRef
-    LLVMBuildAdd.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildAdd = _libraries["llvm"].LLVMBuildAdd
+  LLVMBuildAdd.restype = LLVMValueRef
+  LLVMBuildAdd.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNSWAdd = _libraries['llvm'].LLVMBuildNSWAdd
-    LLVMBuildNSWAdd.restype = LLVMValueRef
-    LLVMBuildNSWAdd.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNSWAdd = _libraries["llvm"].LLVMBuildNSWAdd
+  LLVMBuildNSWAdd.restype = LLVMValueRef
+  LLVMBuildNSWAdd.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNUWAdd = _libraries['llvm'].LLVMBuildNUWAdd
-    LLVMBuildNUWAdd.restype = LLVMValueRef
-    LLVMBuildNUWAdd.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNUWAdd = _libraries["llvm"].LLVMBuildNUWAdd
+  LLVMBuildNUWAdd.restype = LLVMValueRef
+  LLVMBuildNUWAdd.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFAdd = _libraries['llvm'].LLVMBuildFAdd
-    LLVMBuildFAdd.restype = LLVMValueRef
-    LLVMBuildFAdd.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFAdd = _libraries["llvm"].LLVMBuildFAdd
+  LLVMBuildFAdd.restype = LLVMValueRef
+  LLVMBuildFAdd.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildSub = _libraries['llvm'].LLVMBuildSub
-    LLVMBuildSub.restype = LLVMValueRef
-    LLVMBuildSub.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildSub = _libraries["llvm"].LLVMBuildSub
+  LLVMBuildSub.restype = LLVMValueRef
+  LLVMBuildSub.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNSWSub = _libraries['llvm'].LLVMBuildNSWSub
-    LLVMBuildNSWSub.restype = LLVMValueRef
-    LLVMBuildNSWSub.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNSWSub = _libraries["llvm"].LLVMBuildNSWSub
+  LLVMBuildNSWSub.restype = LLVMValueRef
+  LLVMBuildNSWSub.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNUWSub = _libraries['llvm'].LLVMBuildNUWSub
-    LLVMBuildNUWSub.restype = LLVMValueRef
-    LLVMBuildNUWSub.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNUWSub = _libraries["llvm"].LLVMBuildNUWSub
+  LLVMBuildNUWSub.restype = LLVMValueRef
+  LLVMBuildNUWSub.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFSub = _libraries['llvm'].LLVMBuildFSub
-    LLVMBuildFSub.restype = LLVMValueRef
-    LLVMBuildFSub.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFSub = _libraries["llvm"].LLVMBuildFSub
+  LLVMBuildFSub.restype = LLVMValueRef
+  LLVMBuildFSub.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildMul = _libraries['llvm'].LLVMBuildMul
-    LLVMBuildMul.restype = LLVMValueRef
-    LLVMBuildMul.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildMul = _libraries["llvm"].LLVMBuildMul
+  LLVMBuildMul.restype = LLVMValueRef
+  LLVMBuildMul.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNSWMul = _libraries['llvm'].LLVMBuildNSWMul
-    LLVMBuildNSWMul.restype = LLVMValueRef
-    LLVMBuildNSWMul.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNSWMul = _libraries["llvm"].LLVMBuildNSWMul
+  LLVMBuildNSWMul.restype = LLVMValueRef
+  LLVMBuildNSWMul.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNUWMul = _libraries['llvm'].LLVMBuildNUWMul
-    LLVMBuildNUWMul.restype = LLVMValueRef
-    LLVMBuildNUWMul.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNUWMul = _libraries["llvm"].LLVMBuildNUWMul
+  LLVMBuildNUWMul.restype = LLVMValueRef
+  LLVMBuildNUWMul.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFMul = _libraries['llvm'].LLVMBuildFMul
-    LLVMBuildFMul.restype = LLVMValueRef
-    LLVMBuildFMul.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFMul = _libraries["llvm"].LLVMBuildFMul
+  LLVMBuildFMul.restype = LLVMValueRef
+  LLVMBuildFMul.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildUDiv = _libraries['llvm'].LLVMBuildUDiv
-    LLVMBuildUDiv.restype = LLVMValueRef
-    LLVMBuildUDiv.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildUDiv = _libraries["llvm"].LLVMBuildUDiv
+  LLVMBuildUDiv.restype = LLVMValueRef
+  LLVMBuildUDiv.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildExactUDiv = _libraries['llvm'].LLVMBuildExactUDiv
-    LLVMBuildExactUDiv.restype = LLVMValueRef
-    LLVMBuildExactUDiv.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildExactUDiv = _libraries["llvm"].LLVMBuildExactUDiv
+  LLVMBuildExactUDiv.restype = LLVMValueRef
+  LLVMBuildExactUDiv.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildSDiv = _libraries['llvm'].LLVMBuildSDiv
-    LLVMBuildSDiv.restype = LLVMValueRef
-    LLVMBuildSDiv.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildSDiv = _libraries["llvm"].LLVMBuildSDiv
+  LLVMBuildSDiv.restype = LLVMValueRef
+  LLVMBuildSDiv.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildExactSDiv = _libraries['llvm'].LLVMBuildExactSDiv
-    LLVMBuildExactSDiv.restype = LLVMValueRef
-    LLVMBuildExactSDiv.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildExactSDiv = _libraries["llvm"].LLVMBuildExactSDiv
+  LLVMBuildExactSDiv.restype = LLVMValueRef
+  LLVMBuildExactSDiv.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFDiv = _libraries['llvm'].LLVMBuildFDiv
-    LLVMBuildFDiv.restype = LLVMValueRef
-    LLVMBuildFDiv.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFDiv = _libraries["llvm"].LLVMBuildFDiv
+  LLVMBuildFDiv.restype = LLVMValueRef
+  LLVMBuildFDiv.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildURem = _libraries['llvm'].LLVMBuildURem
-    LLVMBuildURem.restype = LLVMValueRef
-    LLVMBuildURem.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildURem = _libraries["llvm"].LLVMBuildURem
+  LLVMBuildURem.restype = LLVMValueRef
+  LLVMBuildURem.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildSRem = _libraries['llvm'].LLVMBuildSRem
-    LLVMBuildSRem.restype = LLVMValueRef
-    LLVMBuildSRem.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildSRem = _libraries["llvm"].LLVMBuildSRem
+  LLVMBuildSRem.restype = LLVMValueRef
+  LLVMBuildSRem.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFRem = _libraries['llvm'].LLVMBuildFRem
-    LLVMBuildFRem.restype = LLVMValueRef
-    LLVMBuildFRem.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFRem = _libraries["llvm"].LLVMBuildFRem
+  LLVMBuildFRem.restype = LLVMValueRef
+  LLVMBuildFRem.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildShl = _libraries['llvm'].LLVMBuildShl
-    LLVMBuildShl.restype = LLVMValueRef
-    LLVMBuildShl.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildShl = _libraries["llvm"].LLVMBuildShl
+  LLVMBuildShl.restype = LLVMValueRef
+  LLVMBuildShl.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildLShr = _libraries['llvm'].LLVMBuildLShr
-    LLVMBuildLShr.restype = LLVMValueRef
-    LLVMBuildLShr.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildLShr = _libraries["llvm"].LLVMBuildLShr
+  LLVMBuildLShr.restype = LLVMValueRef
+  LLVMBuildLShr.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildAShr = _libraries['llvm'].LLVMBuildAShr
-    LLVMBuildAShr.restype = LLVMValueRef
-    LLVMBuildAShr.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildAShr = _libraries["llvm"].LLVMBuildAShr
+  LLVMBuildAShr.restype = LLVMValueRef
+  LLVMBuildAShr.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildAnd = _libraries['llvm'].LLVMBuildAnd
-    LLVMBuildAnd.restype = LLVMValueRef
-    LLVMBuildAnd.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildAnd = _libraries["llvm"].LLVMBuildAnd
+  LLVMBuildAnd.restype = LLVMValueRef
+  LLVMBuildAnd.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildOr = _libraries['llvm'].LLVMBuildOr
-    LLVMBuildOr.restype = LLVMValueRef
-    LLVMBuildOr.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildOr = _libraries["llvm"].LLVMBuildOr
+  LLVMBuildOr.restype = LLVMValueRef
+  LLVMBuildOr.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildXor = _libraries['llvm'].LLVMBuildXor
-    LLVMBuildXor.restype = LLVMValueRef
-    LLVMBuildXor.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildXor = _libraries["llvm"].LLVMBuildXor
+  LLVMBuildXor.restype = LLVMValueRef
+  LLVMBuildXor.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildBinOp = _libraries['llvm'].LLVMBuildBinOp
-    LLVMBuildBinOp.restype = LLVMValueRef
-    LLVMBuildBinOp.argtypes = [LLVMBuilderRef, LLVMOpcode, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildBinOp = _libraries["llvm"].LLVMBuildBinOp
+  LLVMBuildBinOp.restype = LLVMValueRef
+  LLVMBuildBinOp.argtypes = [
+    LLVMBuilderRef,
+    LLVMOpcode,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNeg = _libraries['llvm'].LLVMBuildNeg
-    LLVMBuildNeg.restype = LLVMValueRef
-    LLVMBuildNeg.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNeg = _libraries["llvm"].LLVMBuildNeg
+  LLVMBuildNeg.restype = LLVMValueRef
+  LLVMBuildNeg.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNSWNeg = _libraries['llvm'].LLVMBuildNSWNeg
-    LLVMBuildNSWNeg.restype = LLVMValueRef
-    LLVMBuildNSWNeg.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNSWNeg = _libraries["llvm"].LLVMBuildNSWNeg
+  LLVMBuildNSWNeg.restype = LLVMValueRef
+  LLVMBuildNSWNeg.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNUWNeg = _libraries['llvm'].LLVMBuildNUWNeg
-    LLVMBuildNUWNeg.restype = LLVMValueRef
-    LLVMBuildNUWNeg.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNUWNeg = _libraries["llvm"].LLVMBuildNUWNeg
+  LLVMBuildNUWNeg.restype = LLVMValueRef
+  LLVMBuildNUWNeg.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFNeg = _libraries['llvm'].LLVMBuildFNeg
-    LLVMBuildFNeg.restype = LLVMValueRef
-    LLVMBuildFNeg.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFNeg = _libraries["llvm"].LLVMBuildFNeg
+  LLVMBuildFNeg.restype = LLVMValueRef
+  LLVMBuildFNeg.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildNot = _libraries['llvm'].LLVMBuildNot
-    LLVMBuildNot.restype = LLVMValueRef
-    LLVMBuildNot.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildNot = _libraries["llvm"].LLVMBuildNot
+  LLVMBuildNot.restype = LLVMValueRef
+  LLVMBuildNot.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildMalloc = _libraries['llvm'].LLVMBuildMalloc
-    LLVMBuildMalloc.restype = LLVMValueRef
-    LLVMBuildMalloc.argtypes = [LLVMBuilderRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildMalloc = _libraries["llvm"].LLVMBuildMalloc
+  LLVMBuildMalloc.restype = LLVMValueRef
+  LLVMBuildMalloc.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildArrayMalloc = _libraries['llvm'].LLVMBuildArrayMalloc
-    LLVMBuildArrayMalloc.restype = LLVMValueRef
-    LLVMBuildArrayMalloc.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildArrayMalloc = _libraries["llvm"].LLVMBuildArrayMalloc
+  LLVMBuildArrayMalloc.restype = LLVMValueRef
+  LLVMBuildArrayMalloc.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildMemSet = _libraries['llvm'].LLVMBuildMemSet
-    LLVMBuildMemSet.restype = LLVMValueRef
-    LLVMBuildMemSet.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, LLVMValueRef, ctypes.c_uint32]
+  LLVMBuildMemSet = _libraries["llvm"].LLVMBuildMemSet
+  LLVMBuildMemSet.restype = LLVMValueRef
+  LLVMBuildMemSet.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildMemCpy = _libraries['llvm'].LLVMBuildMemCpy
-    LLVMBuildMemCpy.restype = LLVMValueRef
-    LLVMBuildMemCpy.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.c_uint32, LLVMValueRef, ctypes.c_uint32, LLVMValueRef]
+  LLVMBuildMemCpy = _libraries["llvm"].LLVMBuildMemCpy
+  LLVMBuildMemCpy.restype = LLVMValueRef
+  LLVMBuildMemCpy.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    LLVMValueRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildMemMove = _libraries['llvm'].LLVMBuildMemMove
-    LLVMBuildMemMove.restype = LLVMValueRef
-    LLVMBuildMemMove.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.c_uint32, LLVMValueRef, ctypes.c_uint32, LLVMValueRef]
+  LLVMBuildMemMove = _libraries["llvm"].LLVMBuildMemMove
+  LLVMBuildMemMove.restype = LLVMValueRef
+  LLVMBuildMemMove.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    LLVMValueRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildAlloca = _libraries['llvm'].LLVMBuildAlloca
-    LLVMBuildAlloca.restype = LLVMValueRef
-    LLVMBuildAlloca.argtypes = [LLVMBuilderRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildAlloca = _libraries["llvm"].LLVMBuildAlloca
+  LLVMBuildAlloca.restype = LLVMValueRef
+  LLVMBuildAlloca.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildArrayAlloca = _libraries['llvm'].LLVMBuildArrayAlloca
-    LLVMBuildArrayAlloca.restype = LLVMValueRef
-    LLVMBuildArrayAlloca.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildArrayAlloca = _libraries["llvm"].LLVMBuildArrayAlloca
+  LLVMBuildArrayAlloca.restype = LLVMValueRef
+  LLVMBuildArrayAlloca.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFree = _libraries['llvm'].LLVMBuildFree
-    LLVMBuildFree.restype = LLVMValueRef
-    LLVMBuildFree.argtypes = [LLVMBuilderRef, LLVMValueRef]
+  LLVMBuildFree = _libraries["llvm"].LLVMBuildFree
+  LLVMBuildFree.restype = LLVMValueRef
+  LLVMBuildFree.argtypes = [LLVMBuilderRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildLoad = _libraries['llvm'].LLVMBuildLoad
-    LLVMBuildLoad.restype = LLVMValueRef
-    LLVMBuildLoad.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildLoad = _libraries["llvm"].LLVMBuildLoad
+  LLVMBuildLoad.restype = LLVMValueRef
+  LLVMBuildLoad.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildLoad2 = _libraries['llvm'].LLVMBuildLoad2
-    LLVMBuildLoad2.restype = LLVMValueRef
-    LLVMBuildLoad2.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildLoad2 = _libraries["llvm"].LLVMBuildLoad2
+  LLVMBuildLoad2.restype = LLVMValueRef
+  LLVMBuildLoad2.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildStore = _libraries['llvm'].LLVMBuildStore
-    LLVMBuildStore.restype = LLVMValueRef
-    LLVMBuildStore.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef]
+  LLVMBuildStore = _libraries["llvm"].LLVMBuildStore
+  LLVMBuildStore.restype = LLVMValueRef
+  LLVMBuildStore.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildGEP = _libraries['llvm'].LLVMBuildGEP
-    LLVMBuildGEP.restype = LLVMValueRef
-    LLVMBuildGEP.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildGEP = _libraries["llvm"].LLVMBuildGEP
+  LLVMBuildGEP.restype = LLVMValueRef
+  LLVMBuildGEP.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildInBoundsGEP = _libraries['llvm'].LLVMBuildInBoundsGEP
-    LLVMBuildInBoundsGEP.restype = LLVMValueRef
-    LLVMBuildInBoundsGEP.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildInBoundsGEP = _libraries["llvm"].LLVMBuildInBoundsGEP
+  LLVMBuildInBoundsGEP.restype = LLVMValueRef
+  LLVMBuildInBoundsGEP.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildStructGEP = _libraries['llvm'].LLVMBuildStructGEP
-    LLVMBuildStructGEP.restype = LLVMValueRef
-    LLVMBuildStructGEP.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildStructGEP = _libraries["llvm"].LLVMBuildStructGEP
+  LLVMBuildStructGEP.restype = LLVMValueRef
+  LLVMBuildStructGEP.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildGEP2 = _libraries['llvm'].LLVMBuildGEP2
-    LLVMBuildGEP2.restype = LLVMValueRef
-    LLVMBuildGEP2.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildGEP2 = _libraries["llvm"].LLVMBuildGEP2
+  LLVMBuildGEP2.restype = LLVMValueRef
+  LLVMBuildGEP2.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildInBoundsGEP2 = _libraries['llvm'].LLVMBuildInBoundsGEP2
-    LLVMBuildInBoundsGEP2.restype = LLVMValueRef
-    LLVMBuildInBoundsGEP2.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildInBoundsGEP2 = _libraries["llvm"].LLVMBuildInBoundsGEP2
+  LLVMBuildInBoundsGEP2.restype = LLVMValueRef
+  LLVMBuildInBoundsGEP2.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildStructGEP2 = _libraries['llvm'].LLVMBuildStructGEP2
-    LLVMBuildStructGEP2.restype = LLVMValueRef
-    LLVMBuildStructGEP2.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildStructGEP2 = _libraries["llvm"].LLVMBuildStructGEP2
+  LLVMBuildStructGEP2.restype = LLVMValueRef
+  LLVMBuildStructGEP2.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildGlobalString = _libraries['llvm'].LLVMBuildGlobalString
-    LLVMBuildGlobalString.restype = LLVMValueRef
-    LLVMBuildGlobalString.argtypes = [LLVMBuilderRef, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildGlobalString = _libraries["llvm"].LLVMBuildGlobalString
+  LLVMBuildGlobalString.restype = LLVMValueRef
+  LLVMBuildGlobalString.argtypes = [
+    LLVMBuilderRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildGlobalStringPtr = _libraries['llvm'].LLVMBuildGlobalStringPtr
-    LLVMBuildGlobalStringPtr.restype = LLVMValueRef
-    LLVMBuildGlobalStringPtr.argtypes = [LLVMBuilderRef, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildGlobalStringPtr = _libraries["llvm"].LLVMBuildGlobalStringPtr
+  LLVMBuildGlobalStringPtr.restype = LLVMValueRef
+  LLVMBuildGlobalStringPtr.argtypes = [
+    LLVMBuilderRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetVolatile = _libraries['llvm'].LLVMGetVolatile
-    LLVMGetVolatile.restype = LLVMBool
-    LLVMGetVolatile.argtypes = [LLVMValueRef]
+  LLVMGetVolatile = _libraries["llvm"].LLVMGetVolatile
+  LLVMGetVolatile.restype = LLVMBool
+  LLVMGetVolatile.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetVolatile = _libraries['llvm'].LLVMSetVolatile
-    LLVMSetVolatile.restype = None
-    LLVMSetVolatile.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetVolatile = _libraries["llvm"].LLVMSetVolatile
+  LLVMSetVolatile.restype = None
+  LLVMSetVolatile.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetWeak = _libraries['llvm'].LLVMGetWeak
-    LLVMGetWeak.restype = LLVMBool
-    LLVMGetWeak.argtypes = [LLVMValueRef]
+  LLVMGetWeak = _libraries["llvm"].LLVMGetWeak
+  LLVMGetWeak.restype = LLVMBool
+  LLVMGetWeak.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetWeak = _libraries['llvm'].LLVMSetWeak
-    LLVMSetWeak.restype = None
-    LLVMSetWeak.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetWeak = _libraries["llvm"].LLVMSetWeak
+  LLVMSetWeak.restype = None
+  LLVMSetWeak.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetOrdering = _libraries['llvm'].LLVMGetOrdering
-    LLVMGetOrdering.restype = LLVMAtomicOrdering
-    LLVMGetOrdering.argtypes = [LLVMValueRef]
+  LLVMGetOrdering = _libraries["llvm"].LLVMGetOrdering
+  LLVMGetOrdering.restype = LLVMAtomicOrdering
+  LLVMGetOrdering.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetOrdering = _libraries['llvm'].LLVMSetOrdering
-    LLVMSetOrdering.restype = None
-    LLVMSetOrdering.argtypes = [LLVMValueRef, LLVMAtomicOrdering]
+  LLVMSetOrdering = _libraries["llvm"].LLVMSetOrdering
+  LLVMSetOrdering.restype = None
+  LLVMSetOrdering.argtypes = [LLVMValueRef, LLVMAtomicOrdering]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetAtomicRMWBinOp = _libraries['llvm'].LLVMGetAtomicRMWBinOp
-    LLVMGetAtomicRMWBinOp.restype = LLVMAtomicRMWBinOp
-    LLVMGetAtomicRMWBinOp.argtypes = [LLVMValueRef]
+  LLVMGetAtomicRMWBinOp = _libraries["llvm"].LLVMGetAtomicRMWBinOp
+  LLVMGetAtomicRMWBinOp.restype = LLVMAtomicRMWBinOp
+  LLVMGetAtomicRMWBinOp.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetAtomicRMWBinOp = _libraries['llvm'].LLVMSetAtomicRMWBinOp
-    LLVMSetAtomicRMWBinOp.restype = None
-    LLVMSetAtomicRMWBinOp.argtypes = [LLVMValueRef, LLVMAtomicRMWBinOp]
+  LLVMSetAtomicRMWBinOp = _libraries["llvm"].LLVMSetAtomicRMWBinOp
+  LLVMSetAtomicRMWBinOp.restype = None
+  LLVMSetAtomicRMWBinOp.argtypes = [LLVMValueRef, LLVMAtomicRMWBinOp]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildTrunc = _libraries['llvm'].LLVMBuildTrunc
-    LLVMBuildTrunc.restype = LLVMValueRef
-    LLVMBuildTrunc.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildTrunc = _libraries["llvm"].LLVMBuildTrunc
+  LLVMBuildTrunc.restype = LLVMValueRef
+  LLVMBuildTrunc.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildZExt = _libraries['llvm'].LLVMBuildZExt
-    LLVMBuildZExt.restype = LLVMValueRef
-    LLVMBuildZExt.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildZExt = _libraries["llvm"].LLVMBuildZExt
+  LLVMBuildZExt.restype = LLVMValueRef
+  LLVMBuildZExt.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildSExt = _libraries['llvm'].LLVMBuildSExt
-    LLVMBuildSExt.restype = LLVMValueRef
-    LLVMBuildSExt.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildSExt = _libraries["llvm"].LLVMBuildSExt
+  LLVMBuildSExt.restype = LLVMValueRef
+  LLVMBuildSExt.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFPToUI = _libraries['llvm'].LLVMBuildFPToUI
-    LLVMBuildFPToUI.restype = LLVMValueRef
-    LLVMBuildFPToUI.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFPToUI = _libraries["llvm"].LLVMBuildFPToUI
+  LLVMBuildFPToUI.restype = LLVMValueRef
+  LLVMBuildFPToUI.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFPToSI = _libraries['llvm'].LLVMBuildFPToSI
-    LLVMBuildFPToSI.restype = LLVMValueRef
-    LLVMBuildFPToSI.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFPToSI = _libraries["llvm"].LLVMBuildFPToSI
+  LLVMBuildFPToSI.restype = LLVMValueRef
+  LLVMBuildFPToSI.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildUIToFP = _libraries['llvm'].LLVMBuildUIToFP
-    LLVMBuildUIToFP.restype = LLVMValueRef
-    LLVMBuildUIToFP.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildUIToFP = _libraries["llvm"].LLVMBuildUIToFP
+  LLVMBuildUIToFP.restype = LLVMValueRef
+  LLVMBuildUIToFP.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildSIToFP = _libraries['llvm'].LLVMBuildSIToFP
-    LLVMBuildSIToFP.restype = LLVMValueRef
-    LLVMBuildSIToFP.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildSIToFP = _libraries["llvm"].LLVMBuildSIToFP
+  LLVMBuildSIToFP.restype = LLVMValueRef
+  LLVMBuildSIToFP.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFPTrunc = _libraries['llvm'].LLVMBuildFPTrunc
-    LLVMBuildFPTrunc.restype = LLVMValueRef
-    LLVMBuildFPTrunc.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFPTrunc = _libraries["llvm"].LLVMBuildFPTrunc
+  LLVMBuildFPTrunc.restype = LLVMValueRef
+  LLVMBuildFPTrunc.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFPExt = _libraries['llvm'].LLVMBuildFPExt
-    LLVMBuildFPExt.restype = LLVMValueRef
-    LLVMBuildFPExt.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFPExt = _libraries["llvm"].LLVMBuildFPExt
+  LLVMBuildFPExt.restype = LLVMValueRef
+  LLVMBuildFPExt.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildPtrToInt = _libraries['llvm'].LLVMBuildPtrToInt
-    LLVMBuildPtrToInt.restype = LLVMValueRef
-    LLVMBuildPtrToInt.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildPtrToInt = _libraries["llvm"].LLVMBuildPtrToInt
+  LLVMBuildPtrToInt.restype = LLVMValueRef
+  LLVMBuildPtrToInt.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildIntToPtr = _libraries['llvm'].LLVMBuildIntToPtr
-    LLVMBuildIntToPtr.restype = LLVMValueRef
-    LLVMBuildIntToPtr.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildIntToPtr = _libraries["llvm"].LLVMBuildIntToPtr
+  LLVMBuildIntToPtr.restype = LLVMValueRef
+  LLVMBuildIntToPtr.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildBitCast = _libraries['llvm'].LLVMBuildBitCast
-    LLVMBuildBitCast.restype = LLVMValueRef
-    LLVMBuildBitCast.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildBitCast = _libraries["llvm"].LLVMBuildBitCast
+  LLVMBuildBitCast.restype = LLVMValueRef
+  LLVMBuildBitCast.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildAddrSpaceCast = _libraries['llvm'].LLVMBuildAddrSpaceCast
-    LLVMBuildAddrSpaceCast.restype = LLVMValueRef
-    LLVMBuildAddrSpaceCast.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildAddrSpaceCast = _libraries["llvm"].LLVMBuildAddrSpaceCast
+  LLVMBuildAddrSpaceCast.restype = LLVMValueRef
+  LLVMBuildAddrSpaceCast.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildZExtOrBitCast = _libraries['llvm'].LLVMBuildZExtOrBitCast
-    LLVMBuildZExtOrBitCast.restype = LLVMValueRef
-    LLVMBuildZExtOrBitCast.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildZExtOrBitCast = _libraries["llvm"].LLVMBuildZExtOrBitCast
+  LLVMBuildZExtOrBitCast.restype = LLVMValueRef
+  LLVMBuildZExtOrBitCast.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildSExtOrBitCast = _libraries['llvm'].LLVMBuildSExtOrBitCast
-    LLVMBuildSExtOrBitCast.restype = LLVMValueRef
-    LLVMBuildSExtOrBitCast.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildSExtOrBitCast = _libraries["llvm"].LLVMBuildSExtOrBitCast
+  LLVMBuildSExtOrBitCast.restype = LLVMValueRef
+  LLVMBuildSExtOrBitCast.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildTruncOrBitCast = _libraries['llvm'].LLVMBuildTruncOrBitCast
-    LLVMBuildTruncOrBitCast.restype = LLVMValueRef
-    LLVMBuildTruncOrBitCast.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildTruncOrBitCast = _libraries["llvm"].LLVMBuildTruncOrBitCast
+  LLVMBuildTruncOrBitCast.restype = LLVMValueRef
+  LLVMBuildTruncOrBitCast.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildCast = _libraries['llvm'].LLVMBuildCast
-    LLVMBuildCast.restype = LLVMValueRef
-    LLVMBuildCast.argtypes = [LLVMBuilderRef, LLVMOpcode, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildCast = _libraries["llvm"].LLVMBuildCast
+  LLVMBuildCast.restype = LLVMValueRef
+  LLVMBuildCast.argtypes = [
+    LLVMBuilderRef,
+    LLVMOpcode,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildPointerCast = _libraries['llvm'].LLVMBuildPointerCast
-    LLVMBuildPointerCast.restype = LLVMValueRef
-    LLVMBuildPointerCast.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildPointerCast = _libraries["llvm"].LLVMBuildPointerCast
+  LLVMBuildPointerCast.restype = LLVMValueRef
+  LLVMBuildPointerCast.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildIntCast2 = _libraries['llvm'].LLVMBuildIntCast2
-    LLVMBuildIntCast2.restype = LLVMValueRef
-    LLVMBuildIntCast2.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, LLVMBool, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildIntCast2 = _libraries["llvm"].LLVMBuildIntCast2
+  LLVMBuildIntCast2.restype = LLVMValueRef
+  LLVMBuildIntCast2.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    LLVMBool,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFPCast = _libraries['llvm'].LLVMBuildFPCast
-    LLVMBuildFPCast.restype = LLVMValueRef
-    LLVMBuildFPCast.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFPCast = _libraries["llvm"].LLVMBuildFPCast
+  LLVMBuildFPCast.restype = LLVMValueRef
+  LLVMBuildFPCast.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildIntCast = _libraries['llvm'].LLVMBuildIntCast
-    LLVMBuildIntCast.restype = LLVMValueRef
-    LLVMBuildIntCast.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildIntCast = _libraries["llvm"].LLVMBuildIntCast
+  LLVMBuildIntCast.restype = LLVMValueRef
+  LLVMBuildIntCast.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildICmp = _libraries['llvm'].LLVMBuildICmp
-    LLVMBuildICmp.restype = LLVMValueRef
-    LLVMBuildICmp.argtypes = [LLVMBuilderRef, LLVMIntPredicate, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildICmp = _libraries["llvm"].LLVMBuildICmp
+  LLVMBuildICmp.restype = LLVMValueRef
+  LLVMBuildICmp.argtypes = [
+    LLVMBuilderRef,
+    LLVMIntPredicate,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFCmp = _libraries['llvm'].LLVMBuildFCmp
-    LLVMBuildFCmp.restype = LLVMValueRef
-    LLVMBuildFCmp.argtypes = [LLVMBuilderRef, LLVMRealPredicate, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFCmp = _libraries["llvm"].LLVMBuildFCmp
+  LLVMBuildFCmp.restype = LLVMValueRef
+  LLVMBuildFCmp.argtypes = [
+    LLVMBuilderRef,
+    LLVMRealPredicate,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildPhi = _libraries['llvm'].LLVMBuildPhi
-    LLVMBuildPhi.restype = LLVMValueRef
-    LLVMBuildPhi.argtypes = [LLVMBuilderRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildPhi = _libraries["llvm"].LLVMBuildPhi
+  LLVMBuildPhi.restype = LLVMValueRef
+  LLVMBuildPhi.argtypes = [LLVMBuilderRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildCall = _libraries['llvm'].LLVMBuildCall
-    LLVMBuildCall.restype = LLVMValueRef
-    LLVMBuildCall.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildCall = _libraries["llvm"].LLVMBuildCall
+  LLVMBuildCall.restype = LLVMValueRef
+  LLVMBuildCall.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildCall2 = _libraries['llvm'].LLVMBuildCall2
-    LLVMBuildCall2.restype = LLVMValueRef
-    LLVMBuildCall2.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)), ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildCall2 = _libraries["llvm"].LLVMBuildCall2
+  LLVMBuildCall2.restype = LLVMValueRef
+  LLVMBuildCall2.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildSelect = _libraries['llvm'].LLVMBuildSelect
-    LLVMBuildSelect.restype = LLVMValueRef
-    LLVMBuildSelect.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildSelect = _libraries["llvm"].LLVMBuildSelect
+  LLVMBuildSelect.restype = LLVMValueRef
+  LLVMBuildSelect.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildVAArg = _libraries['llvm'].LLVMBuildVAArg
-    LLVMBuildVAArg.restype = LLVMValueRef
-    LLVMBuildVAArg.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMTypeRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildVAArg = _libraries["llvm"].LLVMBuildVAArg
+  LLVMBuildVAArg.restype = LLVMValueRef
+  LLVMBuildVAArg.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMTypeRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildExtractElement = _libraries['llvm'].LLVMBuildExtractElement
-    LLVMBuildExtractElement.restype = LLVMValueRef
-    LLVMBuildExtractElement.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildExtractElement = _libraries["llvm"].LLVMBuildExtractElement
+  LLVMBuildExtractElement.restype = LLVMValueRef
+  LLVMBuildExtractElement.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildInsertElement = _libraries['llvm'].LLVMBuildInsertElement
-    LLVMBuildInsertElement.restype = LLVMValueRef
-    LLVMBuildInsertElement.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildInsertElement = _libraries["llvm"].LLVMBuildInsertElement
+  LLVMBuildInsertElement.restype = LLVMValueRef
+  LLVMBuildInsertElement.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildShuffleVector = _libraries['llvm'].LLVMBuildShuffleVector
-    LLVMBuildShuffleVector.restype = LLVMValueRef
-    LLVMBuildShuffleVector.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildShuffleVector = _libraries["llvm"].LLVMBuildShuffleVector
+  LLVMBuildShuffleVector.restype = LLVMValueRef
+  LLVMBuildShuffleVector.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildExtractValue = _libraries['llvm'].LLVMBuildExtractValue
-    LLVMBuildExtractValue.restype = LLVMValueRef
-    LLVMBuildExtractValue.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildExtractValue = _libraries["llvm"].LLVMBuildExtractValue
+  LLVMBuildExtractValue.restype = LLVMValueRef
+  LLVMBuildExtractValue.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildInsertValue = _libraries['llvm'].LLVMBuildInsertValue
-    LLVMBuildInsertValue.restype = LLVMValueRef
-    LLVMBuildInsertValue.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildInsertValue = _libraries["llvm"].LLVMBuildInsertValue
+  LLVMBuildInsertValue.restype = LLVMValueRef
+  LLVMBuildInsertValue.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFreeze = _libraries['llvm'].LLVMBuildFreeze
-    LLVMBuildFreeze.restype = LLVMValueRef
-    LLVMBuildFreeze.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFreeze = _libraries["llvm"].LLVMBuildFreeze
+  LLVMBuildFreeze.restype = LLVMValueRef
+  LLVMBuildFreeze.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildIsNull = _libraries['llvm'].LLVMBuildIsNull
-    LLVMBuildIsNull.restype = LLVMValueRef
-    LLVMBuildIsNull.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildIsNull = _libraries["llvm"].LLVMBuildIsNull
+  LLVMBuildIsNull.restype = LLVMValueRef
+  LLVMBuildIsNull.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildIsNotNull = _libraries['llvm'].LLVMBuildIsNotNull
-    LLVMBuildIsNotNull.restype = LLVMValueRef
-    LLVMBuildIsNotNull.argtypes = [LLVMBuilderRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildIsNotNull = _libraries["llvm"].LLVMBuildIsNotNull
+  LLVMBuildIsNotNull.restype = LLVMValueRef
+  LLVMBuildIsNotNull.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildPtrDiff = _libraries['llvm'].LLVMBuildPtrDiff
-    LLVMBuildPtrDiff.restype = LLVMValueRef
-    LLVMBuildPtrDiff.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildPtrDiff = _libraries["llvm"].LLVMBuildPtrDiff
+  LLVMBuildPtrDiff.restype = LLVMValueRef
+  LLVMBuildPtrDiff.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildPtrDiff2 = _libraries['llvm'].LLVMBuildPtrDiff2
-    LLVMBuildPtrDiff2.restype = LLVMValueRef
-    LLVMBuildPtrDiff2.argtypes = [LLVMBuilderRef, LLVMTypeRef, LLVMValueRef, LLVMValueRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildPtrDiff2 = _libraries["llvm"].LLVMBuildPtrDiff2
+  LLVMBuildPtrDiff2.restype = LLVMValueRef
+  LLVMBuildPtrDiff2.argtypes = [
+    LLVMBuilderRef,
+    LLVMTypeRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildFence = _libraries['llvm'].LLVMBuildFence
-    LLVMBuildFence.restype = LLVMValueRef
-    LLVMBuildFence.argtypes = [LLVMBuilderRef, LLVMAtomicOrdering, LLVMBool, ctypes.POINTER(ctypes.c_char)]
+  LLVMBuildFence = _libraries["llvm"].LLVMBuildFence
+  LLVMBuildFence.restype = LLVMValueRef
+  LLVMBuildFence.argtypes = [
+    LLVMBuilderRef,
+    LLVMAtomicOrdering,
+    LLVMBool,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildAtomicRMW = _libraries['llvm'].LLVMBuildAtomicRMW
-    LLVMBuildAtomicRMW.restype = LLVMValueRef
-    LLVMBuildAtomicRMW.argtypes = [LLVMBuilderRef, LLVMAtomicRMWBinOp, LLVMValueRef, LLVMValueRef, LLVMAtomicOrdering, LLVMBool]
+  LLVMBuildAtomicRMW = _libraries["llvm"].LLVMBuildAtomicRMW
+  LLVMBuildAtomicRMW.restype = LLVMValueRef
+  LLVMBuildAtomicRMW.argtypes = [
+    LLVMBuilderRef,
+    LLVMAtomicRMWBinOp,
+    LLVMValueRef,
+    LLVMValueRef,
+    LLVMAtomicOrdering,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBuildAtomicCmpXchg = _libraries['llvm'].LLVMBuildAtomicCmpXchg
-    LLVMBuildAtomicCmpXchg.restype = LLVMValueRef
-    LLVMBuildAtomicCmpXchg.argtypes = [LLVMBuilderRef, LLVMValueRef, LLVMValueRef, LLVMValueRef, LLVMAtomicOrdering, LLVMAtomicOrdering, LLVMBool]
+  LLVMBuildAtomicCmpXchg = _libraries["llvm"].LLVMBuildAtomicCmpXchg
+  LLVMBuildAtomicCmpXchg.restype = LLVMValueRef
+  LLVMBuildAtomicCmpXchg.argtypes = [
+    LLVMBuilderRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    LLVMValueRef,
+    LLVMAtomicOrdering,
+    LLVMAtomicOrdering,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNumMaskElements = _libraries['llvm'].LLVMGetNumMaskElements
-    LLVMGetNumMaskElements.restype = ctypes.c_uint32
-    LLVMGetNumMaskElements.argtypes = [LLVMValueRef]
+  LLVMGetNumMaskElements = _libraries["llvm"].LLVMGetNumMaskElements
+  LLVMGetNumMaskElements.restype = ctypes.c_uint32
+  LLVMGetNumMaskElements.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetUndefMaskElem = _libraries['llvm'].LLVMGetUndefMaskElem
-    LLVMGetUndefMaskElem.restype = ctypes.c_int32
-    LLVMGetUndefMaskElem.argtypes = []
+  LLVMGetUndefMaskElem = _libraries["llvm"].LLVMGetUndefMaskElem
+  LLVMGetUndefMaskElem.restype = ctypes.c_int32
+  LLVMGetUndefMaskElem.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetMaskValue = _libraries['llvm'].LLVMGetMaskValue
-    LLVMGetMaskValue.restype = ctypes.c_int32
-    LLVMGetMaskValue.argtypes = [LLVMValueRef, ctypes.c_uint32]
+  LLVMGetMaskValue = _libraries["llvm"].LLVMGetMaskValue
+  LLVMGetMaskValue.restype = ctypes.c_int32
+  LLVMGetMaskValue.argtypes = [LLVMValueRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsAtomicSingleThread = _libraries['llvm'].LLVMIsAtomicSingleThread
-    LLVMIsAtomicSingleThread.restype = LLVMBool
-    LLVMIsAtomicSingleThread.argtypes = [LLVMValueRef]
+  LLVMIsAtomicSingleThread = _libraries["llvm"].LLVMIsAtomicSingleThread
+  LLVMIsAtomicSingleThread.restype = LLVMBool
+  LLVMIsAtomicSingleThread.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetAtomicSingleThread = _libraries['llvm'].LLVMSetAtomicSingleThread
-    LLVMSetAtomicSingleThread.restype = None
-    LLVMSetAtomicSingleThread.argtypes = [LLVMValueRef, LLVMBool]
+  LLVMSetAtomicSingleThread = _libraries["llvm"].LLVMSetAtomicSingleThread
+  LLVMSetAtomicSingleThread.restype = None
+  LLVMSetAtomicSingleThread.argtypes = [LLVMValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCmpXchgSuccessOrdering = _libraries['llvm'].LLVMGetCmpXchgSuccessOrdering
-    LLVMGetCmpXchgSuccessOrdering.restype = LLVMAtomicOrdering
-    LLVMGetCmpXchgSuccessOrdering.argtypes = [LLVMValueRef]
+  LLVMGetCmpXchgSuccessOrdering = _libraries["llvm"].LLVMGetCmpXchgSuccessOrdering
+  LLVMGetCmpXchgSuccessOrdering.restype = LLVMAtomicOrdering
+  LLVMGetCmpXchgSuccessOrdering.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetCmpXchgSuccessOrdering = _libraries['llvm'].LLVMSetCmpXchgSuccessOrdering
-    LLVMSetCmpXchgSuccessOrdering.restype = None
-    LLVMSetCmpXchgSuccessOrdering.argtypes = [LLVMValueRef, LLVMAtomicOrdering]
+  LLVMSetCmpXchgSuccessOrdering = _libraries["llvm"].LLVMSetCmpXchgSuccessOrdering
+  LLVMSetCmpXchgSuccessOrdering.restype = None
+  LLVMSetCmpXchgSuccessOrdering.argtypes = [LLVMValueRef, LLVMAtomicOrdering]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetCmpXchgFailureOrdering = _libraries['llvm'].LLVMGetCmpXchgFailureOrdering
-    LLVMGetCmpXchgFailureOrdering.restype = LLVMAtomicOrdering
-    LLVMGetCmpXchgFailureOrdering.argtypes = [LLVMValueRef]
+  LLVMGetCmpXchgFailureOrdering = _libraries["llvm"].LLVMGetCmpXchgFailureOrdering
+  LLVMGetCmpXchgFailureOrdering.restype = LLVMAtomicOrdering
+  LLVMGetCmpXchgFailureOrdering.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetCmpXchgFailureOrdering = _libraries['llvm'].LLVMSetCmpXchgFailureOrdering
-    LLVMSetCmpXchgFailureOrdering.restype = None
-    LLVMSetCmpXchgFailureOrdering.argtypes = [LLVMValueRef, LLVMAtomicOrdering]
+  LLVMSetCmpXchgFailureOrdering = _libraries["llvm"].LLVMSetCmpXchgFailureOrdering
+  LLVMSetCmpXchgFailureOrdering.restype = None
+  LLVMSetCmpXchgFailureOrdering.argtypes = [LLVMValueRef, LLVMAtomicOrdering]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateModuleProviderForExistingModule = _libraries['llvm'].LLVMCreateModuleProviderForExistingModule
-    LLVMCreateModuleProviderForExistingModule.restype = LLVMModuleProviderRef
-    LLVMCreateModuleProviderForExistingModule.argtypes = [LLVMModuleRef]
+  LLVMCreateModuleProviderForExistingModule = _libraries[
+    "llvm"
+  ].LLVMCreateModuleProviderForExistingModule
+  LLVMCreateModuleProviderForExistingModule.restype = LLVMModuleProviderRef
+  LLVMCreateModuleProviderForExistingModule.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeModuleProvider = _libraries['llvm'].LLVMDisposeModuleProvider
-    LLVMDisposeModuleProvider.restype = None
-    LLVMDisposeModuleProvider.argtypes = [LLVMModuleProviderRef]
+  LLVMDisposeModuleProvider = _libraries["llvm"].LLVMDisposeModuleProvider
+  LLVMDisposeModuleProvider.restype = None
+  LLVMDisposeModuleProvider.argtypes = [LLVMModuleProviderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateMemoryBufferWithContentsOfFile = _libraries['llvm'].LLVMCreateMemoryBufferWithContentsOfFile
-    LLVMCreateMemoryBufferWithContentsOfFile.restype = LLVMBool
-    LLVMCreateMemoryBufferWithContentsOfFile.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMCreateMemoryBufferWithContentsOfFile = _libraries[
+    "llvm"
+  ].LLVMCreateMemoryBufferWithContentsOfFile
+  LLVMCreateMemoryBufferWithContentsOfFile.restype = LLVMBool
+  LLVMCreateMemoryBufferWithContentsOfFile.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateMemoryBufferWithSTDIN = _libraries['llvm'].LLVMCreateMemoryBufferWithSTDIN
-    LLVMCreateMemoryBufferWithSTDIN.restype = LLVMBool
-    LLVMCreateMemoryBufferWithSTDIN.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMCreateMemoryBufferWithSTDIN = _libraries["llvm"].LLVMCreateMemoryBufferWithSTDIN
+  LLVMCreateMemoryBufferWithSTDIN.restype = LLVMBool
+  LLVMCreateMemoryBufferWithSTDIN.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateMemoryBufferWithMemoryRange = _libraries['llvm'].LLVMCreateMemoryBufferWithMemoryRange
-    LLVMCreateMemoryBufferWithMemoryRange.restype = LLVMMemoryBufferRef
-    LLVMCreateMemoryBufferWithMemoryRange.argtypes = [ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), LLVMBool]
+  LLVMCreateMemoryBufferWithMemoryRange = _libraries[
+    "llvm"
+  ].LLVMCreateMemoryBufferWithMemoryRange
+  LLVMCreateMemoryBufferWithMemoryRange.restype = LLVMMemoryBufferRef
+  LLVMCreateMemoryBufferWithMemoryRange.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateMemoryBufferWithMemoryRangeCopy = _libraries['llvm'].LLVMCreateMemoryBufferWithMemoryRangeCopy
-    LLVMCreateMemoryBufferWithMemoryRangeCopy.restype = LLVMMemoryBufferRef
-    LLVMCreateMemoryBufferWithMemoryRangeCopy.argtypes = [ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char)]
+  LLVMCreateMemoryBufferWithMemoryRangeCopy = _libraries[
+    "llvm"
+  ].LLVMCreateMemoryBufferWithMemoryRangeCopy
+  LLVMCreateMemoryBufferWithMemoryRangeCopy.restype = LLVMMemoryBufferRef
+  LLVMCreateMemoryBufferWithMemoryRangeCopy.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBufferStart = _libraries['llvm'].LLVMGetBufferStart
-    LLVMGetBufferStart.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetBufferStart.argtypes = [LLVMMemoryBufferRef]
+  LLVMGetBufferStart = _libraries["llvm"].LLVMGetBufferStart
+  LLVMGetBufferStart.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetBufferStart.argtypes = [LLVMMemoryBufferRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetBufferSize = _libraries['llvm'].LLVMGetBufferSize
-    LLVMGetBufferSize.restype = size_t
-    LLVMGetBufferSize.argtypes = [LLVMMemoryBufferRef]
+  LLVMGetBufferSize = _libraries["llvm"].LLVMGetBufferSize
+  LLVMGetBufferSize.restype = size_t
+  LLVMGetBufferSize.argtypes = [LLVMMemoryBufferRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeMemoryBuffer = _libraries['llvm'].LLVMDisposeMemoryBuffer
-    LLVMDisposeMemoryBuffer.restype = None
-    LLVMDisposeMemoryBuffer.argtypes = [LLVMMemoryBufferRef]
+  LLVMDisposeMemoryBuffer = _libraries["llvm"].LLVMDisposeMemoryBuffer
+  LLVMDisposeMemoryBuffer.restype = None
+  LLVMDisposeMemoryBuffer.argtypes = [LLVMMemoryBufferRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetGlobalPassRegistry = _libraries['llvm'].LLVMGetGlobalPassRegistry
-    LLVMGetGlobalPassRegistry.restype = LLVMPassRegistryRef
-    LLVMGetGlobalPassRegistry.argtypes = []
+  LLVMGetGlobalPassRegistry = _libraries["llvm"].LLVMGetGlobalPassRegistry
+  LLVMGetGlobalPassRegistry.restype = LLVMPassRegistryRef
+  LLVMGetGlobalPassRegistry.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreatePassManager = _libraries['llvm'].LLVMCreatePassManager
-    LLVMCreatePassManager.restype = LLVMPassManagerRef
-    LLVMCreatePassManager.argtypes = []
+  LLVMCreatePassManager = _libraries["llvm"].LLVMCreatePassManager
+  LLVMCreatePassManager.restype = LLVMPassManagerRef
+  LLVMCreatePassManager.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateFunctionPassManagerForModule = _libraries['llvm'].LLVMCreateFunctionPassManagerForModule
-    LLVMCreateFunctionPassManagerForModule.restype = LLVMPassManagerRef
-    LLVMCreateFunctionPassManagerForModule.argtypes = [LLVMModuleRef]
+  LLVMCreateFunctionPassManagerForModule = _libraries[
+    "llvm"
+  ].LLVMCreateFunctionPassManagerForModule
+  LLVMCreateFunctionPassManagerForModule.restype = LLVMPassManagerRef
+  LLVMCreateFunctionPassManagerForModule.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateFunctionPassManager = _libraries['llvm'].LLVMCreateFunctionPassManager
-    LLVMCreateFunctionPassManager.restype = LLVMPassManagerRef
-    LLVMCreateFunctionPassManager.argtypes = [LLVMModuleProviderRef]
+  LLVMCreateFunctionPassManager = _libraries["llvm"].LLVMCreateFunctionPassManager
+  LLVMCreateFunctionPassManager.restype = LLVMPassManagerRef
+  LLVMCreateFunctionPassManager.argtypes = [LLVMModuleProviderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRunPassManager = _libraries['llvm'].LLVMRunPassManager
-    LLVMRunPassManager.restype = LLVMBool
-    LLVMRunPassManager.argtypes = [LLVMPassManagerRef, LLVMModuleRef]
+  LLVMRunPassManager = _libraries["llvm"].LLVMRunPassManager
+  LLVMRunPassManager.restype = LLVMBool
+  LLVMRunPassManager.argtypes = [LLVMPassManagerRef, LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeFunctionPassManager = _libraries['llvm'].LLVMInitializeFunctionPassManager
-    LLVMInitializeFunctionPassManager.restype = LLVMBool
-    LLVMInitializeFunctionPassManager.argtypes = [LLVMPassManagerRef]
+  LLVMInitializeFunctionPassManager = _libraries[
+    "llvm"
+  ].LLVMInitializeFunctionPassManager
+  LLVMInitializeFunctionPassManager.restype = LLVMBool
+  LLVMInitializeFunctionPassManager.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRunFunctionPassManager = _libraries['llvm'].LLVMRunFunctionPassManager
-    LLVMRunFunctionPassManager.restype = LLVMBool
-    LLVMRunFunctionPassManager.argtypes = [LLVMPassManagerRef, LLVMValueRef]
+  LLVMRunFunctionPassManager = _libraries["llvm"].LLVMRunFunctionPassManager
+  LLVMRunFunctionPassManager.restype = LLVMBool
+  LLVMRunFunctionPassManager.argtypes = [LLVMPassManagerRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMFinalizeFunctionPassManager = _libraries['llvm'].LLVMFinalizeFunctionPassManager
-    LLVMFinalizeFunctionPassManager.restype = LLVMBool
-    LLVMFinalizeFunctionPassManager.argtypes = [LLVMPassManagerRef]
+  LLVMFinalizeFunctionPassManager = _libraries["llvm"].LLVMFinalizeFunctionPassManager
+  LLVMFinalizeFunctionPassManager.restype = LLVMBool
+  LLVMFinalizeFunctionPassManager.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposePassManager = _libraries['llvm'].LLVMDisposePassManager
-    LLVMDisposePassManager.restype = None
-    LLVMDisposePassManager.argtypes = [LLVMPassManagerRef]
+  LLVMDisposePassManager = _libraries["llvm"].LLVMDisposePassManager
+  LLVMDisposePassManager.restype = None
+  LLVMDisposePassManager.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMStartMultithreaded = _libraries['llvm'].LLVMStartMultithreaded
-    LLVMStartMultithreaded.restype = LLVMBool
-    LLVMStartMultithreaded.argtypes = []
+  LLVMStartMultithreaded = _libraries["llvm"].LLVMStartMultithreaded
+  LLVMStartMultithreaded.restype = LLVMBool
+  LLVMStartMultithreaded.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMStopMultithreaded = _libraries['llvm'].LLVMStopMultithreaded
-    LLVMStopMultithreaded.restype = None
-    LLVMStopMultithreaded.argtypes = []
+  LLVMStopMultithreaded = _libraries["llvm"].LLVMStopMultithreaded
+  LLVMStopMultithreaded.restype = None
+  LLVMStopMultithreaded.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsMultithreaded = _libraries['llvm'].LLVMIsMultithreaded
-    LLVMIsMultithreaded.restype = LLVMBool
-    LLVMIsMultithreaded.argtypes = []
+  LLVMIsMultithreaded = _libraries["llvm"].LLVMIsMultithreaded
+  LLVMIsMultithreaded.restype = LLVMBool
+  LLVMIsMultithreaded.argtypes = []
 except AttributeError:
-    pass
-LLVM_C_DEBUGINFO_H = True # macro
+  pass
+LLVM_C_DEBUGINFO_H = True  # macro
 
 # values for enumeration 'c__EA_LLVMDIFlags'
 c__EA_LLVMDIFlags__enumvalues = {
-    0: 'LLVMDIFlagZero',
-    1: 'LLVMDIFlagPrivate',
-    2: 'LLVMDIFlagProtected',
-    3: 'LLVMDIFlagPublic',
-    4: 'LLVMDIFlagFwdDecl',
-    8: 'LLVMDIFlagAppleBlock',
-    16: 'LLVMDIFlagReservedBit4',
-    32: 'LLVMDIFlagVirtual',
-    64: 'LLVMDIFlagArtificial',
-    128: 'LLVMDIFlagExplicit',
-    256: 'LLVMDIFlagPrototyped',
-    512: 'LLVMDIFlagObjcClassComplete',
-    1024: 'LLVMDIFlagObjectPointer',
-    2048: 'LLVMDIFlagVector',
-    4096: 'LLVMDIFlagStaticMember',
-    8192: 'LLVMDIFlagLValueReference',
-    16384: 'LLVMDIFlagRValueReference',
-    32768: 'LLVMDIFlagReserved',
-    65536: 'LLVMDIFlagSingleInheritance',
-    131072: 'LLVMDIFlagMultipleInheritance',
-    196608: 'LLVMDIFlagVirtualInheritance',
-    262144: 'LLVMDIFlagIntroducedVirtual',
-    524288: 'LLVMDIFlagBitField',
-    1048576: 'LLVMDIFlagNoReturn',
-    4194304: 'LLVMDIFlagTypePassByValue',
-    8388608: 'LLVMDIFlagTypePassByReference',
-    16777216: 'LLVMDIFlagEnumClass',
-    16777216: 'LLVMDIFlagFixedEnum',
-    33554432: 'LLVMDIFlagThunk',
-    67108864: 'LLVMDIFlagNonTrivial',
-    134217728: 'LLVMDIFlagBigEndian',
-    268435456: 'LLVMDIFlagLittleEndian',
-    36: 'LLVMDIFlagIndirectVirtualBase',
-    3: 'LLVMDIFlagAccessibility',
-    196608: 'LLVMDIFlagPtrToMemberRep',
+  0: "LLVMDIFlagZero",
+  1: "LLVMDIFlagPrivate",
+  2: "LLVMDIFlagProtected",
+  3: "LLVMDIFlagPublic",
+  4: "LLVMDIFlagFwdDecl",
+  8: "LLVMDIFlagAppleBlock",
+  16: "LLVMDIFlagReservedBit4",
+  32: "LLVMDIFlagVirtual",
+  64: "LLVMDIFlagArtificial",
+  128: "LLVMDIFlagExplicit",
+  256: "LLVMDIFlagPrototyped",
+  512: "LLVMDIFlagObjcClassComplete",
+  1024: "LLVMDIFlagObjectPointer",
+  2048: "LLVMDIFlagVector",
+  4096: "LLVMDIFlagStaticMember",
+  8192: "LLVMDIFlagLValueReference",
+  16384: "LLVMDIFlagRValueReference",
+  32768: "LLVMDIFlagReserved",
+  65536: "LLVMDIFlagSingleInheritance",
+  131072: "LLVMDIFlagMultipleInheritance",
+  196608: "LLVMDIFlagVirtualInheritance",
+  262144: "LLVMDIFlagIntroducedVirtual",
+  524288: "LLVMDIFlagBitField",
+  1048576: "LLVMDIFlagNoReturn",
+  4194304: "LLVMDIFlagTypePassByValue",
+  8388608: "LLVMDIFlagTypePassByReference",
+  16777216: "LLVMDIFlagEnumClass",
+  16777216: "LLVMDIFlagFixedEnum",
+  33554432: "LLVMDIFlagThunk",
+  67108864: "LLVMDIFlagNonTrivial",
+  134217728: "LLVMDIFlagBigEndian",
+  268435456: "LLVMDIFlagLittleEndian",
+  36: "LLVMDIFlagIndirectVirtualBase",
+  3: "LLVMDIFlagAccessibility",
+  196608: "LLVMDIFlagPtrToMemberRep",
 }
 LLVMDIFlagZero = 0
 LLVMDIFlagPrivate = 1
@@ -5424,52 +6452,52 @@ LLVMDIFlagLittleEndian = 268435456
 LLVMDIFlagIndirectVirtualBase = 36
 LLVMDIFlagAccessibility = 3
 LLVMDIFlagPtrToMemberRep = 196608
-c__EA_LLVMDIFlags = ctypes.c_uint32 # enum
+c__EA_LLVMDIFlags = ctypes.c_uint32  # enum
 LLVMDIFlags = c__EA_LLVMDIFlags
 LLVMDIFlags__enumvalues = c__EA_LLVMDIFlags__enumvalues
 
 # values for enumeration 'c__EA_LLVMDWARFSourceLanguage'
 c__EA_LLVMDWARFSourceLanguage__enumvalues = {
-    0: 'LLVMDWARFSourceLanguageC89',
-    1: 'LLVMDWARFSourceLanguageC',
-    2: 'LLVMDWARFSourceLanguageAda83',
-    3: 'LLVMDWARFSourceLanguageC_plus_plus',
-    4: 'LLVMDWARFSourceLanguageCobol74',
-    5: 'LLVMDWARFSourceLanguageCobol85',
-    6: 'LLVMDWARFSourceLanguageFortran77',
-    7: 'LLVMDWARFSourceLanguageFortran90',
-    8: 'LLVMDWARFSourceLanguagePascal83',
-    9: 'LLVMDWARFSourceLanguageModula2',
-    10: 'LLVMDWARFSourceLanguageJava',
-    11: 'LLVMDWARFSourceLanguageC99',
-    12: 'LLVMDWARFSourceLanguageAda95',
-    13: 'LLVMDWARFSourceLanguageFortran95',
-    14: 'LLVMDWARFSourceLanguagePLI',
-    15: 'LLVMDWARFSourceLanguageObjC',
-    16: 'LLVMDWARFSourceLanguageObjC_plus_plus',
-    17: 'LLVMDWARFSourceLanguageUPC',
-    18: 'LLVMDWARFSourceLanguageD',
-    19: 'LLVMDWARFSourceLanguagePython',
-    20: 'LLVMDWARFSourceLanguageOpenCL',
-    21: 'LLVMDWARFSourceLanguageGo',
-    22: 'LLVMDWARFSourceLanguageModula3',
-    23: 'LLVMDWARFSourceLanguageHaskell',
-    24: 'LLVMDWARFSourceLanguageC_plus_plus_03',
-    25: 'LLVMDWARFSourceLanguageC_plus_plus_11',
-    26: 'LLVMDWARFSourceLanguageOCaml',
-    27: 'LLVMDWARFSourceLanguageRust',
-    28: 'LLVMDWARFSourceLanguageC11',
-    29: 'LLVMDWARFSourceLanguageSwift',
-    30: 'LLVMDWARFSourceLanguageJulia',
-    31: 'LLVMDWARFSourceLanguageDylan',
-    32: 'LLVMDWARFSourceLanguageC_plus_plus_14',
-    33: 'LLVMDWARFSourceLanguageFortran03',
-    34: 'LLVMDWARFSourceLanguageFortran08',
-    35: 'LLVMDWARFSourceLanguageRenderScript',
-    36: 'LLVMDWARFSourceLanguageBLISS',
-    37: 'LLVMDWARFSourceLanguageMips_Assembler',
-    38: 'LLVMDWARFSourceLanguageGOOGLE_RenderScript',
-    39: 'LLVMDWARFSourceLanguageBORLAND_Delphi',
+  0: "LLVMDWARFSourceLanguageC89",
+  1: "LLVMDWARFSourceLanguageC",
+  2: "LLVMDWARFSourceLanguageAda83",
+  3: "LLVMDWARFSourceLanguageC_plus_plus",
+  4: "LLVMDWARFSourceLanguageCobol74",
+  5: "LLVMDWARFSourceLanguageCobol85",
+  6: "LLVMDWARFSourceLanguageFortran77",
+  7: "LLVMDWARFSourceLanguageFortran90",
+  8: "LLVMDWARFSourceLanguagePascal83",
+  9: "LLVMDWARFSourceLanguageModula2",
+  10: "LLVMDWARFSourceLanguageJava",
+  11: "LLVMDWARFSourceLanguageC99",
+  12: "LLVMDWARFSourceLanguageAda95",
+  13: "LLVMDWARFSourceLanguageFortran95",
+  14: "LLVMDWARFSourceLanguagePLI",
+  15: "LLVMDWARFSourceLanguageObjC",
+  16: "LLVMDWARFSourceLanguageObjC_plus_plus",
+  17: "LLVMDWARFSourceLanguageUPC",
+  18: "LLVMDWARFSourceLanguageD",
+  19: "LLVMDWARFSourceLanguagePython",
+  20: "LLVMDWARFSourceLanguageOpenCL",
+  21: "LLVMDWARFSourceLanguageGo",
+  22: "LLVMDWARFSourceLanguageModula3",
+  23: "LLVMDWARFSourceLanguageHaskell",
+  24: "LLVMDWARFSourceLanguageC_plus_plus_03",
+  25: "LLVMDWARFSourceLanguageC_plus_plus_11",
+  26: "LLVMDWARFSourceLanguageOCaml",
+  27: "LLVMDWARFSourceLanguageRust",
+  28: "LLVMDWARFSourceLanguageC11",
+  29: "LLVMDWARFSourceLanguageSwift",
+  30: "LLVMDWARFSourceLanguageJulia",
+  31: "LLVMDWARFSourceLanguageDylan",
+  32: "LLVMDWARFSourceLanguageC_plus_plus_14",
+  33: "LLVMDWARFSourceLanguageFortran03",
+  34: "LLVMDWARFSourceLanguageFortran08",
+  35: "LLVMDWARFSourceLanguageRenderScript",
+  36: "LLVMDWARFSourceLanguageBLISS",
+  37: "LLVMDWARFSourceLanguageMips_Assembler",
+  38: "LLVMDWARFSourceLanguageGOOGLE_RenderScript",
+  39: "LLVMDWARFSourceLanguageBORLAND_Delphi",
 }
 LLVMDWARFSourceLanguageC89 = 0
 LLVMDWARFSourceLanguageC = 1
@@ -5511,60 +6539,60 @@ LLVMDWARFSourceLanguageBLISS = 36
 LLVMDWARFSourceLanguageMips_Assembler = 37
 LLVMDWARFSourceLanguageGOOGLE_RenderScript = 38
 LLVMDWARFSourceLanguageBORLAND_Delphi = 39
-c__EA_LLVMDWARFSourceLanguage = ctypes.c_uint32 # enum
+c__EA_LLVMDWARFSourceLanguage = ctypes.c_uint32  # enum
 LLVMDWARFSourceLanguage = c__EA_LLVMDWARFSourceLanguage
 LLVMDWARFSourceLanguage__enumvalues = c__EA_LLVMDWARFSourceLanguage__enumvalues
 
 # values for enumeration 'c__EA_LLVMDWARFEmissionKind'
 c__EA_LLVMDWARFEmissionKind__enumvalues = {
-    0: 'LLVMDWARFEmissionNone',
-    1: 'LLVMDWARFEmissionFull',
-    2: 'LLVMDWARFEmissionLineTablesOnly',
+  0: "LLVMDWARFEmissionNone",
+  1: "LLVMDWARFEmissionFull",
+  2: "LLVMDWARFEmissionLineTablesOnly",
 }
 LLVMDWARFEmissionNone = 0
 LLVMDWARFEmissionFull = 1
 LLVMDWARFEmissionLineTablesOnly = 2
-c__EA_LLVMDWARFEmissionKind = ctypes.c_uint32 # enum
+c__EA_LLVMDWARFEmissionKind = ctypes.c_uint32  # enum
 LLVMDWARFEmissionKind = c__EA_LLVMDWARFEmissionKind
 LLVMDWARFEmissionKind__enumvalues = c__EA_LLVMDWARFEmissionKind__enumvalues
 
 # values for enumeration 'c__Ea_LLVMMDStringMetadataKind'
 c__Ea_LLVMMDStringMetadataKind__enumvalues = {
-    0: 'LLVMMDStringMetadataKind',
-    1: 'LLVMConstantAsMetadataMetadataKind',
-    2: 'LLVMLocalAsMetadataMetadataKind',
-    3: 'LLVMDistinctMDOperandPlaceholderMetadataKind',
-    4: 'LLVMMDTupleMetadataKind',
-    5: 'LLVMDILocationMetadataKind',
-    6: 'LLVMDIExpressionMetadataKind',
-    7: 'LLVMDIGlobalVariableExpressionMetadataKind',
-    8: 'LLVMGenericDINodeMetadataKind',
-    9: 'LLVMDISubrangeMetadataKind',
-    10: 'LLVMDIEnumeratorMetadataKind',
-    11: 'LLVMDIBasicTypeMetadataKind',
-    12: 'LLVMDIDerivedTypeMetadataKind',
-    13: 'LLVMDICompositeTypeMetadataKind',
-    14: 'LLVMDISubroutineTypeMetadataKind',
-    15: 'LLVMDIFileMetadataKind',
-    16: 'LLVMDICompileUnitMetadataKind',
-    17: 'LLVMDISubprogramMetadataKind',
-    18: 'LLVMDILexicalBlockMetadataKind',
-    19: 'LLVMDILexicalBlockFileMetadataKind',
-    20: 'LLVMDINamespaceMetadataKind',
-    21: 'LLVMDIModuleMetadataKind',
-    22: 'LLVMDITemplateTypeParameterMetadataKind',
-    23: 'LLVMDITemplateValueParameterMetadataKind',
-    24: 'LLVMDIGlobalVariableMetadataKind',
-    25: 'LLVMDILocalVariableMetadataKind',
-    26: 'LLVMDILabelMetadataKind',
-    27: 'LLVMDIObjCPropertyMetadataKind',
-    28: 'LLVMDIImportedEntityMetadataKind',
-    29: 'LLVMDIMacroMetadataKind',
-    30: 'LLVMDIMacroFileMetadataKind',
-    31: 'LLVMDICommonBlockMetadataKind',
-    32: 'LLVMDIStringTypeMetadataKind',
-    33: 'LLVMDIGenericSubrangeMetadataKind',
-    34: 'LLVMDIArgListMetadataKind',
+  0: "LLVMMDStringMetadataKind",
+  1: "LLVMConstantAsMetadataMetadataKind",
+  2: "LLVMLocalAsMetadataMetadataKind",
+  3: "LLVMDistinctMDOperandPlaceholderMetadataKind",
+  4: "LLVMMDTupleMetadataKind",
+  5: "LLVMDILocationMetadataKind",
+  6: "LLVMDIExpressionMetadataKind",
+  7: "LLVMDIGlobalVariableExpressionMetadataKind",
+  8: "LLVMGenericDINodeMetadataKind",
+  9: "LLVMDISubrangeMetadataKind",
+  10: "LLVMDIEnumeratorMetadataKind",
+  11: "LLVMDIBasicTypeMetadataKind",
+  12: "LLVMDIDerivedTypeMetadataKind",
+  13: "LLVMDICompositeTypeMetadataKind",
+  14: "LLVMDISubroutineTypeMetadataKind",
+  15: "LLVMDIFileMetadataKind",
+  16: "LLVMDICompileUnitMetadataKind",
+  17: "LLVMDISubprogramMetadataKind",
+  18: "LLVMDILexicalBlockMetadataKind",
+  19: "LLVMDILexicalBlockFileMetadataKind",
+  20: "LLVMDINamespaceMetadataKind",
+  21: "LLVMDIModuleMetadataKind",
+  22: "LLVMDITemplateTypeParameterMetadataKind",
+  23: "LLVMDITemplateValueParameterMetadataKind",
+  24: "LLVMDIGlobalVariableMetadataKind",
+  25: "LLVMDILocalVariableMetadataKind",
+  26: "LLVMDILabelMetadataKind",
+  27: "LLVMDIObjCPropertyMetadataKind",
+  28: "LLVMDIImportedEntityMetadataKind",
+  29: "LLVMDIMacroMetadataKind",
+  30: "LLVMDIMacroFileMetadataKind",
+  31: "LLVMDICommonBlockMetadataKind",
+  32: "LLVMDIStringTypeMetadataKind",
+  33: "LLVMDIGenericSubrangeMetadataKind",
+  34: "LLVMDIArgListMetadataKind",
 }
 LLVMMDStringMetadataKind = 0
 LLVMConstantAsMetadataMetadataKind = 1
@@ -5601,700 +6629,1237 @@ LLVMDICommonBlockMetadataKind = 31
 LLVMDIStringTypeMetadataKind = 32
 LLVMDIGenericSubrangeMetadataKind = 33
 LLVMDIArgListMetadataKind = 34
-c__Ea_LLVMMDStringMetadataKind = ctypes.c_uint32 # enum
+c__Ea_LLVMMDStringMetadataKind = ctypes.c_uint32  # enum
 LLVMMetadataKind = ctypes.c_uint32
 LLVMDWARFTypeEncoding = ctypes.c_uint32
 
 # values for enumeration 'c__EA_LLVMDWARFMacinfoRecordType'
 c__EA_LLVMDWARFMacinfoRecordType__enumvalues = {
-    1: 'LLVMDWARFMacinfoRecordTypeDefine',
-    2: 'LLVMDWARFMacinfoRecordTypeMacro',
-    3: 'LLVMDWARFMacinfoRecordTypeStartFile',
-    4: 'LLVMDWARFMacinfoRecordTypeEndFile',
-    255: 'LLVMDWARFMacinfoRecordTypeVendorExt',
+  1: "LLVMDWARFMacinfoRecordTypeDefine",
+  2: "LLVMDWARFMacinfoRecordTypeMacro",
+  3: "LLVMDWARFMacinfoRecordTypeStartFile",
+  4: "LLVMDWARFMacinfoRecordTypeEndFile",
+  255: "LLVMDWARFMacinfoRecordTypeVendorExt",
 }
 LLVMDWARFMacinfoRecordTypeDefine = 1
 LLVMDWARFMacinfoRecordTypeMacro = 2
 LLVMDWARFMacinfoRecordTypeStartFile = 3
 LLVMDWARFMacinfoRecordTypeEndFile = 4
 LLVMDWARFMacinfoRecordTypeVendorExt = 255
-c__EA_LLVMDWARFMacinfoRecordType = ctypes.c_uint32 # enum
+c__EA_LLVMDWARFMacinfoRecordType = ctypes.c_uint32  # enum
 LLVMDWARFMacinfoRecordType = c__EA_LLVMDWARFMacinfoRecordType
 LLVMDWARFMacinfoRecordType__enumvalues = c__EA_LLVMDWARFMacinfoRecordType__enumvalues
 try:
-    LLVMDebugMetadataVersion = _libraries['llvm'].LLVMDebugMetadataVersion
-    LLVMDebugMetadataVersion.restype = ctypes.c_uint32
-    LLVMDebugMetadataVersion.argtypes = []
+  LLVMDebugMetadataVersion = _libraries["llvm"].LLVMDebugMetadataVersion
+  LLVMDebugMetadataVersion.restype = ctypes.c_uint32
+  LLVMDebugMetadataVersion.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetModuleDebugMetadataVersion = _libraries['llvm'].LLVMGetModuleDebugMetadataVersion
-    LLVMGetModuleDebugMetadataVersion.restype = ctypes.c_uint32
-    LLVMGetModuleDebugMetadataVersion.argtypes = [LLVMModuleRef]
+  LLVMGetModuleDebugMetadataVersion = _libraries[
+    "llvm"
+  ].LLVMGetModuleDebugMetadataVersion
+  LLVMGetModuleDebugMetadataVersion.restype = ctypes.c_uint32
+  LLVMGetModuleDebugMetadataVersion.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMStripModuleDebugInfo = _libraries['llvm'].LLVMStripModuleDebugInfo
-    LLVMStripModuleDebugInfo.restype = LLVMBool
-    LLVMStripModuleDebugInfo.argtypes = [LLVMModuleRef]
+  LLVMStripModuleDebugInfo = _libraries["llvm"].LLVMStripModuleDebugInfo
+  LLVMStripModuleDebugInfo.restype = LLVMBool
+  LLVMStripModuleDebugInfo.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateDIBuilderDisallowUnresolved = _libraries['llvm'].LLVMCreateDIBuilderDisallowUnresolved
-    LLVMCreateDIBuilderDisallowUnresolved.restype = LLVMDIBuilderRef
-    LLVMCreateDIBuilderDisallowUnresolved.argtypes = [LLVMModuleRef]
+  LLVMCreateDIBuilderDisallowUnresolved = _libraries[
+    "llvm"
+  ].LLVMCreateDIBuilderDisallowUnresolved
+  LLVMCreateDIBuilderDisallowUnresolved.restype = LLVMDIBuilderRef
+  LLVMCreateDIBuilderDisallowUnresolved.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateDIBuilder = _libraries['llvm'].LLVMCreateDIBuilder
-    LLVMCreateDIBuilder.restype = LLVMDIBuilderRef
-    LLVMCreateDIBuilder.argtypes = [LLVMModuleRef]
+  LLVMCreateDIBuilder = _libraries["llvm"].LLVMCreateDIBuilder
+  LLVMCreateDIBuilder.restype = LLVMDIBuilderRef
+  LLVMCreateDIBuilder.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeDIBuilder = _libraries['llvm'].LLVMDisposeDIBuilder
-    LLVMDisposeDIBuilder.restype = None
-    LLVMDisposeDIBuilder.argtypes = [LLVMDIBuilderRef]
+  LLVMDisposeDIBuilder = _libraries["llvm"].LLVMDisposeDIBuilder
+  LLVMDisposeDIBuilder.restype = None
+  LLVMDisposeDIBuilder.argtypes = [LLVMDIBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderFinalize = _libraries['llvm'].LLVMDIBuilderFinalize
-    LLVMDIBuilderFinalize.restype = None
-    LLVMDIBuilderFinalize.argtypes = [LLVMDIBuilderRef]
+  LLVMDIBuilderFinalize = _libraries["llvm"].LLVMDIBuilderFinalize
+  LLVMDIBuilderFinalize.restype = None
+  LLVMDIBuilderFinalize.argtypes = [LLVMDIBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderFinalizeSubprogram = _libraries['llvm'].LLVMDIBuilderFinalizeSubprogram
-    LLVMDIBuilderFinalizeSubprogram.restype = None
-    LLVMDIBuilderFinalizeSubprogram.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef]
+  LLVMDIBuilderFinalizeSubprogram = _libraries["llvm"].LLVMDIBuilderFinalizeSubprogram
+  LLVMDIBuilderFinalizeSubprogram.restype = None
+  LLVMDIBuilderFinalizeSubprogram.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateCompileUnit = _libraries['llvm'].LLVMDIBuilderCreateCompileUnit
-    LLVMDIBuilderCreateCompileUnit.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateCompileUnit.argtypes = [LLVMDIBuilderRef, LLVMDWARFSourceLanguage, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMBool, ctypes.POINTER(ctypes.c_char), size_t, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), size_t, LLVMDWARFEmissionKind, ctypes.c_uint32, LLVMBool, LLVMBool, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateCompileUnit = _libraries["llvm"].LLVMDIBuilderCreateCompileUnit
+  LLVMDIBuilderCreateCompileUnit.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateCompileUnit.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMDWARFSourceLanguage,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMBool,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMDWARFEmissionKind,
+    ctypes.c_uint32,
+    LLVMBool,
+    LLVMBool,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateFile = _libraries['llvm'].LLVMDIBuilderCreateFile
-    LLVMDIBuilderCreateFile.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateFile.argtypes = [LLVMDIBuilderRef, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateFile = _libraries["llvm"].LLVMDIBuilderCreateFile
+  LLVMDIBuilderCreateFile.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateFile.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateModule = _libraries['llvm'].LLVMDIBuilderCreateModule
-    LLVMDIBuilderCreateModule.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateModule.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateModule = _libraries["llvm"].LLVMDIBuilderCreateModule
+  LLVMDIBuilderCreateModule.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateModule.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateNameSpace = _libraries['llvm'].LLVMDIBuilderCreateNameSpace
-    LLVMDIBuilderCreateNameSpace.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateNameSpace.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMBool]
+  LLVMDIBuilderCreateNameSpace = _libraries["llvm"].LLVMDIBuilderCreateNameSpace
+  LLVMDIBuilderCreateNameSpace.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateNameSpace.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateFunction = _libraries['llvm'].LLVMDIBuilderCreateFunction
-    LLVMDIBuilderCreateFunction.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateFunction.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, LLVMMetadataRef, LLVMBool, LLVMBool, ctypes.c_uint32, LLVMDIFlags, LLVMBool]
+  LLVMDIBuilderCreateFunction = _libraries["llvm"].LLVMDIBuilderCreateFunction
+  LLVMDIBuilderCreateFunction.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateFunction.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    LLVMBool,
+    LLVMBool,
+    ctypes.c_uint32,
+    LLVMDIFlags,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateLexicalBlock = _libraries['llvm'].LLVMDIBuilderCreateLexicalBlock
-    LLVMDIBuilderCreateLexicalBlock.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateLexicalBlock.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, LLVMMetadataRef, ctypes.c_uint32, ctypes.c_uint32]
+  LLVMDIBuilderCreateLexicalBlock = _libraries["llvm"].LLVMDIBuilderCreateLexicalBlock
+  LLVMDIBuilderCreateLexicalBlock.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateLexicalBlock.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateLexicalBlockFile = _libraries['llvm'].LLVMDIBuilderCreateLexicalBlockFile
-    LLVMDIBuilderCreateLexicalBlockFile.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateLexicalBlockFile.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, LLVMMetadataRef, ctypes.c_uint32]
+  LLVMDIBuilderCreateLexicalBlockFile = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateLexicalBlockFile
+  LLVMDIBuilderCreateLexicalBlockFile.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateLexicalBlockFile.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateImportedModuleFromNamespace = _libraries['llvm'].LLVMDIBuilderCreateImportedModuleFromNamespace
-    LLVMDIBuilderCreateImportedModuleFromNamespace.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateImportedModuleFromNamespace.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, LLVMMetadataRef, LLVMMetadataRef, ctypes.c_uint32]
+  LLVMDIBuilderCreateImportedModuleFromNamespace = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateImportedModuleFromNamespace
+  LLVMDIBuilderCreateImportedModuleFromNamespace.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateImportedModuleFromNamespace.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateImportedModuleFromAlias = _libraries['llvm'].LLVMDIBuilderCreateImportedModuleFromAlias
-    LLVMDIBuilderCreateImportedModuleFromAlias.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateImportedModuleFromAlias.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, LLVMMetadataRef, LLVMMetadataRef, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32]
+  LLVMDIBuilderCreateImportedModuleFromAlias = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateImportedModuleFromAlias
+  LLVMDIBuilderCreateImportedModuleFromAlias.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateImportedModuleFromAlias.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateImportedModuleFromModule = _libraries['llvm'].LLVMDIBuilderCreateImportedModuleFromModule
-    LLVMDIBuilderCreateImportedModuleFromModule.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateImportedModuleFromModule.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, LLVMMetadataRef, LLVMMetadataRef, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32]
+  LLVMDIBuilderCreateImportedModuleFromModule = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateImportedModuleFromModule
+  LLVMDIBuilderCreateImportedModuleFromModule.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateImportedModuleFromModule.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateImportedDeclaration = _libraries['llvm'].LLVMDIBuilderCreateImportedDeclaration
-    LLVMDIBuilderCreateImportedDeclaration.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateImportedDeclaration.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, LLVMMetadataRef, LLVMMetadataRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32]
+  LLVMDIBuilderCreateImportedDeclaration = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateImportedDeclaration
+  LLVMDIBuilderCreateImportedDeclaration.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateImportedDeclaration.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateDebugLocation = _libraries['llvm'].LLVMDIBuilderCreateDebugLocation
-    LLVMDIBuilderCreateDebugLocation.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateDebugLocation.argtypes = [LLVMContextRef, ctypes.c_uint32, ctypes.c_uint32, LLVMMetadataRef, LLVMMetadataRef]
+  LLVMDIBuilderCreateDebugLocation = _libraries["llvm"].LLVMDIBuilderCreateDebugLocation
+  LLVMDIBuilderCreateDebugLocation.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateDebugLocation.argtypes = [
+    LLVMContextRef,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDILocationGetLine = _libraries['llvm'].LLVMDILocationGetLine
-    LLVMDILocationGetLine.restype = ctypes.c_uint32
-    LLVMDILocationGetLine.argtypes = [LLVMMetadataRef]
+  LLVMDILocationGetLine = _libraries["llvm"].LLVMDILocationGetLine
+  LLVMDILocationGetLine.restype = ctypes.c_uint32
+  LLVMDILocationGetLine.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDILocationGetColumn = _libraries['llvm'].LLVMDILocationGetColumn
-    LLVMDILocationGetColumn.restype = ctypes.c_uint32
-    LLVMDILocationGetColumn.argtypes = [LLVMMetadataRef]
+  LLVMDILocationGetColumn = _libraries["llvm"].LLVMDILocationGetColumn
+  LLVMDILocationGetColumn.restype = ctypes.c_uint32
+  LLVMDILocationGetColumn.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDILocationGetScope = _libraries['llvm'].LLVMDILocationGetScope
-    LLVMDILocationGetScope.restype = LLVMMetadataRef
-    LLVMDILocationGetScope.argtypes = [LLVMMetadataRef]
+  LLVMDILocationGetScope = _libraries["llvm"].LLVMDILocationGetScope
+  LLVMDILocationGetScope.restype = LLVMMetadataRef
+  LLVMDILocationGetScope.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDILocationGetInlinedAt = _libraries['llvm'].LLVMDILocationGetInlinedAt
-    LLVMDILocationGetInlinedAt.restype = LLVMMetadataRef
-    LLVMDILocationGetInlinedAt.argtypes = [LLVMMetadataRef]
+  LLVMDILocationGetInlinedAt = _libraries["llvm"].LLVMDILocationGetInlinedAt
+  LLVMDILocationGetInlinedAt.restype = LLVMMetadataRef
+  LLVMDILocationGetInlinedAt.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIScopeGetFile = _libraries['llvm'].LLVMDIScopeGetFile
-    LLVMDIScopeGetFile.restype = LLVMMetadataRef
-    LLVMDIScopeGetFile.argtypes = [LLVMMetadataRef]
+  LLVMDIScopeGetFile = _libraries["llvm"].LLVMDIScopeGetFile
+  LLVMDIScopeGetFile.restype = LLVMMetadataRef
+  LLVMDIScopeGetFile.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIFileGetDirectory = _libraries['llvm'].LLVMDIFileGetDirectory
-    LLVMDIFileGetDirectory.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMDIFileGetDirectory.argtypes = [LLVMMetadataRef, ctypes.POINTER(ctypes.c_uint32)]
+  LLVMDIFileGetDirectory = _libraries["llvm"].LLVMDIFileGetDirectory
+  LLVMDIFileGetDirectory.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMDIFileGetDirectory.argtypes = [LLVMMetadataRef, ctypes.POINTER(ctypes.c_uint32)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIFileGetFilename = _libraries['llvm'].LLVMDIFileGetFilename
-    LLVMDIFileGetFilename.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMDIFileGetFilename.argtypes = [LLVMMetadataRef, ctypes.POINTER(ctypes.c_uint32)]
+  LLVMDIFileGetFilename = _libraries["llvm"].LLVMDIFileGetFilename
+  LLVMDIFileGetFilename.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMDIFileGetFilename.argtypes = [LLVMMetadataRef, ctypes.POINTER(ctypes.c_uint32)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIFileGetSource = _libraries['llvm'].LLVMDIFileGetSource
-    LLVMDIFileGetSource.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMDIFileGetSource.argtypes = [LLVMMetadataRef, ctypes.POINTER(ctypes.c_uint32)]
+  LLVMDIFileGetSource = _libraries["llvm"].LLVMDIFileGetSource
+  LLVMDIFileGetSource.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMDIFileGetSource.argtypes = [LLVMMetadataRef, ctypes.POINTER(ctypes.c_uint32)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderGetOrCreateTypeArray = _libraries['llvm'].LLVMDIBuilderGetOrCreateTypeArray
-    LLVMDIBuilderGetOrCreateTypeArray.restype = LLVMMetadataRef
-    LLVMDIBuilderGetOrCreateTypeArray.argtypes = [LLVMDIBuilderRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), size_t]
+  LLVMDIBuilderGetOrCreateTypeArray = _libraries[
+    "llvm"
+  ].LLVMDIBuilderGetOrCreateTypeArray
+  LLVMDIBuilderGetOrCreateTypeArray.restype = LLVMMetadataRef
+  LLVMDIBuilderGetOrCreateTypeArray.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateSubroutineType = _libraries['llvm'].LLVMDIBuilderCreateSubroutineType
-    LLVMDIBuilderCreateSubroutineType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateSubroutineType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32, LLVMDIFlags]
+  LLVMDIBuilderCreateSubroutineType = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateSubroutineType
+  LLVMDIBuilderCreateSubroutineType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateSubroutineType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+    LLVMDIFlags,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateMacro = _libraries['llvm'].LLVMDIBuilderCreateMacro
-    LLVMDIBuilderCreateMacro.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateMacro.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.c_uint32, LLVMDWARFMacinfoRecordType, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateMacro = _libraries["llvm"].LLVMDIBuilderCreateMacro
+  LLVMDIBuilderCreateMacro.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateMacro.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    LLVMDWARFMacinfoRecordType,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateTempMacroFile = _libraries['llvm'].LLVMDIBuilderCreateTempMacroFile
-    LLVMDIBuilderCreateTempMacroFile.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateTempMacroFile.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.c_uint32, LLVMMetadataRef]
+  LLVMDIBuilderCreateTempMacroFile = _libraries["llvm"].LLVMDIBuilderCreateTempMacroFile
+  LLVMDIBuilderCreateTempMacroFile.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateTempMacroFile.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 int64_t = ctypes.c_int64
 try:
-    LLVMDIBuilderCreateEnumerator = _libraries['llvm'].LLVMDIBuilderCreateEnumerator
-    LLVMDIBuilderCreateEnumerator.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateEnumerator.argtypes = [LLVMDIBuilderRef, ctypes.POINTER(ctypes.c_char), size_t, int64_t, LLVMBool]
+  LLVMDIBuilderCreateEnumerator = _libraries["llvm"].LLVMDIBuilderCreateEnumerator
+  LLVMDIBuilderCreateEnumerator.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateEnumerator.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    int64_t,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 uint32_t = ctypes.c_uint32
 try:
-    LLVMDIBuilderCreateEnumerationType = _libraries['llvm'].LLVMDIBuilderCreateEnumerationType
-    LLVMDIBuilderCreateEnumerationType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateEnumerationType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, uint64_t, uint32_t, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32, LLVMMetadataRef]
+  LLVMDIBuilderCreateEnumerationType = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateEnumerationType
+  LLVMDIBuilderCreateEnumerationType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateEnumerationType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    uint64_t,
+    uint32_t,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateUnionType = _libraries['llvm'].LLVMDIBuilderCreateUnionType
-    LLVMDIBuilderCreateUnionType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateUnionType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, uint64_t, uint32_t, LLVMDIFlags, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateUnionType = _libraries["llvm"].LLVMDIBuilderCreateUnionType
+  LLVMDIBuilderCreateUnionType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateUnionType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    uint64_t,
+    uint32_t,
+    LLVMDIFlags,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateArrayType = _libraries['llvm'].LLVMDIBuilderCreateArrayType
-    LLVMDIBuilderCreateArrayType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateArrayType.argtypes = [LLVMDIBuilderRef, uint64_t, uint32_t, LLVMMetadataRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32]
+  LLVMDIBuilderCreateArrayType = _libraries["llvm"].LLVMDIBuilderCreateArrayType
+  LLVMDIBuilderCreateArrayType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateArrayType.argtypes = [
+    LLVMDIBuilderRef,
+    uint64_t,
+    uint32_t,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateVectorType = _libraries['llvm'].LLVMDIBuilderCreateVectorType
-    LLVMDIBuilderCreateVectorType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateVectorType.argtypes = [LLVMDIBuilderRef, uint64_t, uint32_t, LLVMMetadataRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32]
+  LLVMDIBuilderCreateVectorType = _libraries["llvm"].LLVMDIBuilderCreateVectorType
+  LLVMDIBuilderCreateVectorType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateVectorType.argtypes = [
+    LLVMDIBuilderRef,
+    uint64_t,
+    uint32_t,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateUnspecifiedType = _libraries['llvm'].LLVMDIBuilderCreateUnspecifiedType
-    LLVMDIBuilderCreateUnspecifiedType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateUnspecifiedType.argtypes = [LLVMDIBuilderRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateUnspecifiedType = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateUnspecifiedType
+  LLVMDIBuilderCreateUnspecifiedType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateUnspecifiedType.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateBasicType = _libraries['llvm'].LLVMDIBuilderCreateBasicType
-    LLVMDIBuilderCreateBasicType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateBasicType.argtypes = [LLVMDIBuilderRef, ctypes.POINTER(ctypes.c_char), size_t, uint64_t, LLVMDWARFTypeEncoding, LLVMDIFlags]
+  LLVMDIBuilderCreateBasicType = _libraries["llvm"].LLVMDIBuilderCreateBasicType
+  LLVMDIBuilderCreateBasicType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateBasicType.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    uint64_t,
+    LLVMDWARFTypeEncoding,
+    LLVMDIFlags,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreatePointerType = _libraries['llvm'].LLVMDIBuilderCreatePointerType
-    LLVMDIBuilderCreatePointerType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreatePointerType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, uint64_t, uint32_t, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreatePointerType = _libraries["llvm"].LLVMDIBuilderCreatePointerType
+  LLVMDIBuilderCreatePointerType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreatePointerType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    uint64_t,
+    uint32_t,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateStructType = _libraries['llvm'].LLVMDIBuilderCreateStructType
-    LLVMDIBuilderCreateStructType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateStructType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, uint64_t, uint32_t, LLVMDIFlags, LLVMMetadataRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32, ctypes.c_uint32, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateStructType = _libraries["llvm"].LLVMDIBuilderCreateStructType
+  LLVMDIBuilderCreateStructType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateStructType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    uint64_t,
+    uint32_t,
+    LLVMDIFlags,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateMemberType = _libraries['llvm'].LLVMDIBuilderCreateMemberType
-    LLVMDIBuilderCreateMemberType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateMemberType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, uint64_t, uint32_t, uint64_t, LLVMDIFlags, LLVMMetadataRef]
+  LLVMDIBuilderCreateMemberType = _libraries["llvm"].LLVMDIBuilderCreateMemberType
+  LLVMDIBuilderCreateMemberType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateMemberType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    uint64_t,
+    uint32_t,
+    uint64_t,
+    LLVMDIFlags,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateStaticMemberType = _libraries['llvm'].LLVMDIBuilderCreateStaticMemberType
-    LLVMDIBuilderCreateStaticMemberType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateStaticMemberType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, LLVMMetadataRef, LLVMDIFlags, LLVMValueRef, uint32_t]
+  LLVMDIBuilderCreateStaticMemberType = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateStaticMemberType
+  LLVMDIBuilderCreateStaticMemberType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateStaticMemberType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    LLVMDIFlags,
+    LLVMValueRef,
+    uint32_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateMemberPointerType = _libraries['llvm'].LLVMDIBuilderCreateMemberPointerType
-    LLVMDIBuilderCreateMemberPointerType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateMemberPointerType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, LLVMMetadataRef, uint64_t, uint32_t, LLVMDIFlags]
+  LLVMDIBuilderCreateMemberPointerType = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateMemberPointerType
+  LLVMDIBuilderCreateMemberPointerType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateMemberPointerType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    uint64_t,
+    uint32_t,
+    LLVMDIFlags,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateObjCIVar = _libraries['llvm'].LLVMDIBuilderCreateObjCIVar
-    LLVMDIBuilderCreateObjCIVar.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateObjCIVar.argtypes = [LLVMDIBuilderRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, uint64_t, uint32_t, uint64_t, LLVMDIFlags, LLVMMetadataRef, LLVMMetadataRef]
+  LLVMDIBuilderCreateObjCIVar = _libraries["llvm"].LLVMDIBuilderCreateObjCIVar
+  LLVMDIBuilderCreateObjCIVar.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateObjCIVar.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    uint64_t,
+    uint32_t,
+    uint64_t,
+    LLVMDIFlags,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateObjCProperty = _libraries['llvm'].LLVMDIBuilderCreateObjCProperty
-    LLVMDIBuilderCreateObjCProperty.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateObjCProperty.argtypes = [LLVMDIBuilderRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t, ctypes.c_uint32, LLVMMetadataRef]
+  LLVMDIBuilderCreateObjCProperty = _libraries["llvm"].LLVMDIBuilderCreateObjCProperty
+  LLVMDIBuilderCreateObjCProperty.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateObjCProperty.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateObjectPointerType = _libraries['llvm'].LLVMDIBuilderCreateObjectPointerType
-    LLVMDIBuilderCreateObjectPointerType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateObjectPointerType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef]
+  LLVMDIBuilderCreateObjectPointerType = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateObjectPointerType
+  LLVMDIBuilderCreateObjectPointerType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateObjectPointerType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateQualifiedType = _libraries['llvm'].LLVMDIBuilderCreateQualifiedType
-    LLVMDIBuilderCreateQualifiedType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateQualifiedType.argtypes = [LLVMDIBuilderRef, ctypes.c_uint32, LLVMMetadataRef]
+  LLVMDIBuilderCreateQualifiedType = _libraries["llvm"].LLVMDIBuilderCreateQualifiedType
+  LLVMDIBuilderCreateQualifiedType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateQualifiedType.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateReferenceType = _libraries['llvm'].LLVMDIBuilderCreateReferenceType
-    LLVMDIBuilderCreateReferenceType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateReferenceType.argtypes = [LLVMDIBuilderRef, ctypes.c_uint32, LLVMMetadataRef]
+  LLVMDIBuilderCreateReferenceType = _libraries["llvm"].LLVMDIBuilderCreateReferenceType
+  LLVMDIBuilderCreateReferenceType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateReferenceType.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateNullPtrType = _libraries['llvm'].LLVMDIBuilderCreateNullPtrType
-    LLVMDIBuilderCreateNullPtrType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateNullPtrType.argtypes = [LLVMDIBuilderRef]
+  LLVMDIBuilderCreateNullPtrType = _libraries["llvm"].LLVMDIBuilderCreateNullPtrType
+  LLVMDIBuilderCreateNullPtrType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateNullPtrType.argtypes = [LLVMDIBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateTypedef = _libraries['llvm'].LLVMDIBuilderCreateTypedef
-    LLVMDIBuilderCreateTypedef.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateTypedef.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, LLVMMetadataRef, uint32_t]
+  LLVMDIBuilderCreateTypedef = _libraries["llvm"].LLVMDIBuilderCreateTypedef
+  LLVMDIBuilderCreateTypedef.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateTypedef.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    uint32_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateInheritance = _libraries['llvm'].LLVMDIBuilderCreateInheritance
-    LLVMDIBuilderCreateInheritance.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateInheritance.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, LLVMMetadataRef, uint64_t, uint32_t, LLVMDIFlags]
+  LLVMDIBuilderCreateInheritance = _libraries["llvm"].LLVMDIBuilderCreateInheritance
+  LLVMDIBuilderCreateInheritance.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateInheritance.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    uint64_t,
+    uint32_t,
+    LLVMDIFlags,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateForwardDecl = _libraries['llvm'].LLVMDIBuilderCreateForwardDecl
-    LLVMDIBuilderCreateForwardDecl.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateForwardDecl.argtypes = [LLVMDIBuilderRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, LLVMMetadataRef, ctypes.c_uint32, ctypes.c_uint32, uint64_t, uint32_t, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateForwardDecl = _libraries["llvm"].LLVMDIBuilderCreateForwardDecl
+  LLVMDIBuilderCreateForwardDecl.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateForwardDecl.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    uint64_t,
+    uint32_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateReplaceableCompositeType = _libraries['llvm'].LLVMDIBuilderCreateReplaceableCompositeType
-    LLVMDIBuilderCreateReplaceableCompositeType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateReplaceableCompositeType.argtypes = [LLVMDIBuilderRef, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, LLVMMetadataRef, ctypes.c_uint32, ctypes.c_uint32, uint64_t, uint32_t, LLVMDIFlags, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateReplaceableCompositeType = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateReplaceableCompositeType
+  LLVMDIBuilderCreateReplaceableCompositeType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateReplaceableCompositeType.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    uint64_t,
+    uint32_t,
+    LLVMDIFlags,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateBitFieldMemberType = _libraries['llvm'].LLVMDIBuilderCreateBitFieldMemberType
-    LLVMDIBuilderCreateBitFieldMemberType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateBitFieldMemberType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, uint64_t, uint64_t, uint64_t, LLVMDIFlags, LLVMMetadataRef]
+  LLVMDIBuilderCreateBitFieldMemberType = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateBitFieldMemberType
+  LLVMDIBuilderCreateBitFieldMemberType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateBitFieldMemberType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    uint64_t,
+    uint64_t,
+    uint64_t,
+    LLVMDIFlags,
+    LLVMMetadataRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateClassType = _libraries['llvm'].LLVMDIBuilderCreateClassType
-    LLVMDIBuilderCreateClassType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateClassType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, uint64_t, uint32_t, uint64_t, LLVMDIFlags, LLVMMetadataRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), ctypes.c_uint32, LLVMMetadataRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDIBuilderCreateClassType = _libraries["llvm"].LLVMDIBuilderCreateClassType
+  LLVMDIBuilderCreateClassType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateClassType.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    uint64_t,
+    uint32_t,
+    uint64_t,
+    LLVMDIFlags,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateArtificialType = _libraries['llvm'].LLVMDIBuilderCreateArtificialType
-    LLVMDIBuilderCreateArtificialType.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateArtificialType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef]
+  LLVMDIBuilderCreateArtificialType = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateArtificialType
+  LLVMDIBuilderCreateArtificialType.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateArtificialType.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDITypeGetName = _libraries['llvm'].LLVMDITypeGetName
-    LLVMDITypeGetName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMDITypeGetName.argtypes = [LLVMMetadataRef, ctypes.POINTER(ctypes.c_uint64)]
+  LLVMDITypeGetName = _libraries["llvm"].LLVMDITypeGetName
+  LLVMDITypeGetName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMDITypeGetName.argtypes = [LLVMMetadataRef, ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDITypeGetSizeInBits = _libraries['llvm'].LLVMDITypeGetSizeInBits
-    LLVMDITypeGetSizeInBits.restype = uint64_t
-    LLVMDITypeGetSizeInBits.argtypes = [LLVMMetadataRef]
+  LLVMDITypeGetSizeInBits = _libraries["llvm"].LLVMDITypeGetSizeInBits
+  LLVMDITypeGetSizeInBits.restype = uint64_t
+  LLVMDITypeGetSizeInBits.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDITypeGetOffsetInBits = _libraries['llvm'].LLVMDITypeGetOffsetInBits
-    LLVMDITypeGetOffsetInBits.restype = uint64_t
-    LLVMDITypeGetOffsetInBits.argtypes = [LLVMMetadataRef]
+  LLVMDITypeGetOffsetInBits = _libraries["llvm"].LLVMDITypeGetOffsetInBits
+  LLVMDITypeGetOffsetInBits.restype = uint64_t
+  LLVMDITypeGetOffsetInBits.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDITypeGetAlignInBits = _libraries['llvm'].LLVMDITypeGetAlignInBits
-    LLVMDITypeGetAlignInBits.restype = uint32_t
-    LLVMDITypeGetAlignInBits.argtypes = [LLVMMetadataRef]
+  LLVMDITypeGetAlignInBits = _libraries["llvm"].LLVMDITypeGetAlignInBits
+  LLVMDITypeGetAlignInBits.restype = uint32_t
+  LLVMDITypeGetAlignInBits.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDITypeGetLine = _libraries['llvm'].LLVMDITypeGetLine
-    LLVMDITypeGetLine.restype = ctypes.c_uint32
-    LLVMDITypeGetLine.argtypes = [LLVMMetadataRef]
+  LLVMDITypeGetLine = _libraries["llvm"].LLVMDITypeGetLine
+  LLVMDITypeGetLine.restype = ctypes.c_uint32
+  LLVMDITypeGetLine.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDITypeGetFlags = _libraries['llvm'].LLVMDITypeGetFlags
-    LLVMDITypeGetFlags.restype = LLVMDIFlags
-    LLVMDITypeGetFlags.argtypes = [LLVMMetadataRef]
+  LLVMDITypeGetFlags = _libraries["llvm"].LLVMDITypeGetFlags
+  LLVMDITypeGetFlags.restype = LLVMDIFlags
+  LLVMDITypeGetFlags.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderGetOrCreateSubrange = _libraries['llvm'].LLVMDIBuilderGetOrCreateSubrange
-    LLVMDIBuilderGetOrCreateSubrange.restype = LLVMMetadataRef
-    LLVMDIBuilderGetOrCreateSubrange.argtypes = [LLVMDIBuilderRef, int64_t, int64_t]
+  LLVMDIBuilderGetOrCreateSubrange = _libraries["llvm"].LLVMDIBuilderGetOrCreateSubrange
+  LLVMDIBuilderGetOrCreateSubrange.restype = LLVMMetadataRef
+  LLVMDIBuilderGetOrCreateSubrange.argtypes = [LLVMDIBuilderRef, int64_t, int64_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderGetOrCreateArray = _libraries['llvm'].LLVMDIBuilderGetOrCreateArray
-    LLVMDIBuilderGetOrCreateArray.restype = LLVMMetadataRef
-    LLVMDIBuilderGetOrCreateArray.argtypes = [LLVMDIBuilderRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), size_t]
+  LLVMDIBuilderGetOrCreateArray = _libraries["llvm"].LLVMDIBuilderGetOrCreateArray
+  LLVMDIBuilderGetOrCreateArray.restype = LLVMMetadataRef
+  LLVMDIBuilderGetOrCreateArray.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateExpression = _libraries['llvm'].LLVMDIBuilderCreateExpression
-    LLVMDIBuilderCreateExpression.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateExpression.argtypes = [LLVMDIBuilderRef, ctypes.POINTER(ctypes.c_uint64), size_t]
+  LLVMDIBuilderCreateExpression = _libraries["llvm"].LLVMDIBuilderCreateExpression
+  LLVMDIBuilderCreateExpression.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateExpression.argtypes = [
+    LLVMDIBuilderRef,
+    ctypes.POINTER(ctypes.c_uint64),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateConstantValueExpression = _libraries['llvm'].LLVMDIBuilderCreateConstantValueExpression
-    LLVMDIBuilderCreateConstantValueExpression.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateConstantValueExpression.argtypes = [LLVMDIBuilderRef, uint64_t]
+  LLVMDIBuilderCreateConstantValueExpression = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateConstantValueExpression
+  LLVMDIBuilderCreateConstantValueExpression.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateConstantValueExpression.argtypes = [LLVMDIBuilderRef, uint64_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateGlobalVariableExpression = _libraries['llvm'].LLVMDIBuilderCreateGlobalVariableExpression
-    LLVMDIBuilderCreateGlobalVariableExpression.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateGlobalVariableExpression.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, LLVMMetadataRef, LLVMBool, LLVMMetadataRef, LLVMMetadataRef, uint32_t]
+  LLVMDIBuilderCreateGlobalVariableExpression = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateGlobalVariableExpression
+  LLVMDIBuilderCreateGlobalVariableExpression.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateGlobalVariableExpression.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    LLVMBool,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    uint32_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIGlobalVariableExpressionGetVariable = _libraries['llvm'].LLVMDIGlobalVariableExpressionGetVariable
-    LLVMDIGlobalVariableExpressionGetVariable.restype = LLVMMetadataRef
-    LLVMDIGlobalVariableExpressionGetVariable.argtypes = [LLVMMetadataRef]
+  LLVMDIGlobalVariableExpressionGetVariable = _libraries[
+    "llvm"
+  ].LLVMDIGlobalVariableExpressionGetVariable
+  LLVMDIGlobalVariableExpressionGetVariable.restype = LLVMMetadataRef
+  LLVMDIGlobalVariableExpressionGetVariable.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIGlobalVariableExpressionGetExpression = _libraries['llvm'].LLVMDIGlobalVariableExpressionGetExpression
-    LLVMDIGlobalVariableExpressionGetExpression.restype = LLVMMetadataRef
-    LLVMDIGlobalVariableExpressionGetExpression.argtypes = [LLVMMetadataRef]
+  LLVMDIGlobalVariableExpressionGetExpression = _libraries[
+    "llvm"
+  ].LLVMDIGlobalVariableExpressionGetExpression
+  LLVMDIGlobalVariableExpressionGetExpression.restype = LLVMMetadataRef
+  LLVMDIGlobalVariableExpressionGetExpression.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIVariableGetFile = _libraries['llvm'].LLVMDIVariableGetFile
-    LLVMDIVariableGetFile.restype = LLVMMetadataRef
-    LLVMDIVariableGetFile.argtypes = [LLVMMetadataRef]
+  LLVMDIVariableGetFile = _libraries["llvm"].LLVMDIVariableGetFile
+  LLVMDIVariableGetFile.restype = LLVMMetadataRef
+  LLVMDIVariableGetFile.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIVariableGetScope = _libraries['llvm'].LLVMDIVariableGetScope
-    LLVMDIVariableGetScope.restype = LLVMMetadataRef
-    LLVMDIVariableGetScope.argtypes = [LLVMMetadataRef]
+  LLVMDIVariableGetScope = _libraries["llvm"].LLVMDIVariableGetScope
+  LLVMDIVariableGetScope.restype = LLVMMetadataRef
+  LLVMDIVariableGetScope.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIVariableGetLine = _libraries['llvm'].LLVMDIVariableGetLine
-    LLVMDIVariableGetLine.restype = ctypes.c_uint32
-    LLVMDIVariableGetLine.argtypes = [LLVMMetadataRef]
+  LLVMDIVariableGetLine = _libraries["llvm"].LLVMDIVariableGetLine
+  LLVMDIVariableGetLine.restype = ctypes.c_uint32
+  LLVMDIVariableGetLine.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMTemporaryMDNode = _libraries['llvm'].LLVMTemporaryMDNode
-    LLVMTemporaryMDNode.restype = LLVMMetadataRef
-    LLVMTemporaryMDNode.argtypes = [LLVMContextRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)), size_t]
+  LLVMTemporaryMDNode = _libraries["llvm"].LLVMTemporaryMDNode
+  LLVMTemporaryMDNode.restype = LLVMMetadataRef
+  LLVMTemporaryMDNode.argtypes = [
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMetadata)),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeTemporaryMDNode = _libraries['llvm'].LLVMDisposeTemporaryMDNode
-    LLVMDisposeTemporaryMDNode.restype = None
-    LLVMDisposeTemporaryMDNode.argtypes = [LLVMMetadataRef]
+  LLVMDisposeTemporaryMDNode = _libraries["llvm"].LLVMDisposeTemporaryMDNode
+  LLVMDisposeTemporaryMDNode.restype = None
+  LLVMDisposeTemporaryMDNode.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMetadataReplaceAllUsesWith = _libraries['llvm'].LLVMMetadataReplaceAllUsesWith
-    LLVMMetadataReplaceAllUsesWith.restype = None
-    LLVMMetadataReplaceAllUsesWith.argtypes = [LLVMMetadataRef, LLVMMetadataRef]
+  LLVMMetadataReplaceAllUsesWith = _libraries["llvm"].LLVMMetadataReplaceAllUsesWith
+  LLVMMetadataReplaceAllUsesWith.restype = None
+  LLVMMetadataReplaceAllUsesWith.argtypes = [LLVMMetadataRef, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateTempGlobalVariableFwdDecl = _libraries['llvm'].LLVMDIBuilderCreateTempGlobalVariableFwdDecl
-    LLVMDIBuilderCreateTempGlobalVariableFwdDecl.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateTempGlobalVariableFwdDecl.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, LLVMMetadataRef, LLVMBool, LLVMMetadataRef, uint32_t]
+  LLVMDIBuilderCreateTempGlobalVariableFwdDecl = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateTempGlobalVariableFwdDecl
+  LLVMDIBuilderCreateTempGlobalVariableFwdDecl.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateTempGlobalVariableFwdDecl.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    LLVMBool,
+    LLVMMetadataRef,
+    uint32_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderInsertDeclareBefore = _libraries['llvm'].LLVMDIBuilderInsertDeclareBefore
-    LLVMDIBuilderInsertDeclareBefore.restype = LLVMValueRef
-    LLVMDIBuilderInsertDeclareBefore.argtypes = [LLVMDIBuilderRef, LLVMValueRef, LLVMMetadataRef, LLVMMetadataRef, LLVMMetadataRef, LLVMValueRef]
+  LLVMDIBuilderInsertDeclareBefore = _libraries["llvm"].LLVMDIBuilderInsertDeclareBefore
+  LLVMDIBuilderInsertDeclareBefore.restype = LLVMValueRef
+  LLVMDIBuilderInsertDeclareBefore.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMValueRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMValueRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderInsertDeclareAtEnd = _libraries['llvm'].LLVMDIBuilderInsertDeclareAtEnd
-    LLVMDIBuilderInsertDeclareAtEnd.restype = LLVMValueRef
-    LLVMDIBuilderInsertDeclareAtEnd.argtypes = [LLVMDIBuilderRef, LLVMValueRef, LLVMMetadataRef, LLVMMetadataRef, LLVMMetadataRef, LLVMBasicBlockRef]
+  LLVMDIBuilderInsertDeclareAtEnd = _libraries["llvm"].LLVMDIBuilderInsertDeclareAtEnd
+  LLVMDIBuilderInsertDeclareAtEnd.restype = LLVMValueRef
+  LLVMDIBuilderInsertDeclareAtEnd.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMValueRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMBasicBlockRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderInsertDbgValueBefore = _libraries['llvm'].LLVMDIBuilderInsertDbgValueBefore
-    LLVMDIBuilderInsertDbgValueBefore.restype = LLVMValueRef
-    LLVMDIBuilderInsertDbgValueBefore.argtypes = [LLVMDIBuilderRef, LLVMValueRef, LLVMMetadataRef, LLVMMetadataRef, LLVMMetadataRef, LLVMValueRef]
+  LLVMDIBuilderInsertDbgValueBefore = _libraries[
+    "llvm"
+  ].LLVMDIBuilderInsertDbgValueBefore
+  LLVMDIBuilderInsertDbgValueBefore.restype = LLVMValueRef
+  LLVMDIBuilderInsertDbgValueBefore.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMValueRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMValueRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderInsertDbgValueAtEnd = _libraries['llvm'].LLVMDIBuilderInsertDbgValueAtEnd
-    LLVMDIBuilderInsertDbgValueAtEnd.restype = LLVMValueRef
-    LLVMDIBuilderInsertDbgValueAtEnd.argtypes = [LLVMDIBuilderRef, LLVMValueRef, LLVMMetadataRef, LLVMMetadataRef, LLVMMetadataRef, LLVMBasicBlockRef]
+  LLVMDIBuilderInsertDbgValueAtEnd = _libraries["llvm"].LLVMDIBuilderInsertDbgValueAtEnd
+  LLVMDIBuilderInsertDbgValueAtEnd.restype = LLVMValueRef
+  LLVMDIBuilderInsertDbgValueAtEnd.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMValueRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMMetadataRef,
+    LLVMBasicBlockRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateAutoVariable = _libraries['llvm'].LLVMDIBuilderCreateAutoVariable
-    LLVMDIBuilderCreateAutoVariable.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateAutoVariable.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, LLVMMetadataRef, ctypes.c_uint32, LLVMMetadataRef, LLVMBool, LLVMDIFlags, uint32_t]
+  LLVMDIBuilderCreateAutoVariable = _libraries["llvm"].LLVMDIBuilderCreateAutoVariable
+  LLVMDIBuilderCreateAutoVariable.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateAutoVariable.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    LLVMBool,
+    LLVMDIFlags,
+    uint32_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDIBuilderCreateParameterVariable = _libraries['llvm'].LLVMDIBuilderCreateParameterVariable
-    LLVMDIBuilderCreateParameterVariable.restype = LLVMMetadataRef
-    LLVMDIBuilderCreateParameterVariable.argtypes = [LLVMDIBuilderRef, LLVMMetadataRef, ctypes.POINTER(ctypes.c_char), size_t, ctypes.c_uint32, LLVMMetadataRef, ctypes.c_uint32, LLVMMetadataRef, LLVMBool, LLVMDIFlags]
+  LLVMDIBuilderCreateParameterVariable = _libraries[
+    "llvm"
+  ].LLVMDIBuilderCreateParameterVariable
+  LLVMDIBuilderCreateParameterVariable.restype = LLVMMetadataRef
+  LLVMDIBuilderCreateParameterVariable.argtypes = [
+    LLVMDIBuilderRef,
+    LLVMMetadataRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    ctypes.c_uint32,
+    LLVMMetadataRef,
+    LLVMBool,
+    LLVMDIFlags,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSubprogram = _libraries['llvm'].LLVMGetSubprogram
-    LLVMGetSubprogram.restype = LLVMMetadataRef
-    LLVMGetSubprogram.argtypes = [LLVMValueRef]
+  LLVMGetSubprogram = _libraries["llvm"].LLVMGetSubprogram
+  LLVMGetSubprogram.restype = LLVMMetadataRef
+  LLVMGetSubprogram.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetSubprogram = _libraries['llvm'].LLVMSetSubprogram
-    LLVMSetSubprogram.restype = None
-    LLVMSetSubprogram.argtypes = [LLVMValueRef, LLVMMetadataRef]
+  LLVMSetSubprogram = _libraries["llvm"].LLVMSetSubprogram
+  LLVMSetSubprogram.restype = None
+  LLVMSetSubprogram.argtypes = [LLVMValueRef, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDISubprogramGetLine = _libraries['llvm'].LLVMDISubprogramGetLine
-    LLVMDISubprogramGetLine.restype = ctypes.c_uint32
-    LLVMDISubprogramGetLine.argtypes = [LLVMMetadataRef]
+  LLVMDISubprogramGetLine = _libraries["llvm"].LLVMDISubprogramGetLine
+  LLVMDISubprogramGetLine.restype = ctypes.c_uint32
+  LLVMDISubprogramGetLine.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInstructionGetDebugLoc = _libraries['llvm'].LLVMInstructionGetDebugLoc
-    LLVMInstructionGetDebugLoc.restype = LLVMMetadataRef
-    LLVMInstructionGetDebugLoc.argtypes = [LLVMValueRef]
+  LLVMInstructionGetDebugLoc = _libraries["llvm"].LLVMInstructionGetDebugLoc
+  LLVMInstructionGetDebugLoc.restype = LLVMMetadataRef
+  LLVMInstructionGetDebugLoc.argtypes = [LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInstructionSetDebugLoc = _libraries['llvm'].LLVMInstructionSetDebugLoc
-    LLVMInstructionSetDebugLoc.restype = None
-    LLVMInstructionSetDebugLoc.argtypes = [LLVMValueRef, LLVMMetadataRef]
+  LLVMInstructionSetDebugLoc = _libraries["llvm"].LLVMInstructionSetDebugLoc
+  LLVMInstructionSetDebugLoc.restype = None
+  LLVMInstructionSetDebugLoc.argtypes = [LLVMValueRef, LLVMMetadataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetMetadataKind = _libraries['llvm'].LLVMGetMetadataKind
-    LLVMGetMetadataKind.restype = LLVMMetadataKind
-    LLVMGetMetadataKind.argtypes = [LLVMMetadataRef]
+  LLVMGetMetadataKind = _libraries["llvm"].LLVMGetMetadataKind
+  LLVMGetMetadataKind.restype = LLVMMetadataKind
+  LLVMGetMetadataKind.argtypes = [LLVMMetadataRef]
 except AttributeError:
-    pass
-LLVM_C_DISASSEMBLER_H = True # macro
-LLVM_C_DISASSEMBLERTYPES_H = True # macro
-LLVMDisassembler_VariantKind_None = 0 # macro
-LLVMDisassembler_VariantKind_ARM_HI16 = 1 # macro
-LLVMDisassembler_VariantKind_ARM_LO16 = 2 # macro
-LLVMDisassembler_VariantKind_ARM64_PAGE = 1 # macro
-LLVMDisassembler_VariantKind_ARM64_PAGEOFF = 2 # macro
-LLVMDisassembler_VariantKind_ARM64_GOTPAGE = 3 # macro
-LLVMDisassembler_VariantKind_ARM64_GOTPAGEOFF = 4 # macro
-LLVMDisassembler_VariantKind_ARM64_TLVP = 5 # macro
-LLVMDisassembler_VariantKind_ARM64_TLVOFF = 6 # macro
-LLVMDisassembler_ReferenceType_InOut_None = 0 # macro
-LLVMDisassembler_ReferenceType_In_Branch = 1 # macro
-LLVMDisassembler_ReferenceType_In_PCrel_Load = 2 # macro
-LLVMDisassembler_ReferenceType_In_ARM64_ADRP = 0x100000001 # macro
-LLVMDisassembler_ReferenceType_In_ARM64_ADDXri = 0x100000002 # macro
-LLVMDisassembler_ReferenceType_In_ARM64_LDRXui = 0x100000003 # macro
-LLVMDisassembler_ReferenceType_In_ARM64_LDRXl = 0x100000004 # macro
-LLVMDisassembler_ReferenceType_In_ARM64_ADR = 0x100000005 # macro
-LLVMDisassembler_ReferenceType_Out_SymbolStub = 1 # macro
-LLVMDisassembler_ReferenceType_Out_LitPool_SymAddr = 2 # macro
-LLVMDisassembler_ReferenceType_Out_LitPool_CstrAddr = 3 # macro
-LLVMDisassembler_ReferenceType_Out_Objc_CFString_Ref = 4 # macro
-LLVMDisassembler_ReferenceType_Out_Objc_Message = 5 # macro
-LLVMDisassembler_ReferenceType_Out_Objc_Message_Ref = 6 # macro
-LLVMDisassembler_ReferenceType_Out_Objc_Selector_Ref = 7 # macro
-LLVMDisassembler_ReferenceType_Out_Objc_Class_Ref = 8 # macro
-LLVMDisassembler_ReferenceType_DeMangled_Name = 9 # macro
-LLVMDisassembler_Option_UseMarkup = 1 # macro
-LLVMDisassembler_Option_PrintImmHex = 2 # macro
-LLVMDisassembler_Option_AsmPrinterVariant = 4 # macro
-LLVMDisassembler_Option_SetInstrComments = 8 # macro
-LLVMDisassembler_Option_PrintLatency = 16 # macro
+  pass
+LLVM_C_DISASSEMBLER_H = True  # macro
+LLVM_C_DISASSEMBLERTYPES_H = True  # macro
+LLVMDisassembler_VariantKind_None = 0  # macro
+LLVMDisassembler_VariantKind_ARM_HI16 = 1  # macro
+LLVMDisassembler_VariantKind_ARM_LO16 = 2  # macro
+LLVMDisassembler_VariantKind_ARM64_PAGE = 1  # macro
+LLVMDisassembler_VariantKind_ARM64_PAGEOFF = 2  # macro
+LLVMDisassembler_VariantKind_ARM64_GOTPAGE = 3  # macro
+LLVMDisassembler_VariantKind_ARM64_GOTPAGEOFF = 4  # macro
+LLVMDisassembler_VariantKind_ARM64_TLVP = 5  # macro
+LLVMDisassembler_VariantKind_ARM64_TLVOFF = 6  # macro
+LLVMDisassembler_ReferenceType_InOut_None = 0  # macro
+LLVMDisassembler_ReferenceType_In_Branch = 1  # macro
+LLVMDisassembler_ReferenceType_In_PCrel_Load = 2  # macro
+LLVMDisassembler_ReferenceType_In_ARM64_ADRP = 0x100000001  # macro
+LLVMDisassembler_ReferenceType_In_ARM64_ADDXri = 0x100000002  # macro
+LLVMDisassembler_ReferenceType_In_ARM64_LDRXui = 0x100000003  # macro
+LLVMDisassembler_ReferenceType_In_ARM64_LDRXl = 0x100000004  # macro
+LLVMDisassembler_ReferenceType_In_ARM64_ADR = 0x100000005  # macro
+LLVMDisassembler_ReferenceType_Out_SymbolStub = 1  # macro
+LLVMDisassembler_ReferenceType_Out_LitPool_SymAddr = 2  # macro
+LLVMDisassembler_ReferenceType_Out_LitPool_CstrAddr = 3  # macro
+LLVMDisassembler_ReferenceType_Out_Objc_CFString_Ref = 4  # macro
+LLVMDisassembler_ReferenceType_Out_Objc_Message = 5  # macro
+LLVMDisassembler_ReferenceType_Out_Objc_Message_Ref = 6  # macro
+LLVMDisassembler_ReferenceType_Out_Objc_Selector_Ref = 7  # macro
+LLVMDisassembler_ReferenceType_Out_Objc_Class_Ref = 8  # macro
+LLVMDisassembler_ReferenceType_DeMangled_Name = 9  # macro
+LLVMDisassembler_Option_UseMarkup = 1  # macro
+LLVMDisassembler_Option_PrintImmHex = 2  # macro
+LLVMDisassembler_Option_AsmPrinterVariant = 4  # macro
+LLVMDisassembler_Option_SetInstrComments = 8  # macro
+LLVMDisassembler_Option_PrintLatency = 16  # macro
 LLVMDisasmContextRef = ctypes.POINTER(None)
-LLVMOpInfoCallback = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.POINTER(None), ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_int32, ctypes.POINTER(None))
-class struct_LLVMOpInfoSymbol1(Structure):
-    pass
+LLVMOpInfoCallback = ctypes.CFUNCTYPE(
+  ctypes.c_int32,
+  ctypes.POINTER(None),
+  ctypes.c_uint64,
+  ctypes.c_uint64,
+  ctypes.c_uint64,
+  ctypes.c_int32,
+  ctypes.POINTER(None),
+)
 
-struct_LLVMOpInfoSymbol1._pack_ = 1 # source:False
+
+class struct_LLVMOpInfoSymbol1(Structure):
+  pass
+
+
+struct_LLVMOpInfoSymbol1._pack_ = 1  # source:False
 struct_LLVMOpInfoSymbol1._fields_ = [
-    ('Present', ctypes.c_uint64),
-    ('Name', ctypes.POINTER(ctypes.c_char)),
-    ('Value', ctypes.c_uint64),
+  ("Present", ctypes.c_uint64),
+  ("Name", ctypes.POINTER(ctypes.c_char)),
+  ("Value", ctypes.c_uint64),
 ]
+
 
 class struct_LLVMOpInfo1(Structure):
-    pass
+  pass
 
-struct_LLVMOpInfo1._pack_ = 1 # source:False
+
+struct_LLVMOpInfo1._pack_ = 1  # source:False
 struct_LLVMOpInfo1._fields_ = [
-    ('AddSymbol', struct_LLVMOpInfoSymbol1),
-    ('SubtractSymbol', struct_LLVMOpInfoSymbol1),
-    ('Value', ctypes.c_uint64),
-    ('VariantKind', ctypes.c_uint64),
+  ("AddSymbol", struct_LLVMOpInfoSymbol1),
+  ("SubtractSymbol", struct_LLVMOpInfoSymbol1),
+  ("Value", ctypes.c_uint64),
+  ("VariantKind", ctypes.c_uint64),
 ]
 
-LLVMSymbolLookupCallback = ctypes.CFUNCTYPE(ctypes.POINTER(ctypes.c_char), ctypes.POINTER(None), ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64), ctypes.c_uint64, ctypes.POINTER(ctypes.POINTER(ctypes.c_char)))
+LLVMSymbolLookupCallback = ctypes.CFUNCTYPE(
+  ctypes.POINTER(ctypes.c_char),
+  ctypes.POINTER(None),
+  ctypes.c_uint64,
+  ctypes.POINTER(ctypes.c_uint64),
+  ctypes.c_uint64,
+  ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+)
 try:
-    LLVMCreateDisasm = _libraries['llvm'].LLVMCreateDisasm
-    LLVMCreateDisasm.restype = LLVMDisasmContextRef
-    LLVMCreateDisasm.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(None), ctypes.c_int32, LLVMOpInfoCallback, LLVMSymbolLookupCallback]
+  LLVMCreateDisasm = _libraries["llvm"].LLVMCreateDisasm
+  LLVMCreateDisasm.restype = LLVMDisasmContextRef
+  LLVMCreateDisasm.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(None),
+    ctypes.c_int32,
+    LLVMOpInfoCallback,
+    LLVMSymbolLookupCallback,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateDisasmCPU = _libraries['llvm'].LLVMCreateDisasmCPU
-    LLVMCreateDisasmCPU.restype = LLVMDisasmContextRef
-    LLVMCreateDisasmCPU.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char), ctypes.POINTER(None), ctypes.c_int32, LLVMOpInfoCallback, LLVMSymbolLookupCallback]
+  LLVMCreateDisasmCPU = _libraries["llvm"].LLVMCreateDisasmCPU
+  LLVMCreateDisasmCPU.restype = LLVMDisasmContextRef
+  LLVMCreateDisasmCPU.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(None),
+    ctypes.c_int32,
+    LLVMOpInfoCallback,
+    LLVMSymbolLookupCallback,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateDisasmCPUFeatures = _libraries['llvm'].LLVMCreateDisasmCPUFeatures
-    LLVMCreateDisasmCPUFeatures.restype = LLVMDisasmContextRef
-    LLVMCreateDisasmCPUFeatures.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char), ctypes.POINTER(None), ctypes.c_int32, LLVMOpInfoCallback, LLVMSymbolLookupCallback]
+  LLVMCreateDisasmCPUFeatures = _libraries["llvm"].LLVMCreateDisasmCPUFeatures
+  LLVMCreateDisasmCPUFeatures.restype = LLVMDisasmContextRef
+  LLVMCreateDisasmCPUFeatures.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(None),
+    ctypes.c_int32,
+    LLVMOpInfoCallback,
+    LLVMSymbolLookupCallback,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetDisasmOptions = _libraries['llvm'].LLVMSetDisasmOptions
-    LLVMSetDisasmOptions.restype = ctypes.c_int32
-    LLVMSetDisasmOptions.argtypes = [LLVMDisasmContextRef, uint64_t]
+  LLVMSetDisasmOptions = _libraries["llvm"].LLVMSetDisasmOptions
+  LLVMSetDisasmOptions.restype = ctypes.c_int32
+  LLVMSetDisasmOptions.argtypes = [LLVMDisasmContextRef, uint64_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisasmDispose = _libraries['llvm'].LLVMDisasmDispose
-    LLVMDisasmDispose.restype = None
-    LLVMDisasmDispose.argtypes = [LLVMDisasmContextRef]
+  LLVMDisasmDispose = _libraries["llvm"].LLVMDisasmDispose
+  LLVMDisasmDispose.restype = None
+  LLVMDisasmDispose.argtypes = [LLVMDisasmContextRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisasmInstruction = _libraries['llvm'].LLVMDisasmInstruction
-    LLVMDisasmInstruction.restype = size_t
-    LLVMDisasmInstruction.argtypes = [LLVMDisasmContextRef, ctypes.POINTER(ctypes.c_ubyte), uint64_t, uint64_t, ctypes.POINTER(ctypes.c_char), size_t]
+  LLVMDisasmInstruction = _libraries["llvm"].LLVMDisasmInstruction
+  LLVMDisasmInstruction.restype = size_t
+  LLVMDisasmInstruction.argtypes = [
+    LLVMDisasmContextRef,
+    ctypes.POINTER(ctypes.c_ubyte),
+    uint64_t,
+    uint64_t,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
-LLVM_C_ERROR_H = True # macro
-LLVMErrorSuccess = 0 # macro
+  pass
+LLVM_C_ERROR_H = True  # macro
+LLVMErrorSuccess = 0  # macro
+
+
 class struct_LLVMOpaqueError(Structure):
-    pass
+  pass
+
 
 LLVMErrorRef = ctypes.POINTER(struct_LLVMOpaqueError)
 LLVMErrorTypeId = ctypes.POINTER(None)
 try:
-    LLVMGetErrorTypeId = _libraries['llvm'].LLVMGetErrorTypeId
-    LLVMGetErrorTypeId.restype = LLVMErrorTypeId
-    LLVMGetErrorTypeId.argtypes = [LLVMErrorRef]
+  LLVMGetErrorTypeId = _libraries["llvm"].LLVMGetErrorTypeId
+  LLVMGetErrorTypeId.restype = LLVMErrorTypeId
+  LLVMGetErrorTypeId.argtypes = [LLVMErrorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMConsumeError = _libraries['llvm'].LLVMConsumeError
-    LLVMConsumeError.restype = None
-    LLVMConsumeError.argtypes = [LLVMErrorRef]
+  LLVMConsumeError = _libraries["llvm"].LLVMConsumeError
+  LLVMConsumeError.restype = None
+  LLVMConsumeError.argtypes = [LLVMErrorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetErrorMessage = _libraries['llvm'].LLVMGetErrorMessage
-    LLVMGetErrorMessage.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetErrorMessage.argtypes = [LLVMErrorRef]
+  LLVMGetErrorMessage = _libraries["llvm"].LLVMGetErrorMessage
+  LLVMGetErrorMessage.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetErrorMessage.argtypes = [LLVMErrorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeErrorMessage = _libraries['llvm'].LLVMDisposeErrorMessage
-    LLVMDisposeErrorMessage.restype = None
-    LLVMDisposeErrorMessage.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMDisposeErrorMessage = _libraries["llvm"].LLVMDisposeErrorMessage
+  LLVMDisposeErrorMessage.restype = None
+  LLVMDisposeErrorMessage.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetStringErrorTypeId = _libraries['llvm'].LLVMGetStringErrorTypeId
-    LLVMGetStringErrorTypeId.restype = LLVMErrorTypeId
-    LLVMGetStringErrorTypeId.argtypes = []
+  LLVMGetStringErrorTypeId = _libraries["llvm"].LLVMGetStringErrorTypeId
+  LLVMGetStringErrorTypeId.restype = LLVMErrorTypeId
+  LLVMGetStringErrorTypeId.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateStringError = _libraries['llvm'].LLVMCreateStringError
-    LLVMCreateStringError.restype = LLVMErrorRef
-    LLVMCreateStringError.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMCreateStringError = _libraries["llvm"].LLVMCreateStringError
+  LLVMCreateStringError.restype = LLVMErrorRef
+  LLVMCreateStringError.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
-LLVM_C_EXECUTIONENGINE_H = True # macro
-LLVM_C_TARGET_H = True # macro
+  pass
+LLVM_C_EXECUTIONENGINE_H = True  # macro
+LLVM_C_TARGET_H = True  # macro
 # def LLVM_TARGET(TargetName):  # macro
 #    return LLVMInitialize##TargetName##TargetMC;
 # def LLVM_ASM_PRINTER(TargetName):  # macro
@@ -6303,915 +7868,949 @@ LLVM_C_TARGET_H = True # macro
 #    return LLVMInitialize##TargetName##AsmParser;
 # def LLVM_DISASSEMBLER(TargetName):  # macro
 #    return LLVMInitialize##TargetName##Disassembler;
-LLVM_C_TARGETMACHINE_H = True # macro
+LLVM_C_TARGETMACHINE_H = True  # macro
 
 # values for enumeration 'LLVMByteOrdering'
 LLVMByteOrdering__enumvalues = {
-    0: 'LLVMBigEndian',
-    1: 'LLVMLittleEndian',
+  0: "LLVMBigEndian",
+  1: "LLVMLittleEndian",
 }
 LLVMBigEndian = 0
 LLVMLittleEndian = 1
-LLVMByteOrdering = ctypes.c_uint32 # enum
+LLVMByteOrdering = ctypes.c_uint32  # enum
+
+
 class struct_LLVMOpaqueTargetData(Structure):
-    pass
+  pass
+
 
 LLVMTargetDataRef = ctypes.POINTER(struct_LLVMOpaqueTargetData)
+
+
 class struct_LLVMOpaqueTargetLibraryInfotData(Structure):
-    pass
+  pass
+
 
 LLVMTargetLibraryInfoRef = ctypes.POINTER(struct_LLVMOpaqueTargetLibraryInfotData)
 try:
-    LLVMInitializeAArch64TargetInfo = _libraries['llvm'].LLVMInitializeAArch64TargetInfo
-    LLVMInitializeAArch64TargetInfo.restype = None
-    LLVMInitializeAArch64TargetInfo.argtypes = []
+  LLVMInitializeAArch64TargetInfo = _libraries["llvm"].LLVMInitializeAArch64TargetInfo
+  LLVMInitializeAArch64TargetInfo.restype = None
+  LLVMInitializeAArch64TargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAMDGPUTargetInfo = _libraries['llvm'].LLVMInitializeAMDGPUTargetInfo
-    LLVMInitializeAMDGPUTargetInfo.restype = None
-    LLVMInitializeAMDGPUTargetInfo.argtypes = []
+  LLVMInitializeAMDGPUTargetInfo = _libraries["llvm"].LLVMInitializeAMDGPUTargetInfo
+  LLVMInitializeAMDGPUTargetInfo.restype = None
+  LLVMInitializeAMDGPUTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeARMTargetInfo = _libraries['llvm'].LLVMInitializeARMTargetInfo
-    LLVMInitializeARMTargetInfo.restype = None
-    LLVMInitializeARMTargetInfo.argtypes = []
+  LLVMInitializeARMTargetInfo = _libraries["llvm"].LLVMInitializeARMTargetInfo
+  LLVMInitializeARMTargetInfo.restype = None
+  LLVMInitializeARMTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAVRTargetInfo = _libraries['llvm'].LLVMInitializeAVRTargetInfo
-    LLVMInitializeAVRTargetInfo.restype = None
-    LLVMInitializeAVRTargetInfo.argtypes = []
+  LLVMInitializeAVRTargetInfo = _libraries["llvm"].LLVMInitializeAVRTargetInfo
+  LLVMInitializeAVRTargetInfo.restype = None
+  LLVMInitializeAVRTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeBPFTargetInfo = _libraries['llvm'].LLVMInitializeBPFTargetInfo
-    LLVMInitializeBPFTargetInfo.restype = None
-    LLVMInitializeBPFTargetInfo.argtypes = []
+  LLVMInitializeBPFTargetInfo = _libraries["llvm"].LLVMInitializeBPFTargetInfo
+  LLVMInitializeBPFTargetInfo.restype = None
+  LLVMInitializeBPFTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeHexagonTargetInfo = _libraries['llvm'].LLVMInitializeHexagonTargetInfo
-    LLVMInitializeHexagonTargetInfo.restype = None
-    LLVMInitializeHexagonTargetInfo.argtypes = []
+  LLVMInitializeHexagonTargetInfo = _libraries["llvm"].LLVMInitializeHexagonTargetInfo
+  LLVMInitializeHexagonTargetInfo.restype = None
+  LLVMInitializeHexagonTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeLanaiTargetInfo = _libraries['llvm'].LLVMInitializeLanaiTargetInfo
-    LLVMInitializeLanaiTargetInfo.restype = None
-    LLVMInitializeLanaiTargetInfo.argtypes = []
+  LLVMInitializeLanaiTargetInfo = _libraries["llvm"].LLVMInitializeLanaiTargetInfo
+  LLVMInitializeLanaiTargetInfo.restype = None
+  LLVMInitializeLanaiTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMipsTargetInfo = _libraries['llvm'].LLVMInitializeMipsTargetInfo
-    LLVMInitializeMipsTargetInfo.restype = None
-    LLVMInitializeMipsTargetInfo.argtypes = []
+  LLVMInitializeMipsTargetInfo = _libraries["llvm"].LLVMInitializeMipsTargetInfo
+  LLVMInitializeMipsTargetInfo.restype = None
+  LLVMInitializeMipsTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMSP430TargetInfo = _libraries['llvm'].LLVMInitializeMSP430TargetInfo
-    LLVMInitializeMSP430TargetInfo.restype = None
-    LLVMInitializeMSP430TargetInfo.argtypes = []
+  LLVMInitializeMSP430TargetInfo = _libraries["llvm"].LLVMInitializeMSP430TargetInfo
+  LLVMInitializeMSP430TargetInfo.restype = None
+  LLVMInitializeMSP430TargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeNVPTXTargetInfo = _libraries['llvm'].LLVMInitializeNVPTXTargetInfo
-    LLVMInitializeNVPTXTargetInfo.restype = None
-    LLVMInitializeNVPTXTargetInfo.argtypes = []
+  LLVMInitializeNVPTXTargetInfo = _libraries["llvm"].LLVMInitializeNVPTXTargetInfo
+  LLVMInitializeNVPTXTargetInfo.restype = None
+  LLVMInitializeNVPTXTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializePowerPCTargetInfo = _libraries['llvm'].LLVMInitializePowerPCTargetInfo
-    LLVMInitializePowerPCTargetInfo.restype = None
-    LLVMInitializePowerPCTargetInfo.argtypes = []
+  LLVMInitializePowerPCTargetInfo = _libraries["llvm"].LLVMInitializePowerPCTargetInfo
+  LLVMInitializePowerPCTargetInfo.restype = None
+  LLVMInitializePowerPCTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeRISCVTargetInfo = _libraries['llvm'].LLVMInitializeRISCVTargetInfo
-    LLVMInitializeRISCVTargetInfo.restype = None
-    LLVMInitializeRISCVTargetInfo.argtypes = []
+  LLVMInitializeRISCVTargetInfo = _libraries["llvm"].LLVMInitializeRISCVTargetInfo
+  LLVMInitializeRISCVTargetInfo.restype = None
+  LLVMInitializeRISCVTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSparcTargetInfo = _libraries['llvm'].LLVMInitializeSparcTargetInfo
-    LLVMInitializeSparcTargetInfo.restype = None
-    LLVMInitializeSparcTargetInfo.argtypes = []
+  LLVMInitializeSparcTargetInfo = _libraries["llvm"].LLVMInitializeSparcTargetInfo
+  LLVMInitializeSparcTargetInfo.restype = None
+  LLVMInitializeSparcTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSystemZTargetInfo = _libraries['llvm'].LLVMInitializeSystemZTargetInfo
-    LLVMInitializeSystemZTargetInfo.restype = None
-    LLVMInitializeSystemZTargetInfo.argtypes = []
+  LLVMInitializeSystemZTargetInfo = _libraries["llvm"].LLVMInitializeSystemZTargetInfo
+  LLVMInitializeSystemZTargetInfo.restype = None
+  LLVMInitializeSystemZTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeVETargetInfo = _libraries['llvm'].LLVMInitializeVETargetInfo
-    LLVMInitializeVETargetInfo.restype = None
-    LLVMInitializeVETargetInfo.argtypes = []
+  LLVMInitializeVETargetInfo = _libraries["llvm"].LLVMInitializeVETargetInfo
+  LLVMInitializeVETargetInfo.restype = None
+  LLVMInitializeVETargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeWebAssemblyTargetInfo = _libraries['llvm'].LLVMInitializeWebAssemblyTargetInfo
-    LLVMInitializeWebAssemblyTargetInfo.restype = None
-    LLVMInitializeWebAssemblyTargetInfo.argtypes = []
+  LLVMInitializeWebAssemblyTargetInfo = _libraries[
+    "llvm"
+  ].LLVMInitializeWebAssemblyTargetInfo
+  LLVMInitializeWebAssemblyTargetInfo.restype = None
+  LLVMInitializeWebAssemblyTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeX86TargetInfo = _libraries['llvm'].LLVMInitializeX86TargetInfo
-    LLVMInitializeX86TargetInfo.restype = None
-    LLVMInitializeX86TargetInfo.argtypes = []
+  LLVMInitializeX86TargetInfo = _libraries["llvm"].LLVMInitializeX86TargetInfo
+  LLVMInitializeX86TargetInfo.restype = None
+  LLVMInitializeX86TargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeXCoreTargetInfo = _libraries['llvm'].LLVMInitializeXCoreTargetInfo
-    LLVMInitializeXCoreTargetInfo.restype = None
-    LLVMInitializeXCoreTargetInfo.argtypes = []
+  LLVMInitializeXCoreTargetInfo = _libraries["llvm"].LLVMInitializeXCoreTargetInfo
+  LLVMInitializeXCoreTargetInfo.restype = None
+  LLVMInitializeXCoreTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeM68kTargetInfo = _libraries['llvm'].LLVMInitializeM68kTargetInfo
-    LLVMInitializeM68kTargetInfo.restype = None
-    LLVMInitializeM68kTargetInfo.argtypes = []
+  LLVMInitializeM68kTargetInfo = _libraries["llvm"].LLVMInitializeM68kTargetInfo
+  LLVMInitializeM68kTargetInfo.restype = None
+  LLVMInitializeM68kTargetInfo.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAArch64Target = _libraries['llvm'].LLVMInitializeAArch64Target
-    LLVMInitializeAArch64Target.restype = None
-    LLVMInitializeAArch64Target.argtypes = []
+  LLVMInitializeAArch64Target = _libraries["llvm"].LLVMInitializeAArch64Target
+  LLVMInitializeAArch64Target.restype = None
+  LLVMInitializeAArch64Target.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAMDGPUTarget = _libraries['llvm'].LLVMInitializeAMDGPUTarget
-    LLVMInitializeAMDGPUTarget.restype = None
-    LLVMInitializeAMDGPUTarget.argtypes = []
+  LLVMInitializeAMDGPUTarget = _libraries["llvm"].LLVMInitializeAMDGPUTarget
+  LLVMInitializeAMDGPUTarget.restype = None
+  LLVMInitializeAMDGPUTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeARMTarget = _libraries['llvm'].LLVMInitializeARMTarget
-    LLVMInitializeARMTarget.restype = None
-    LLVMInitializeARMTarget.argtypes = []
+  LLVMInitializeARMTarget = _libraries["llvm"].LLVMInitializeARMTarget
+  LLVMInitializeARMTarget.restype = None
+  LLVMInitializeARMTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAVRTarget = _libraries['llvm'].LLVMInitializeAVRTarget
-    LLVMInitializeAVRTarget.restype = None
-    LLVMInitializeAVRTarget.argtypes = []
+  LLVMInitializeAVRTarget = _libraries["llvm"].LLVMInitializeAVRTarget
+  LLVMInitializeAVRTarget.restype = None
+  LLVMInitializeAVRTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeBPFTarget = _libraries['llvm'].LLVMInitializeBPFTarget
-    LLVMInitializeBPFTarget.restype = None
-    LLVMInitializeBPFTarget.argtypes = []
+  LLVMInitializeBPFTarget = _libraries["llvm"].LLVMInitializeBPFTarget
+  LLVMInitializeBPFTarget.restype = None
+  LLVMInitializeBPFTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeHexagonTarget = _libraries['llvm'].LLVMInitializeHexagonTarget
-    LLVMInitializeHexagonTarget.restype = None
-    LLVMInitializeHexagonTarget.argtypes = []
+  LLVMInitializeHexagonTarget = _libraries["llvm"].LLVMInitializeHexagonTarget
+  LLVMInitializeHexagonTarget.restype = None
+  LLVMInitializeHexagonTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeLanaiTarget = _libraries['llvm'].LLVMInitializeLanaiTarget
-    LLVMInitializeLanaiTarget.restype = None
-    LLVMInitializeLanaiTarget.argtypes = []
+  LLVMInitializeLanaiTarget = _libraries["llvm"].LLVMInitializeLanaiTarget
+  LLVMInitializeLanaiTarget.restype = None
+  LLVMInitializeLanaiTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMipsTarget = _libraries['llvm'].LLVMInitializeMipsTarget
-    LLVMInitializeMipsTarget.restype = None
-    LLVMInitializeMipsTarget.argtypes = []
+  LLVMInitializeMipsTarget = _libraries["llvm"].LLVMInitializeMipsTarget
+  LLVMInitializeMipsTarget.restype = None
+  LLVMInitializeMipsTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMSP430Target = _libraries['llvm'].LLVMInitializeMSP430Target
-    LLVMInitializeMSP430Target.restype = None
-    LLVMInitializeMSP430Target.argtypes = []
+  LLVMInitializeMSP430Target = _libraries["llvm"].LLVMInitializeMSP430Target
+  LLVMInitializeMSP430Target.restype = None
+  LLVMInitializeMSP430Target.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeNVPTXTarget = _libraries['llvm'].LLVMInitializeNVPTXTarget
-    LLVMInitializeNVPTXTarget.restype = None
-    LLVMInitializeNVPTXTarget.argtypes = []
+  LLVMInitializeNVPTXTarget = _libraries["llvm"].LLVMInitializeNVPTXTarget
+  LLVMInitializeNVPTXTarget.restype = None
+  LLVMInitializeNVPTXTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializePowerPCTarget = _libraries['llvm'].LLVMInitializePowerPCTarget
-    LLVMInitializePowerPCTarget.restype = None
-    LLVMInitializePowerPCTarget.argtypes = []
+  LLVMInitializePowerPCTarget = _libraries["llvm"].LLVMInitializePowerPCTarget
+  LLVMInitializePowerPCTarget.restype = None
+  LLVMInitializePowerPCTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeRISCVTarget = _libraries['llvm'].LLVMInitializeRISCVTarget
-    LLVMInitializeRISCVTarget.restype = None
-    LLVMInitializeRISCVTarget.argtypes = []
+  LLVMInitializeRISCVTarget = _libraries["llvm"].LLVMInitializeRISCVTarget
+  LLVMInitializeRISCVTarget.restype = None
+  LLVMInitializeRISCVTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSparcTarget = _libraries['llvm'].LLVMInitializeSparcTarget
-    LLVMInitializeSparcTarget.restype = None
-    LLVMInitializeSparcTarget.argtypes = []
+  LLVMInitializeSparcTarget = _libraries["llvm"].LLVMInitializeSparcTarget
+  LLVMInitializeSparcTarget.restype = None
+  LLVMInitializeSparcTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSystemZTarget = _libraries['llvm'].LLVMInitializeSystemZTarget
-    LLVMInitializeSystemZTarget.restype = None
-    LLVMInitializeSystemZTarget.argtypes = []
+  LLVMInitializeSystemZTarget = _libraries["llvm"].LLVMInitializeSystemZTarget
+  LLVMInitializeSystemZTarget.restype = None
+  LLVMInitializeSystemZTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeVETarget = _libraries['llvm'].LLVMInitializeVETarget
-    LLVMInitializeVETarget.restype = None
-    LLVMInitializeVETarget.argtypes = []
+  LLVMInitializeVETarget = _libraries["llvm"].LLVMInitializeVETarget
+  LLVMInitializeVETarget.restype = None
+  LLVMInitializeVETarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeWebAssemblyTarget = _libraries['llvm'].LLVMInitializeWebAssemblyTarget
-    LLVMInitializeWebAssemblyTarget.restype = None
-    LLVMInitializeWebAssemblyTarget.argtypes = []
+  LLVMInitializeWebAssemblyTarget = _libraries["llvm"].LLVMInitializeWebAssemblyTarget
+  LLVMInitializeWebAssemblyTarget.restype = None
+  LLVMInitializeWebAssemblyTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeX86Target = _libraries['llvm'].LLVMInitializeX86Target
-    LLVMInitializeX86Target.restype = None
-    LLVMInitializeX86Target.argtypes = []
+  LLVMInitializeX86Target = _libraries["llvm"].LLVMInitializeX86Target
+  LLVMInitializeX86Target.restype = None
+  LLVMInitializeX86Target.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeXCoreTarget = _libraries['llvm'].LLVMInitializeXCoreTarget
-    LLVMInitializeXCoreTarget.restype = None
-    LLVMInitializeXCoreTarget.argtypes = []
+  LLVMInitializeXCoreTarget = _libraries["llvm"].LLVMInitializeXCoreTarget
+  LLVMInitializeXCoreTarget.restype = None
+  LLVMInitializeXCoreTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeM68kTarget = _libraries['llvm'].LLVMInitializeM68kTarget
-    LLVMInitializeM68kTarget.restype = None
-    LLVMInitializeM68kTarget.argtypes = []
+  LLVMInitializeM68kTarget = _libraries["llvm"].LLVMInitializeM68kTarget
+  LLVMInitializeM68kTarget.restype = None
+  LLVMInitializeM68kTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAArch64TargetMC = _libraries['llvm'].LLVMInitializeAArch64TargetMC
-    LLVMInitializeAArch64TargetMC.restype = None
-    LLVMInitializeAArch64TargetMC.argtypes = []
+  LLVMInitializeAArch64TargetMC = _libraries["llvm"].LLVMInitializeAArch64TargetMC
+  LLVMInitializeAArch64TargetMC.restype = None
+  LLVMInitializeAArch64TargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAMDGPUTargetMC = _libraries['llvm'].LLVMInitializeAMDGPUTargetMC
-    LLVMInitializeAMDGPUTargetMC.restype = None
-    LLVMInitializeAMDGPUTargetMC.argtypes = []
+  LLVMInitializeAMDGPUTargetMC = _libraries["llvm"].LLVMInitializeAMDGPUTargetMC
+  LLVMInitializeAMDGPUTargetMC.restype = None
+  LLVMInitializeAMDGPUTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeARMTargetMC = _libraries['llvm'].LLVMInitializeARMTargetMC
-    LLVMInitializeARMTargetMC.restype = None
-    LLVMInitializeARMTargetMC.argtypes = []
+  LLVMInitializeARMTargetMC = _libraries["llvm"].LLVMInitializeARMTargetMC
+  LLVMInitializeARMTargetMC.restype = None
+  LLVMInitializeARMTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAVRTargetMC = _libraries['llvm'].LLVMInitializeAVRTargetMC
-    LLVMInitializeAVRTargetMC.restype = None
-    LLVMInitializeAVRTargetMC.argtypes = []
+  LLVMInitializeAVRTargetMC = _libraries["llvm"].LLVMInitializeAVRTargetMC
+  LLVMInitializeAVRTargetMC.restype = None
+  LLVMInitializeAVRTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeBPFTargetMC = _libraries['llvm'].LLVMInitializeBPFTargetMC
-    LLVMInitializeBPFTargetMC.restype = None
-    LLVMInitializeBPFTargetMC.argtypes = []
+  LLVMInitializeBPFTargetMC = _libraries["llvm"].LLVMInitializeBPFTargetMC
+  LLVMInitializeBPFTargetMC.restype = None
+  LLVMInitializeBPFTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeHexagonTargetMC = _libraries['llvm'].LLVMInitializeHexagonTargetMC
-    LLVMInitializeHexagonTargetMC.restype = None
-    LLVMInitializeHexagonTargetMC.argtypes = []
+  LLVMInitializeHexagonTargetMC = _libraries["llvm"].LLVMInitializeHexagonTargetMC
+  LLVMInitializeHexagonTargetMC.restype = None
+  LLVMInitializeHexagonTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeLanaiTargetMC = _libraries['llvm'].LLVMInitializeLanaiTargetMC
-    LLVMInitializeLanaiTargetMC.restype = None
-    LLVMInitializeLanaiTargetMC.argtypes = []
+  LLVMInitializeLanaiTargetMC = _libraries["llvm"].LLVMInitializeLanaiTargetMC
+  LLVMInitializeLanaiTargetMC.restype = None
+  LLVMInitializeLanaiTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMipsTargetMC = _libraries['llvm'].LLVMInitializeMipsTargetMC
-    LLVMInitializeMipsTargetMC.restype = None
-    LLVMInitializeMipsTargetMC.argtypes = []
+  LLVMInitializeMipsTargetMC = _libraries["llvm"].LLVMInitializeMipsTargetMC
+  LLVMInitializeMipsTargetMC.restype = None
+  LLVMInitializeMipsTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMSP430TargetMC = _libraries['llvm'].LLVMInitializeMSP430TargetMC
-    LLVMInitializeMSP430TargetMC.restype = None
-    LLVMInitializeMSP430TargetMC.argtypes = []
+  LLVMInitializeMSP430TargetMC = _libraries["llvm"].LLVMInitializeMSP430TargetMC
+  LLVMInitializeMSP430TargetMC.restype = None
+  LLVMInitializeMSP430TargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeNVPTXTargetMC = _libraries['llvm'].LLVMInitializeNVPTXTargetMC
-    LLVMInitializeNVPTXTargetMC.restype = None
-    LLVMInitializeNVPTXTargetMC.argtypes = []
+  LLVMInitializeNVPTXTargetMC = _libraries["llvm"].LLVMInitializeNVPTXTargetMC
+  LLVMInitializeNVPTXTargetMC.restype = None
+  LLVMInitializeNVPTXTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializePowerPCTargetMC = _libraries['llvm'].LLVMInitializePowerPCTargetMC
-    LLVMInitializePowerPCTargetMC.restype = None
-    LLVMInitializePowerPCTargetMC.argtypes = []
+  LLVMInitializePowerPCTargetMC = _libraries["llvm"].LLVMInitializePowerPCTargetMC
+  LLVMInitializePowerPCTargetMC.restype = None
+  LLVMInitializePowerPCTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeRISCVTargetMC = _libraries['llvm'].LLVMInitializeRISCVTargetMC
-    LLVMInitializeRISCVTargetMC.restype = None
-    LLVMInitializeRISCVTargetMC.argtypes = []
+  LLVMInitializeRISCVTargetMC = _libraries["llvm"].LLVMInitializeRISCVTargetMC
+  LLVMInitializeRISCVTargetMC.restype = None
+  LLVMInitializeRISCVTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSparcTargetMC = _libraries['llvm'].LLVMInitializeSparcTargetMC
-    LLVMInitializeSparcTargetMC.restype = None
-    LLVMInitializeSparcTargetMC.argtypes = []
+  LLVMInitializeSparcTargetMC = _libraries["llvm"].LLVMInitializeSparcTargetMC
+  LLVMInitializeSparcTargetMC.restype = None
+  LLVMInitializeSparcTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSystemZTargetMC = _libraries['llvm'].LLVMInitializeSystemZTargetMC
-    LLVMInitializeSystemZTargetMC.restype = None
-    LLVMInitializeSystemZTargetMC.argtypes = []
+  LLVMInitializeSystemZTargetMC = _libraries["llvm"].LLVMInitializeSystemZTargetMC
+  LLVMInitializeSystemZTargetMC.restype = None
+  LLVMInitializeSystemZTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeVETargetMC = _libraries['llvm'].LLVMInitializeVETargetMC
-    LLVMInitializeVETargetMC.restype = None
-    LLVMInitializeVETargetMC.argtypes = []
+  LLVMInitializeVETargetMC = _libraries["llvm"].LLVMInitializeVETargetMC
+  LLVMInitializeVETargetMC.restype = None
+  LLVMInitializeVETargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeWebAssemblyTargetMC = _libraries['llvm'].LLVMInitializeWebAssemblyTargetMC
-    LLVMInitializeWebAssemblyTargetMC.restype = None
-    LLVMInitializeWebAssemblyTargetMC.argtypes = []
+  LLVMInitializeWebAssemblyTargetMC = _libraries[
+    "llvm"
+  ].LLVMInitializeWebAssemblyTargetMC
+  LLVMInitializeWebAssemblyTargetMC.restype = None
+  LLVMInitializeWebAssemblyTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeX86TargetMC = _libraries['llvm'].LLVMInitializeX86TargetMC
-    LLVMInitializeX86TargetMC.restype = None
-    LLVMInitializeX86TargetMC.argtypes = []
+  LLVMInitializeX86TargetMC = _libraries["llvm"].LLVMInitializeX86TargetMC
+  LLVMInitializeX86TargetMC.restype = None
+  LLVMInitializeX86TargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeXCoreTargetMC = _libraries['llvm'].LLVMInitializeXCoreTargetMC
-    LLVMInitializeXCoreTargetMC.restype = None
-    LLVMInitializeXCoreTargetMC.argtypes = []
+  LLVMInitializeXCoreTargetMC = _libraries["llvm"].LLVMInitializeXCoreTargetMC
+  LLVMInitializeXCoreTargetMC.restype = None
+  LLVMInitializeXCoreTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeM68kTargetMC = _libraries['llvm'].LLVMInitializeM68kTargetMC
-    LLVMInitializeM68kTargetMC.restype = None
-    LLVMInitializeM68kTargetMC.argtypes = []
+  LLVMInitializeM68kTargetMC = _libraries["llvm"].LLVMInitializeM68kTargetMC
+  LLVMInitializeM68kTargetMC.restype = None
+  LLVMInitializeM68kTargetMC.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAArch64AsmPrinter = _libraries['llvm'].LLVMInitializeAArch64AsmPrinter
-    LLVMInitializeAArch64AsmPrinter.restype = None
-    LLVMInitializeAArch64AsmPrinter.argtypes = []
+  LLVMInitializeAArch64AsmPrinter = _libraries["llvm"].LLVMInitializeAArch64AsmPrinter
+  LLVMInitializeAArch64AsmPrinter.restype = None
+  LLVMInitializeAArch64AsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAMDGPUAsmPrinter = _libraries['llvm'].LLVMInitializeAMDGPUAsmPrinter
-    LLVMInitializeAMDGPUAsmPrinter.restype = None
-    LLVMInitializeAMDGPUAsmPrinter.argtypes = []
+  LLVMInitializeAMDGPUAsmPrinter = _libraries["llvm"].LLVMInitializeAMDGPUAsmPrinter
+  LLVMInitializeAMDGPUAsmPrinter.restype = None
+  LLVMInitializeAMDGPUAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeARMAsmPrinter = _libraries['llvm'].LLVMInitializeARMAsmPrinter
-    LLVMInitializeARMAsmPrinter.restype = None
-    LLVMInitializeARMAsmPrinter.argtypes = []
+  LLVMInitializeARMAsmPrinter = _libraries["llvm"].LLVMInitializeARMAsmPrinter
+  LLVMInitializeARMAsmPrinter.restype = None
+  LLVMInitializeARMAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAVRAsmPrinter = _libraries['llvm'].LLVMInitializeAVRAsmPrinter
-    LLVMInitializeAVRAsmPrinter.restype = None
-    LLVMInitializeAVRAsmPrinter.argtypes = []
+  LLVMInitializeAVRAsmPrinter = _libraries["llvm"].LLVMInitializeAVRAsmPrinter
+  LLVMInitializeAVRAsmPrinter.restype = None
+  LLVMInitializeAVRAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeBPFAsmPrinter = _libraries['llvm'].LLVMInitializeBPFAsmPrinter
-    LLVMInitializeBPFAsmPrinter.restype = None
-    LLVMInitializeBPFAsmPrinter.argtypes = []
+  LLVMInitializeBPFAsmPrinter = _libraries["llvm"].LLVMInitializeBPFAsmPrinter
+  LLVMInitializeBPFAsmPrinter.restype = None
+  LLVMInitializeBPFAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeHexagonAsmPrinter = _libraries['llvm'].LLVMInitializeHexagonAsmPrinter
-    LLVMInitializeHexagonAsmPrinter.restype = None
-    LLVMInitializeHexagonAsmPrinter.argtypes = []
+  LLVMInitializeHexagonAsmPrinter = _libraries["llvm"].LLVMInitializeHexagonAsmPrinter
+  LLVMInitializeHexagonAsmPrinter.restype = None
+  LLVMInitializeHexagonAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeLanaiAsmPrinter = _libraries['llvm'].LLVMInitializeLanaiAsmPrinter
-    LLVMInitializeLanaiAsmPrinter.restype = None
-    LLVMInitializeLanaiAsmPrinter.argtypes = []
+  LLVMInitializeLanaiAsmPrinter = _libraries["llvm"].LLVMInitializeLanaiAsmPrinter
+  LLVMInitializeLanaiAsmPrinter.restype = None
+  LLVMInitializeLanaiAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMipsAsmPrinter = _libraries['llvm'].LLVMInitializeMipsAsmPrinter
-    LLVMInitializeMipsAsmPrinter.restype = None
-    LLVMInitializeMipsAsmPrinter.argtypes = []
+  LLVMInitializeMipsAsmPrinter = _libraries["llvm"].LLVMInitializeMipsAsmPrinter
+  LLVMInitializeMipsAsmPrinter.restype = None
+  LLVMInitializeMipsAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMSP430AsmPrinter = _libraries['llvm'].LLVMInitializeMSP430AsmPrinter
-    LLVMInitializeMSP430AsmPrinter.restype = None
-    LLVMInitializeMSP430AsmPrinter.argtypes = []
+  LLVMInitializeMSP430AsmPrinter = _libraries["llvm"].LLVMInitializeMSP430AsmPrinter
+  LLVMInitializeMSP430AsmPrinter.restype = None
+  LLVMInitializeMSP430AsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeNVPTXAsmPrinter = _libraries['llvm'].LLVMInitializeNVPTXAsmPrinter
-    LLVMInitializeNVPTXAsmPrinter.restype = None
-    LLVMInitializeNVPTXAsmPrinter.argtypes = []
+  LLVMInitializeNVPTXAsmPrinter = _libraries["llvm"].LLVMInitializeNVPTXAsmPrinter
+  LLVMInitializeNVPTXAsmPrinter.restype = None
+  LLVMInitializeNVPTXAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializePowerPCAsmPrinter = _libraries['llvm'].LLVMInitializePowerPCAsmPrinter
-    LLVMInitializePowerPCAsmPrinter.restype = None
-    LLVMInitializePowerPCAsmPrinter.argtypes = []
+  LLVMInitializePowerPCAsmPrinter = _libraries["llvm"].LLVMInitializePowerPCAsmPrinter
+  LLVMInitializePowerPCAsmPrinter.restype = None
+  LLVMInitializePowerPCAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeRISCVAsmPrinter = _libraries['llvm'].LLVMInitializeRISCVAsmPrinter
-    LLVMInitializeRISCVAsmPrinter.restype = None
-    LLVMInitializeRISCVAsmPrinter.argtypes = []
+  LLVMInitializeRISCVAsmPrinter = _libraries["llvm"].LLVMInitializeRISCVAsmPrinter
+  LLVMInitializeRISCVAsmPrinter.restype = None
+  LLVMInitializeRISCVAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSparcAsmPrinter = _libraries['llvm'].LLVMInitializeSparcAsmPrinter
-    LLVMInitializeSparcAsmPrinter.restype = None
-    LLVMInitializeSparcAsmPrinter.argtypes = []
+  LLVMInitializeSparcAsmPrinter = _libraries["llvm"].LLVMInitializeSparcAsmPrinter
+  LLVMInitializeSparcAsmPrinter.restype = None
+  LLVMInitializeSparcAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSystemZAsmPrinter = _libraries['llvm'].LLVMInitializeSystemZAsmPrinter
-    LLVMInitializeSystemZAsmPrinter.restype = None
-    LLVMInitializeSystemZAsmPrinter.argtypes = []
+  LLVMInitializeSystemZAsmPrinter = _libraries["llvm"].LLVMInitializeSystemZAsmPrinter
+  LLVMInitializeSystemZAsmPrinter.restype = None
+  LLVMInitializeSystemZAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeVEAsmPrinter = _libraries['llvm'].LLVMInitializeVEAsmPrinter
-    LLVMInitializeVEAsmPrinter.restype = None
-    LLVMInitializeVEAsmPrinter.argtypes = []
+  LLVMInitializeVEAsmPrinter = _libraries["llvm"].LLVMInitializeVEAsmPrinter
+  LLVMInitializeVEAsmPrinter.restype = None
+  LLVMInitializeVEAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeWebAssemblyAsmPrinter = _libraries['llvm'].LLVMInitializeWebAssemblyAsmPrinter
-    LLVMInitializeWebAssemblyAsmPrinter.restype = None
-    LLVMInitializeWebAssemblyAsmPrinter.argtypes = []
+  LLVMInitializeWebAssemblyAsmPrinter = _libraries[
+    "llvm"
+  ].LLVMInitializeWebAssemblyAsmPrinter
+  LLVMInitializeWebAssemblyAsmPrinter.restype = None
+  LLVMInitializeWebAssemblyAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeX86AsmPrinter = _libraries['llvm'].LLVMInitializeX86AsmPrinter
-    LLVMInitializeX86AsmPrinter.restype = None
-    LLVMInitializeX86AsmPrinter.argtypes = []
+  LLVMInitializeX86AsmPrinter = _libraries["llvm"].LLVMInitializeX86AsmPrinter
+  LLVMInitializeX86AsmPrinter.restype = None
+  LLVMInitializeX86AsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeXCoreAsmPrinter = _libraries['llvm'].LLVMInitializeXCoreAsmPrinter
-    LLVMInitializeXCoreAsmPrinter.restype = None
-    LLVMInitializeXCoreAsmPrinter.argtypes = []
+  LLVMInitializeXCoreAsmPrinter = _libraries["llvm"].LLVMInitializeXCoreAsmPrinter
+  LLVMInitializeXCoreAsmPrinter.restype = None
+  LLVMInitializeXCoreAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeM68kAsmPrinter = _libraries['llvm'].LLVMInitializeM68kAsmPrinter
-    LLVMInitializeM68kAsmPrinter.restype = None
-    LLVMInitializeM68kAsmPrinter.argtypes = []
+  LLVMInitializeM68kAsmPrinter = _libraries["llvm"].LLVMInitializeM68kAsmPrinter
+  LLVMInitializeM68kAsmPrinter.restype = None
+  LLVMInitializeM68kAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAArch64AsmParser = _libraries['llvm'].LLVMInitializeAArch64AsmParser
-    LLVMInitializeAArch64AsmParser.restype = None
-    LLVMInitializeAArch64AsmParser.argtypes = []
+  LLVMInitializeAArch64AsmParser = _libraries["llvm"].LLVMInitializeAArch64AsmParser
+  LLVMInitializeAArch64AsmParser.restype = None
+  LLVMInitializeAArch64AsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAMDGPUAsmParser = _libraries['llvm'].LLVMInitializeAMDGPUAsmParser
-    LLVMInitializeAMDGPUAsmParser.restype = None
-    LLVMInitializeAMDGPUAsmParser.argtypes = []
+  LLVMInitializeAMDGPUAsmParser = _libraries["llvm"].LLVMInitializeAMDGPUAsmParser
+  LLVMInitializeAMDGPUAsmParser.restype = None
+  LLVMInitializeAMDGPUAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeARMAsmParser = _libraries['llvm'].LLVMInitializeARMAsmParser
-    LLVMInitializeARMAsmParser.restype = None
-    LLVMInitializeARMAsmParser.argtypes = []
+  LLVMInitializeARMAsmParser = _libraries["llvm"].LLVMInitializeARMAsmParser
+  LLVMInitializeARMAsmParser.restype = None
+  LLVMInitializeARMAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAVRAsmParser = _libraries['llvm'].LLVMInitializeAVRAsmParser
-    LLVMInitializeAVRAsmParser.restype = None
-    LLVMInitializeAVRAsmParser.argtypes = []
+  LLVMInitializeAVRAsmParser = _libraries["llvm"].LLVMInitializeAVRAsmParser
+  LLVMInitializeAVRAsmParser.restype = None
+  LLVMInitializeAVRAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeBPFAsmParser = _libraries['llvm'].LLVMInitializeBPFAsmParser
-    LLVMInitializeBPFAsmParser.restype = None
-    LLVMInitializeBPFAsmParser.argtypes = []
+  LLVMInitializeBPFAsmParser = _libraries["llvm"].LLVMInitializeBPFAsmParser
+  LLVMInitializeBPFAsmParser.restype = None
+  LLVMInitializeBPFAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeHexagonAsmParser = _libraries['llvm'].LLVMInitializeHexagonAsmParser
-    LLVMInitializeHexagonAsmParser.restype = None
-    LLVMInitializeHexagonAsmParser.argtypes = []
+  LLVMInitializeHexagonAsmParser = _libraries["llvm"].LLVMInitializeHexagonAsmParser
+  LLVMInitializeHexagonAsmParser.restype = None
+  LLVMInitializeHexagonAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeLanaiAsmParser = _libraries['llvm'].LLVMInitializeLanaiAsmParser
-    LLVMInitializeLanaiAsmParser.restype = None
-    LLVMInitializeLanaiAsmParser.argtypes = []
+  LLVMInitializeLanaiAsmParser = _libraries["llvm"].LLVMInitializeLanaiAsmParser
+  LLVMInitializeLanaiAsmParser.restype = None
+  LLVMInitializeLanaiAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMipsAsmParser = _libraries['llvm'].LLVMInitializeMipsAsmParser
-    LLVMInitializeMipsAsmParser.restype = None
-    LLVMInitializeMipsAsmParser.argtypes = []
+  LLVMInitializeMipsAsmParser = _libraries["llvm"].LLVMInitializeMipsAsmParser
+  LLVMInitializeMipsAsmParser.restype = None
+  LLVMInitializeMipsAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMSP430AsmParser = _libraries['llvm'].LLVMInitializeMSP430AsmParser
-    LLVMInitializeMSP430AsmParser.restype = None
-    LLVMInitializeMSP430AsmParser.argtypes = []
+  LLVMInitializeMSP430AsmParser = _libraries["llvm"].LLVMInitializeMSP430AsmParser
+  LLVMInitializeMSP430AsmParser.restype = None
+  LLVMInitializeMSP430AsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializePowerPCAsmParser = _libraries['llvm'].LLVMInitializePowerPCAsmParser
-    LLVMInitializePowerPCAsmParser.restype = None
-    LLVMInitializePowerPCAsmParser.argtypes = []
+  LLVMInitializePowerPCAsmParser = _libraries["llvm"].LLVMInitializePowerPCAsmParser
+  LLVMInitializePowerPCAsmParser.restype = None
+  LLVMInitializePowerPCAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeRISCVAsmParser = _libraries['llvm'].LLVMInitializeRISCVAsmParser
-    LLVMInitializeRISCVAsmParser.restype = None
-    LLVMInitializeRISCVAsmParser.argtypes = []
+  LLVMInitializeRISCVAsmParser = _libraries["llvm"].LLVMInitializeRISCVAsmParser
+  LLVMInitializeRISCVAsmParser.restype = None
+  LLVMInitializeRISCVAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSparcAsmParser = _libraries['llvm'].LLVMInitializeSparcAsmParser
-    LLVMInitializeSparcAsmParser.restype = None
-    LLVMInitializeSparcAsmParser.argtypes = []
+  LLVMInitializeSparcAsmParser = _libraries["llvm"].LLVMInitializeSparcAsmParser
+  LLVMInitializeSparcAsmParser.restype = None
+  LLVMInitializeSparcAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSystemZAsmParser = _libraries['llvm'].LLVMInitializeSystemZAsmParser
-    LLVMInitializeSystemZAsmParser.restype = None
-    LLVMInitializeSystemZAsmParser.argtypes = []
+  LLVMInitializeSystemZAsmParser = _libraries["llvm"].LLVMInitializeSystemZAsmParser
+  LLVMInitializeSystemZAsmParser.restype = None
+  LLVMInitializeSystemZAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeVEAsmParser = _libraries['llvm'].LLVMInitializeVEAsmParser
-    LLVMInitializeVEAsmParser.restype = None
-    LLVMInitializeVEAsmParser.argtypes = []
+  LLVMInitializeVEAsmParser = _libraries["llvm"].LLVMInitializeVEAsmParser
+  LLVMInitializeVEAsmParser.restype = None
+  LLVMInitializeVEAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeWebAssemblyAsmParser = _libraries['llvm'].LLVMInitializeWebAssemblyAsmParser
-    LLVMInitializeWebAssemblyAsmParser.restype = None
-    LLVMInitializeWebAssemblyAsmParser.argtypes = []
+  LLVMInitializeWebAssemblyAsmParser = _libraries[
+    "llvm"
+  ].LLVMInitializeWebAssemblyAsmParser
+  LLVMInitializeWebAssemblyAsmParser.restype = None
+  LLVMInitializeWebAssemblyAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeX86AsmParser = _libraries['llvm'].LLVMInitializeX86AsmParser
-    LLVMInitializeX86AsmParser.restype = None
-    LLVMInitializeX86AsmParser.argtypes = []
+  LLVMInitializeX86AsmParser = _libraries["llvm"].LLVMInitializeX86AsmParser
+  LLVMInitializeX86AsmParser.restype = None
+  LLVMInitializeX86AsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeM68kAsmParser = _libraries['llvm'].LLVMInitializeM68kAsmParser
-    LLVMInitializeM68kAsmParser.restype = None
-    LLVMInitializeM68kAsmParser.argtypes = []
+  LLVMInitializeM68kAsmParser = _libraries["llvm"].LLVMInitializeM68kAsmParser
+  LLVMInitializeM68kAsmParser.restype = None
+  LLVMInitializeM68kAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAArch64Disassembler = _libraries['llvm'].LLVMInitializeAArch64Disassembler
-    LLVMInitializeAArch64Disassembler.restype = None
-    LLVMInitializeAArch64Disassembler.argtypes = []
+  LLVMInitializeAArch64Disassembler = _libraries[
+    "llvm"
+  ].LLVMInitializeAArch64Disassembler
+  LLVMInitializeAArch64Disassembler.restype = None
+  LLVMInitializeAArch64Disassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAMDGPUDisassembler = _libraries['llvm'].LLVMInitializeAMDGPUDisassembler
-    LLVMInitializeAMDGPUDisassembler.restype = None
-    LLVMInitializeAMDGPUDisassembler.argtypes = []
+  LLVMInitializeAMDGPUDisassembler = _libraries["llvm"].LLVMInitializeAMDGPUDisassembler
+  LLVMInitializeAMDGPUDisassembler.restype = None
+  LLVMInitializeAMDGPUDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeARMDisassembler = _libraries['llvm'].LLVMInitializeARMDisassembler
-    LLVMInitializeARMDisassembler.restype = None
-    LLVMInitializeARMDisassembler.argtypes = []
+  LLVMInitializeARMDisassembler = _libraries["llvm"].LLVMInitializeARMDisassembler
+  LLVMInitializeARMDisassembler.restype = None
+  LLVMInitializeARMDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAVRDisassembler = _libraries['llvm'].LLVMInitializeAVRDisassembler
-    LLVMInitializeAVRDisassembler.restype = None
-    LLVMInitializeAVRDisassembler.argtypes = []
+  LLVMInitializeAVRDisassembler = _libraries["llvm"].LLVMInitializeAVRDisassembler
+  LLVMInitializeAVRDisassembler.restype = None
+  LLVMInitializeAVRDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeBPFDisassembler = _libraries['llvm'].LLVMInitializeBPFDisassembler
-    LLVMInitializeBPFDisassembler.restype = None
-    LLVMInitializeBPFDisassembler.argtypes = []
+  LLVMInitializeBPFDisassembler = _libraries["llvm"].LLVMInitializeBPFDisassembler
+  LLVMInitializeBPFDisassembler.restype = None
+  LLVMInitializeBPFDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeHexagonDisassembler = _libraries['llvm'].LLVMInitializeHexagonDisassembler
-    LLVMInitializeHexagonDisassembler.restype = None
-    LLVMInitializeHexagonDisassembler.argtypes = []
+  LLVMInitializeHexagonDisassembler = _libraries[
+    "llvm"
+  ].LLVMInitializeHexagonDisassembler
+  LLVMInitializeHexagonDisassembler.restype = None
+  LLVMInitializeHexagonDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeLanaiDisassembler = _libraries['llvm'].LLVMInitializeLanaiDisassembler
-    LLVMInitializeLanaiDisassembler.restype = None
-    LLVMInitializeLanaiDisassembler.argtypes = []
+  LLVMInitializeLanaiDisassembler = _libraries["llvm"].LLVMInitializeLanaiDisassembler
+  LLVMInitializeLanaiDisassembler.restype = None
+  LLVMInitializeLanaiDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMipsDisassembler = _libraries['llvm'].LLVMInitializeMipsDisassembler
-    LLVMInitializeMipsDisassembler.restype = None
-    LLVMInitializeMipsDisassembler.argtypes = []
+  LLVMInitializeMipsDisassembler = _libraries["llvm"].LLVMInitializeMipsDisassembler
+  LLVMInitializeMipsDisassembler.restype = None
+  LLVMInitializeMipsDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMSP430Disassembler = _libraries['llvm'].LLVMInitializeMSP430Disassembler
-    LLVMInitializeMSP430Disassembler.restype = None
-    LLVMInitializeMSP430Disassembler.argtypes = []
+  LLVMInitializeMSP430Disassembler = _libraries["llvm"].LLVMInitializeMSP430Disassembler
+  LLVMInitializeMSP430Disassembler.restype = None
+  LLVMInitializeMSP430Disassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializePowerPCDisassembler = _libraries['llvm'].LLVMInitializePowerPCDisassembler
-    LLVMInitializePowerPCDisassembler.restype = None
-    LLVMInitializePowerPCDisassembler.argtypes = []
+  LLVMInitializePowerPCDisassembler = _libraries[
+    "llvm"
+  ].LLVMInitializePowerPCDisassembler
+  LLVMInitializePowerPCDisassembler.restype = None
+  LLVMInitializePowerPCDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeRISCVDisassembler = _libraries['llvm'].LLVMInitializeRISCVDisassembler
-    LLVMInitializeRISCVDisassembler.restype = None
-    LLVMInitializeRISCVDisassembler.argtypes = []
+  LLVMInitializeRISCVDisassembler = _libraries["llvm"].LLVMInitializeRISCVDisassembler
+  LLVMInitializeRISCVDisassembler.restype = None
+  LLVMInitializeRISCVDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSparcDisassembler = _libraries['llvm'].LLVMInitializeSparcDisassembler
-    LLVMInitializeSparcDisassembler.restype = None
-    LLVMInitializeSparcDisassembler.argtypes = []
+  LLVMInitializeSparcDisassembler = _libraries["llvm"].LLVMInitializeSparcDisassembler
+  LLVMInitializeSparcDisassembler.restype = None
+  LLVMInitializeSparcDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeSystemZDisassembler = _libraries['llvm'].LLVMInitializeSystemZDisassembler
-    LLVMInitializeSystemZDisassembler.restype = None
-    LLVMInitializeSystemZDisassembler.argtypes = []
+  LLVMInitializeSystemZDisassembler = _libraries[
+    "llvm"
+  ].LLVMInitializeSystemZDisassembler
+  LLVMInitializeSystemZDisassembler.restype = None
+  LLVMInitializeSystemZDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeVEDisassembler = _libraries['llvm'].LLVMInitializeVEDisassembler
-    LLVMInitializeVEDisassembler.restype = None
-    LLVMInitializeVEDisassembler.argtypes = []
+  LLVMInitializeVEDisassembler = _libraries["llvm"].LLVMInitializeVEDisassembler
+  LLVMInitializeVEDisassembler.restype = None
+  LLVMInitializeVEDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeWebAssemblyDisassembler = _libraries['llvm'].LLVMInitializeWebAssemblyDisassembler
-    LLVMInitializeWebAssemblyDisassembler.restype = None
-    LLVMInitializeWebAssemblyDisassembler.argtypes = []
+  LLVMInitializeWebAssemblyDisassembler = _libraries[
+    "llvm"
+  ].LLVMInitializeWebAssemblyDisassembler
+  LLVMInitializeWebAssemblyDisassembler.restype = None
+  LLVMInitializeWebAssemblyDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeX86Disassembler = _libraries['llvm'].LLVMInitializeX86Disassembler
-    LLVMInitializeX86Disassembler.restype = None
-    LLVMInitializeX86Disassembler.argtypes = []
+  LLVMInitializeX86Disassembler = _libraries["llvm"].LLVMInitializeX86Disassembler
+  LLVMInitializeX86Disassembler.restype = None
+  LLVMInitializeX86Disassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeXCoreDisassembler = _libraries['llvm'].LLVMInitializeXCoreDisassembler
-    LLVMInitializeXCoreDisassembler.restype = None
-    LLVMInitializeXCoreDisassembler.argtypes = []
+  LLVMInitializeXCoreDisassembler = _libraries["llvm"].LLVMInitializeXCoreDisassembler
+  LLVMInitializeXCoreDisassembler.restype = None
+  LLVMInitializeXCoreDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeM68kDisassembler = _libraries['llvm'].LLVMInitializeM68kDisassembler
-    LLVMInitializeM68kDisassembler.restype = None
-    LLVMInitializeM68kDisassembler.argtypes = []
+  LLVMInitializeM68kDisassembler = _libraries["llvm"].LLVMInitializeM68kDisassembler
+  LLVMInitializeM68kDisassembler.restype = None
+  LLVMInitializeM68kDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAllTargetInfos = _libraries['llvm'].LLVMInitializeAllTargetInfos
-    LLVMInitializeAllTargetInfos.restype = None
-    LLVMInitializeAllTargetInfos.argtypes = []
+  LLVMInitializeAllTargetInfos = _libraries["llvm"].LLVMInitializeAllTargetInfos
+  LLVMInitializeAllTargetInfos.restype = None
+  LLVMInitializeAllTargetInfos.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAllTargets = _libraries['llvm'].LLVMInitializeAllTargets
-    LLVMInitializeAllTargets.restype = None
-    LLVMInitializeAllTargets.argtypes = []
+  LLVMInitializeAllTargets = _libraries["llvm"].LLVMInitializeAllTargets
+  LLVMInitializeAllTargets.restype = None
+  LLVMInitializeAllTargets.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAllTargetMCs = _libraries['llvm'].LLVMInitializeAllTargetMCs
-    LLVMInitializeAllTargetMCs.restype = None
-    LLVMInitializeAllTargetMCs.argtypes = []
+  LLVMInitializeAllTargetMCs = _libraries["llvm"].LLVMInitializeAllTargetMCs
+  LLVMInitializeAllTargetMCs.restype = None
+  LLVMInitializeAllTargetMCs.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAllAsmPrinters = _libraries['llvm'].LLVMInitializeAllAsmPrinters
-    LLVMInitializeAllAsmPrinters.restype = None
-    LLVMInitializeAllAsmPrinters.argtypes = []
+  LLVMInitializeAllAsmPrinters = _libraries["llvm"].LLVMInitializeAllAsmPrinters
+  LLVMInitializeAllAsmPrinters.restype = None
+  LLVMInitializeAllAsmPrinters.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAllAsmParsers = _libraries['llvm'].LLVMInitializeAllAsmParsers
-    LLVMInitializeAllAsmParsers.restype = None
-    LLVMInitializeAllAsmParsers.argtypes = []
+  LLVMInitializeAllAsmParsers = _libraries["llvm"].LLVMInitializeAllAsmParsers
+  LLVMInitializeAllAsmParsers.restype = None
+  LLVMInitializeAllAsmParsers.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAllDisassemblers = _libraries['llvm'].LLVMInitializeAllDisassemblers
-    LLVMInitializeAllDisassemblers.restype = None
-    LLVMInitializeAllDisassemblers.argtypes = []
+  LLVMInitializeAllDisassemblers = _libraries["llvm"].LLVMInitializeAllDisassemblers
+  LLVMInitializeAllDisassemblers.restype = None
+  LLVMInitializeAllDisassemblers.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeNativeTarget = _libraries['llvm'].LLVMInitializeNativeTarget
-    LLVMInitializeNativeTarget.restype = LLVMBool
-    LLVMInitializeNativeTarget.argtypes = []
+  LLVMInitializeNativeTarget = _libraries["llvm"].LLVMInitializeNativeTarget
+  LLVMInitializeNativeTarget.restype = LLVMBool
+  LLVMInitializeNativeTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeNativeAsmParser = _libraries['llvm'].LLVMInitializeNativeAsmParser
-    LLVMInitializeNativeAsmParser.restype = LLVMBool
-    LLVMInitializeNativeAsmParser.argtypes = []
+  LLVMInitializeNativeAsmParser = _libraries["llvm"].LLVMInitializeNativeAsmParser
+  LLVMInitializeNativeAsmParser.restype = LLVMBool
+  LLVMInitializeNativeAsmParser.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeNativeAsmPrinter = _libraries['llvm'].LLVMInitializeNativeAsmPrinter
-    LLVMInitializeNativeAsmPrinter.restype = LLVMBool
-    LLVMInitializeNativeAsmPrinter.argtypes = []
+  LLVMInitializeNativeAsmPrinter = _libraries["llvm"].LLVMInitializeNativeAsmPrinter
+  LLVMInitializeNativeAsmPrinter.restype = LLVMBool
+  LLVMInitializeNativeAsmPrinter.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeNativeDisassembler = _libraries['llvm'].LLVMInitializeNativeDisassembler
-    LLVMInitializeNativeDisassembler.restype = LLVMBool
-    LLVMInitializeNativeDisassembler.argtypes = []
+  LLVMInitializeNativeDisassembler = _libraries["llvm"].LLVMInitializeNativeDisassembler
+  LLVMInitializeNativeDisassembler.restype = LLVMBool
+  LLVMInitializeNativeDisassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetModuleDataLayout = _libraries['llvm'].LLVMGetModuleDataLayout
-    LLVMGetModuleDataLayout.restype = LLVMTargetDataRef
-    LLVMGetModuleDataLayout.argtypes = [LLVMModuleRef]
+  LLVMGetModuleDataLayout = _libraries["llvm"].LLVMGetModuleDataLayout
+  LLVMGetModuleDataLayout.restype = LLVMTargetDataRef
+  LLVMGetModuleDataLayout.argtypes = [LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetModuleDataLayout = _libraries['llvm'].LLVMSetModuleDataLayout
-    LLVMSetModuleDataLayout.restype = None
-    LLVMSetModuleDataLayout.argtypes = [LLVMModuleRef, LLVMTargetDataRef]
+  LLVMSetModuleDataLayout = _libraries["llvm"].LLVMSetModuleDataLayout
+  LLVMSetModuleDataLayout.restype = None
+  LLVMSetModuleDataLayout.argtypes = [LLVMModuleRef, LLVMTargetDataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateTargetData = _libraries['llvm'].LLVMCreateTargetData
-    LLVMCreateTargetData.restype = LLVMTargetDataRef
-    LLVMCreateTargetData.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMCreateTargetData = _libraries["llvm"].LLVMCreateTargetData
+  LLVMCreateTargetData.restype = LLVMTargetDataRef
+  LLVMCreateTargetData.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeTargetData = _libraries['llvm'].LLVMDisposeTargetData
-    LLVMDisposeTargetData.restype = None
-    LLVMDisposeTargetData.argtypes = [LLVMTargetDataRef]
+  LLVMDisposeTargetData = _libraries["llvm"].LLVMDisposeTargetData
+  LLVMDisposeTargetData.restype = None
+  LLVMDisposeTargetData.argtypes = [LLVMTargetDataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddTargetLibraryInfo = _libraries['llvm'].LLVMAddTargetLibraryInfo
-    LLVMAddTargetLibraryInfo.restype = None
-    LLVMAddTargetLibraryInfo.argtypes = [LLVMTargetLibraryInfoRef, LLVMPassManagerRef]
+  LLVMAddTargetLibraryInfo = _libraries["llvm"].LLVMAddTargetLibraryInfo
+  LLVMAddTargetLibraryInfo.restype = None
+  LLVMAddTargetLibraryInfo.argtypes = [LLVMTargetLibraryInfoRef, LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCopyStringRepOfTargetData = _libraries['llvm'].LLVMCopyStringRepOfTargetData
-    LLVMCopyStringRepOfTargetData.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMCopyStringRepOfTargetData.argtypes = [LLVMTargetDataRef]
+  LLVMCopyStringRepOfTargetData = _libraries["llvm"].LLVMCopyStringRepOfTargetData
+  LLVMCopyStringRepOfTargetData.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMCopyStringRepOfTargetData.argtypes = [LLVMTargetDataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMByteOrder = _libraries['llvm'].LLVMByteOrder
-    LLVMByteOrder.restype = LLVMByteOrdering
-    LLVMByteOrder.argtypes = [LLVMTargetDataRef]
+  LLVMByteOrder = _libraries["llvm"].LLVMByteOrder
+  LLVMByteOrder.restype = LLVMByteOrdering
+  LLVMByteOrder.argtypes = [LLVMTargetDataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPointerSize = _libraries['llvm'].LLVMPointerSize
-    LLVMPointerSize.restype = ctypes.c_uint32
-    LLVMPointerSize.argtypes = [LLVMTargetDataRef]
+  LLVMPointerSize = _libraries["llvm"].LLVMPointerSize
+  LLVMPointerSize.restype = ctypes.c_uint32
+  LLVMPointerSize.argtypes = [LLVMTargetDataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPointerSizeForAS = _libraries['llvm'].LLVMPointerSizeForAS
-    LLVMPointerSizeForAS.restype = ctypes.c_uint32
-    LLVMPointerSizeForAS.argtypes = [LLVMTargetDataRef, ctypes.c_uint32]
+  LLVMPointerSizeForAS = _libraries["llvm"].LLVMPointerSizeForAS
+  LLVMPointerSizeForAS.restype = ctypes.c_uint32
+  LLVMPointerSizeForAS.argtypes = [LLVMTargetDataRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntPtrType = _libraries['llvm'].LLVMIntPtrType
-    LLVMIntPtrType.restype = LLVMTypeRef
-    LLVMIntPtrType.argtypes = [LLVMTargetDataRef]
+  LLVMIntPtrType = _libraries["llvm"].LLVMIntPtrType
+  LLVMIntPtrType.restype = LLVMTypeRef
+  LLVMIntPtrType.argtypes = [LLVMTargetDataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntPtrTypeForAS = _libraries['llvm'].LLVMIntPtrTypeForAS
-    LLVMIntPtrTypeForAS.restype = LLVMTypeRef
-    LLVMIntPtrTypeForAS.argtypes = [LLVMTargetDataRef, ctypes.c_uint32]
+  LLVMIntPtrTypeForAS = _libraries["llvm"].LLVMIntPtrTypeForAS
+  LLVMIntPtrTypeForAS.restype = LLVMTypeRef
+  LLVMIntPtrTypeForAS.argtypes = [LLVMTargetDataRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntPtrTypeInContext = _libraries['llvm'].LLVMIntPtrTypeInContext
-    LLVMIntPtrTypeInContext.restype = LLVMTypeRef
-    LLVMIntPtrTypeInContext.argtypes = [LLVMContextRef, LLVMTargetDataRef]
+  LLVMIntPtrTypeInContext = _libraries["llvm"].LLVMIntPtrTypeInContext
+  LLVMIntPtrTypeInContext.restype = LLVMTypeRef
+  LLVMIntPtrTypeInContext.argtypes = [LLVMContextRef, LLVMTargetDataRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIntPtrTypeForASInContext = _libraries['llvm'].LLVMIntPtrTypeForASInContext
-    LLVMIntPtrTypeForASInContext.restype = LLVMTypeRef
-    LLVMIntPtrTypeForASInContext.argtypes = [LLVMContextRef, LLVMTargetDataRef, ctypes.c_uint32]
+  LLVMIntPtrTypeForASInContext = _libraries["llvm"].LLVMIntPtrTypeForASInContext
+  LLVMIntPtrTypeForASInContext.restype = LLVMTypeRef
+  LLVMIntPtrTypeForASInContext.argtypes = [
+    LLVMContextRef,
+    LLVMTargetDataRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSizeOfTypeInBits = _libraries['llvm'].LLVMSizeOfTypeInBits
-    LLVMSizeOfTypeInBits.restype = ctypes.c_uint64
-    LLVMSizeOfTypeInBits.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
+  LLVMSizeOfTypeInBits = _libraries["llvm"].LLVMSizeOfTypeInBits
+  LLVMSizeOfTypeInBits.restype = ctypes.c_uint64
+  LLVMSizeOfTypeInBits.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMStoreSizeOfType = _libraries['llvm'].LLVMStoreSizeOfType
-    LLVMStoreSizeOfType.restype = ctypes.c_uint64
-    LLVMStoreSizeOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
+  LLVMStoreSizeOfType = _libraries["llvm"].LLVMStoreSizeOfType
+  LLVMStoreSizeOfType.restype = ctypes.c_uint64
+  LLVMStoreSizeOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMABISizeOfType = _libraries['llvm'].LLVMABISizeOfType
-    LLVMABISizeOfType.restype = ctypes.c_uint64
-    LLVMABISizeOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
+  LLVMABISizeOfType = _libraries["llvm"].LLVMABISizeOfType
+  LLVMABISizeOfType.restype = ctypes.c_uint64
+  LLVMABISizeOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMABIAlignmentOfType = _libraries['llvm'].LLVMABIAlignmentOfType
-    LLVMABIAlignmentOfType.restype = ctypes.c_uint32
-    LLVMABIAlignmentOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
+  LLVMABIAlignmentOfType = _libraries["llvm"].LLVMABIAlignmentOfType
+  LLVMABIAlignmentOfType.restype = ctypes.c_uint32
+  LLVMABIAlignmentOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCallFrameAlignmentOfType = _libraries['llvm'].LLVMCallFrameAlignmentOfType
-    LLVMCallFrameAlignmentOfType.restype = ctypes.c_uint32
-    LLVMCallFrameAlignmentOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
+  LLVMCallFrameAlignmentOfType = _libraries["llvm"].LLVMCallFrameAlignmentOfType
+  LLVMCallFrameAlignmentOfType.restype = ctypes.c_uint32
+  LLVMCallFrameAlignmentOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPreferredAlignmentOfType = _libraries['llvm'].LLVMPreferredAlignmentOfType
-    LLVMPreferredAlignmentOfType.restype = ctypes.c_uint32
-    LLVMPreferredAlignmentOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
+  LLVMPreferredAlignmentOfType = _libraries["llvm"].LLVMPreferredAlignmentOfType
+  LLVMPreferredAlignmentOfType.restype = ctypes.c_uint32
+  LLVMPreferredAlignmentOfType.argtypes = [LLVMTargetDataRef, LLVMTypeRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPreferredAlignmentOfGlobal = _libraries['llvm'].LLVMPreferredAlignmentOfGlobal
-    LLVMPreferredAlignmentOfGlobal.restype = ctypes.c_uint32
-    LLVMPreferredAlignmentOfGlobal.argtypes = [LLVMTargetDataRef, LLVMValueRef]
+  LLVMPreferredAlignmentOfGlobal = _libraries["llvm"].LLVMPreferredAlignmentOfGlobal
+  LLVMPreferredAlignmentOfGlobal.restype = ctypes.c_uint32
+  LLVMPreferredAlignmentOfGlobal.argtypes = [LLVMTargetDataRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMElementAtOffset = _libraries['llvm'].LLVMElementAtOffset
-    LLVMElementAtOffset.restype = ctypes.c_uint32
-    LLVMElementAtOffset.argtypes = [LLVMTargetDataRef, LLVMTypeRef, ctypes.c_uint64]
+  LLVMElementAtOffset = _libraries["llvm"].LLVMElementAtOffset
+  LLVMElementAtOffset.restype = ctypes.c_uint32
+  LLVMElementAtOffset.argtypes = [LLVMTargetDataRef, LLVMTypeRef, ctypes.c_uint64]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOffsetOfElement = _libraries['llvm'].LLVMOffsetOfElement
-    LLVMOffsetOfElement.restype = ctypes.c_uint64
-    LLVMOffsetOfElement.argtypes = [LLVMTargetDataRef, LLVMTypeRef, ctypes.c_uint32]
+  LLVMOffsetOfElement = _libraries["llvm"].LLVMOffsetOfElement
+  LLVMOffsetOfElement.restype = ctypes.c_uint64
+  LLVMOffsetOfElement.argtypes = [LLVMTargetDataRef, LLVMTypeRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
+
+
 class struct_LLVMOpaqueTargetMachine(Structure):
-    pass
+  pass
+
 
 LLVMTargetMachineRef = ctypes.POINTER(struct_LLVMOpaqueTargetMachine)
+
+
 class struct_LLVMTarget(Structure):
-    pass
+  pass
+
 
 LLVMTargetRef = ctypes.POINTER(struct_LLVMTarget)
 
 # values for enumeration 'c__EA_LLVMCodeGenOptLevel'
 c__EA_LLVMCodeGenOptLevel__enumvalues = {
-    0: 'LLVMCodeGenLevelNone',
-    1: 'LLVMCodeGenLevelLess',
-    2: 'LLVMCodeGenLevelDefault',
-    3: 'LLVMCodeGenLevelAggressive',
+  0: "LLVMCodeGenLevelNone",
+  1: "LLVMCodeGenLevelLess",
+  2: "LLVMCodeGenLevelDefault",
+  3: "LLVMCodeGenLevelAggressive",
 }
 LLVMCodeGenLevelNone = 0
 LLVMCodeGenLevelLess = 1
 LLVMCodeGenLevelDefault = 2
 LLVMCodeGenLevelAggressive = 3
-c__EA_LLVMCodeGenOptLevel = ctypes.c_uint32 # enum
+c__EA_LLVMCodeGenOptLevel = ctypes.c_uint32  # enum
 LLVMCodeGenOptLevel = c__EA_LLVMCodeGenOptLevel
 LLVMCodeGenOptLevel__enumvalues = c__EA_LLVMCodeGenOptLevel__enumvalues
 
 # values for enumeration 'c__EA_LLVMRelocMode'
 c__EA_LLVMRelocMode__enumvalues = {
-    0: 'LLVMRelocDefault',
-    1: 'LLVMRelocStatic',
-    2: 'LLVMRelocPIC',
-    3: 'LLVMRelocDynamicNoPic',
-    4: 'LLVMRelocROPI',
-    5: 'LLVMRelocRWPI',
-    6: 'LLVMRelocROPI_RWPI',
+  0: "LLVMRelocDefault",
+  1: "LLVMRelocStatic",
+  2: "LLVMRelocPIC",
+  3: "LLVMRelocDynamicNoPic",
+  4: "LLVMRelocROPI",
+  5: "LLVMRelocRWPI",
+  6: "LLVMRelocROPI_RWPI",
 }
 LLVMRelocDefault = 0
 LLVMRelocStatic = 1
@@ -7220,19 +8819,19 @@ LLVMRelocDynamicNoPic = 3
 LLVMRelocROPI = 4
 LLVMRelocRWPI = 5
 LLVMRelocROPI_RWPI = 6
-c__EA_LLVMRelocMode = ctypes.c_uint32 # enum
+c__EA_LLVMRelocMode = ctypes.c_uint32  # enum
 LLVMRelocMode = c__EA_LLVMRelocMode
 LLVMRelocMode__enumvalues = c__EA_LLVMRelocMode__enumvalues
 
 # values for enumeration 'c__EA_LLVMCodeModel'
 c__EA_LLVMCodeModel__enumvalues = {
-    0: 'LLVMCodeModelDefault',
-    1: 'LLVMCodeModelJITDefault',
-    2: 'LLVMCodeModelTiny',
-    3: 'LLVMCodeModelSmall',
-    4: 'LLVMCodeModelKernel',
-    5: 'LLVMCodeModelMedium',
-    6: 'LLVMCodeModelLarge',
+  0: "LLVMCodeModelDefault",
+  1: "LLVMCodeModelJITDefault",
+  2: "LLVMCodeModelTiny",
+  3: "LLVMCodeModelSmall",
+  4: "LLVMCodeModelKernel",
+  5: "LLVMCodeModelMedium",
+  6: "LLVMCodeModelLarge",
 }
 LLVMCodeModelDefault = 0
 LLVMCodeModelJITDefault = 1
@@ -7241,620 +8840,800 @@ LLVMCodeModelSmall = 3
 LLVMCodeModelKernel = 4
 LLVMCodeModelMedium = 5
 LLVMCodeModelLarge = 6
-c__EA_LLVMCodeModel = ctypes.c_uint32 # enum
+c__EA_LLVMCodeModel = ctypes.c_uint32  # enum
 LLVMCodeModel = c__EA_LLVMCodeModel
 LLVMCodeModel__enumvalues = c__EA_LLVMCodeModel__enumvalues
 
 # values for enumeration 'c__EA_LLVMCodeGenFileType'
 c__EA_LLVMCodeGenFileType__enumvalues = {
-    0: 'LLVMAssemblyFile',
-    1: 'LLVMObjectFile',
+  0: "LLVMAssemblyFile",
+  1: "LLVMObjectFile",
 }
 LLVMAssemblyFile = 0
 LLVMObjectFile = 1
-c__EA_LLVMCodeGenFileType = ctypes.c_uint32 # enum
+c__EA_LLVMCodeGenFileType = ctypes.c_uint32  # enum
 LLVMCodeGenFileType = c__EA_LLVMCodeGenFileType
 LLVMCodeGenFileType__enumvalues = c__EA_LLVMCodeGenFileType__enumvalues
 try:
-    LLVMGetFirstTarget = _libraries['llvm'].LLVMGetFirstTarget
-    LLVMGetFirstTarget.restype = LLVMTargetRef
-    LLVMGetFirstTarget.argtypes = []
+  LLVMGetFirstTarget = _libraries["llvm"].LLVMGetFirstTarget
+  LLVMGetFirstTarget.restype = LLVMTargetRef
+  LLVMGetFirstTarget.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetNextTarget = _libraries['llvm'].LLVMGetNextTarget
-    LLVMGetNextTarget.restype = LLVMTargetRef
-    LLVMGetNextTarget.argtypes = [LLVMTargetRef]
+  LLVMGetNextTarget = _libraries["llvm"].LLVMGetNextTarget
+  LLVMGetNextTarget.restype = LLVMTargetRef
+  LLVMGetNextTarget.argtypes = [LLVMTargetRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTargetFromName = _libraries['llvm'].LLVMGetTargetFromName
-    LLVMGetTargetFromName.restype = LLVMTargetRef
-    LLVMGetTargetFromName.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMGetTargetFromName = _libraries["llvm"].LLVMGetTargetFromName
+  LLVMGetTargetFromName.restype = LLVMTargetRef
+  LLVMGetTargetFromName.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTargetFromTriple = _libraries['llvm'].LLVMGetTargetFromTriple
-    LLVMGetTargetFromTriple.restype = LLVMBool
-    LLVMGetTargetFromTriple.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.POINTER(struct_LLVMTarget)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMGetTargetFromTriple = _libraries["llvm"].LLVMGetTargetFromTriple
+  LLVMGetTargetFromTriple.restype = LLVMBool
+  LLVMGetTargetFromTriple.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMTarget)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTargetName = _libraries['llvm'].LLVMGetTargetName
-    LLVMGetTargetName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetTargetName.argtypes = [LLVMTargetRef]
+  LLVMGetTargetName = _libraries["llvm"].LLVMGetTargetName
+  LLVMGetTargetName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetTargetName.argtypes = [LLVMTargetRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTargetDescription = _libraries['llvm'].LLVMGetTargetDescription
-    LLVMGetTargetDescription.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetTargetDescription.argtypes = [LLVMTargetRef]
+  LLVMGetTargetDescription = _libraries["llvm"].LLVMGetTargetDescription
+  LLVMGetTargetDescription.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetTargetDescription.argtypes = [LLVMTargetRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMTargetHasJIT = _libraries['llvm'].LLVMTargetHasJIT
-    LLVMTargetHasJIT.restype = LLVMBool
-    LLVMTargetHasJIT.argtypes = [LLVMTargetRef]
+  LLVMTargetHasJIT = _libraries["llvm"].LLVMTargetHasJIT
+  LLVMTargetHasJIT.restype = LLVMBool
+  LLVMTargetHasJIT.argtypes = [LLVMTargetRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMTargetHasTargetMachine = _libraries['llvm'].LLVMTargetHasTargetMachine
-    LLVMTargetHasTargetMachine.restype = LLVMBool
-    LLVMTargetHasTargetMachine.argtypes = [LLVMTargetRef]
+  LLVMTargetHasTargetMachine = _libraries["llvm"].LLVMTargetHasTargetMachine
+  LLVMTargetHasTargetMachine.restype = LLVMBool
+  LLVMTargetHasTargetMachine.argtypes = [LLVMTargetRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMTargetHasAsmBackend = _libraries['llvm'].LLVMTargetHasAsmBackend
-    LLVMTargetHasAsmBackend.restype = LLVMBool
-    LLVMTargetHasAsmBackend.argtypes = [LLVMTargetRef]
+  LLVMTargetHasAsmBackend = _libraries["llvm"].LLVMTargetHasAsmBackend
+  LLVMTargetHasAsmBackend.restype = LLVMBool
+  LLVMTargetHasAsmBackend.argtypes = [LLVMTargetRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateTargetMachine = _libraries['llvm'].LLVMCreateTargetMachine
-    LLVMCreateTargetMachine.restype = LLVMTargetMachineRef
-    LLVMCreateTargetMachine.argtypes = [LLVMTargetRef, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char), LLVMCodeGenOptLevel, LLVMRelocMode, LLVMCodeModel]
+  LLVMCreateTargetMachine = _libraries["llvm"].LLVMCreateTargetMachine
+  LLVMCreateTargetMachine.restype = LLVMTargetMachineRef
+  LLVMCreateTargetMachine.argtypes = [
+    LLVMTargetRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+    LLVMCodeGenOptLevel,
+    LLVMRelocMode,
+    LLVMCodeModel,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeTargetMachine = _libraries['llvm'].LLVMDisposeTargetMachine
-    LLVMDisposeTargetMachine.restype = None
-    LLVMDisposeTargetMachine.argtypes = [LLVMTargetMachineRef]
+  LLVMDisposeTargetMachine = _libraries["llvm"].LLVMDisposeTargetMachine
+  LLVMDisposeTargetMachine.restype = None
+  LLVMDisposeTargetMachine.argtypes = [LLVMTargetMachineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTargetMachineTarget = _libraries['llvm'].LLVMGetTargetMachineTarget
-    LLVMGetTargetMachineTarget.restype = LLVMTargetRef
-    LLVMGetTargetMachineTarget.argtypes = [LLVMTargetMachineRef]
+  LLVMGetTargetMachineTarget = _libraries["llvm"].LLVMGetTargetMachineTarget
+  LLVMGetTargetMachineTarget.restype = LLVMTargetRef
+  LLVMGetTargetMachineTarget.argtypes = [LLVMTargetMachineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTargetMachineTriple = _libraries['llvm'].LLVMGetTargetMachineTriple
-    LLVMGetTargetMachineTriple.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetTargetMachineTriple.argtypes = [LLVMTargetMachineRef]
+  LLVMGetTargetMachineTriple = _libraries["llvm"].LLVMGetTargetMachineTriple
+  LLVMGetTargetMachineTriple.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetTargetMachineTriple.argtypes = [LLVMTargetMachineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTargetMachineCPU = _libraries['llvm'].LLVMGetTargetMachineCPU
-    LLVMGetTargetMachineCPU.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetTargetMachineCPU.argtypes = [LLVMTargetMachineRef]
+  LLVMGetTargetMachineCPU = _libraries["llvm"].LLVMGetTargetMachineCPU
+  LLVMGetTargetMachineCPU.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetTargetMachineCPU.argtypes = [LLVMTargetMachineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetTargetMachineFeatureString = _libraries['llvm'].LLVMGetTargetMachineFeatureString
-    LLVMGetTargetMachineFeatureString.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetTargetMachineFeatureString.argtypes = [LLVMTargetMachineRef]
+  LLVMGetTargetMachineFeatureString = _libraries[
+    "llvm"
+  ].LLVMGetTargetMachineFeatureString
+  LLVMGetTargetMachineFeatureString.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetTargetMachineFeatureString.argtypes = [LLVMTargetMachineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateTargetDataLayout = _libraries['llvm'].LLVMCreateTargetDataLayout
-    LLVMCreateTargetDataLayout.restype = LLVMTargetDataRef
-    LLVMCreateTargetDataLayout.argtypes = [LLVMTargetMachineRef]
+  LLVMCreateTargetDataLayout = _libraries["llvm"].LLVMCreateTargetDataLayout
+  LLVMCreateTargetDataLayout.restype = LLVMTargetDataRef
+  LLVMCreateTargetDataLayout.argtypes = [LLVMTargetMachineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSetTargetMachineAsmVerbosity = _libraries['llvm'].LLVMSetTargetMachineAsmVerbosity
-    LLVMSetTargetMachineAsmVerbosity.restype = None
-    LLVMSetTargetMachineAsmVerbosity.argtypes = [LLVMTargetMachineRef, LLVMBool]
+  LLVMSetTargetMachineAsmVerbosity = _libraries["llvm"].LLVMSetTargetMachineAsmVerbosity
+  LLVMSetTargetMachineAsmVerbosity.restype = None
+  LLVMSetTargetMachineAsmVerbosity.argtypes = [LLVMTargetMachineRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMTargetMachineEmitToFile = _libraries['llvm'].LLVMTargetMachineEmitToFile
-    LLVMTargetMachineEmitToFile.restype = LLVMBool
-    LLVMTargetMachineEmitToFile.argtypes = [LLVMTargetMachineRef, LLVMModuleRef, ctypes.POINTER(ctypes.c_char), LLVMCodeGenFileType, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMTargetMachineEmitToFile = _libraries["llvm"].LLVMTargetMachineEmitToFile
+  LLVMTargetMachineEmitToFile.restype = LLVMBool
+  LLVMTargetMachineEmitToFile.argtypes = [
+    LLVMTargetMachineRef,
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    LLVMCodeGenFileType,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMTargetMachineEmitToMemoryBuffer = _libraries['llvm'].LLVMTargetMachineEmitToMemoryBuffer
-    LLVMTargetMachineEmitToMemoryBuffer.restype = LLVMBool
-    LLVMTargetMachineEmitToMemoryBuffer.argtypes = [LLVMTargetMachineRef, LLVMModuleRef, LLVMCodeGenFileType, ctypes.POINTER(ctypes.POINTER(ctypes.c_char)), ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer))]
+  LLVMTargetMachineEmitToMemoryBuffer = _libraries[
+    "llvm"
+  ].LLVMTargetMachineEmitToMemoryBuffer
+  LLVMTargetMachineEmitToMemoryBuffer.restype = LLVMBool
+  LLVMTargetMachineEmitToMemoryBuffer.argtypes = [
+    LLVMTargetMachineRef,
+    LLVMModuleRef,
+    LLVMCodeGenFileType,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetDefaultTargetTriple = _libraries['llvm'].LLVMGetDefaultTargetTriple
-    LLVMGetDefaultTargetTriple.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetDefaultTargetTriple.argtypes = []
+  LLVMGetDefaultTargetTriple = _libraries["llvm"].LLVMGetDefaultTargetTriple
+  LLVMGetDefaultTargetTriple.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetDefaultTargetTriple.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMNormalizeTargetTriple = _libraries['llvm'].LLVMNormalizeTargetTriple
-    LLVMNormalizeTargetTriple.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMNormalizeTargetTriple.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMNormalizeTargetTriple = _libraries["llvm"].LLVMNormalizeTargetTriple
+  LLVMNormalizeTargetTriple.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMNormalizeTargetTriple.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetHostCPUName = _libraries['llvm'].LLVMGetHostCPUName
-    LLVMGetHostCPUName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetHostCPUName.argtypes = []
+  LLVMGetHostCPUName = _libraries["llvm"].LLVMGetHostCPUName
+  LLVMGetHostCPUName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetHostCPUName.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetHostCPUFeatures = _libraries['llvm'].LLVMGetHostCPUFeatures
-    LLVMGetHostCPUFeatures.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetHostCPUFeatures.argtypes = []
+  LLVMGetHostCPUFeatures = _libraries["llvm"].LLVMGetHostCPUFeatures
+  LLVMGetHostCPUFeatures.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetHostCPUFeatures.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddAnalysisPasses = _libraries['llvm'].LLVMAddAnalysisPasses
-    LLVMAddAnalysisPasses.restype = None
-    LLVMAddAnalysisPasses.argtypes = [LLVMTargetMachineRef, LLVMPassManagerRef]
+  LLVMAddAnalysisPasses = _libraries["llvm"].LLVMAddAnalysisPasses
+  LLVMAddAnalysisPasses.restype = None
+  LLVMAddAnalysisPasses.argtypes = [LLVMTargetMachineRef, LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMLinkInMCJIT = _libraries['llvm'].LLVMLinkInMCJIT
-    LLVMLinkInMCJIT.restype = None
-    LLVMLinkInMCJIT.argtypes = []
+  LLVMLinkInMCJIT = _libraries["llvm"].LLVMLinkInMCJIT
+  LLVMLinkInMCJIT.restype = None
+  LLVMLinkInMCJIT.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMLinkInInterpreter = _libraries['llvm'].LLVMLinkInInterpreter
-    LLVMLinkInInterpreter.restype = None
-    LLVMLinkInInterpreter.argtypes = []
+  LLVMLinkInInterpreter = _libraries["llvm"].LLVMLinkInInterpreter
+  LLVMLinkInInterpreter.restype = None
+  LLVMLinkInInterpreter.argtypes = []
 except AttributeError:
-    pass
+  pass
+
+
 class struct_LLVMOpaqueGenericValue(Structure):
-    pass
+  pass
+
 
 LLVMGenericValueRef = ctypes.POINTER(struct_LLVMOpaqueGenericValue)
+
+
 class struct_LLVMOpaqueExecutionEngine(Structure):
-    pass
+  pass
+
 
 LLVMExecutionEngineRef = ctypes.POINTER(struct_LLVMOpaqueExecutionEngine)
+
+
 class struct_LLVMOpaqueMCJITMemoryManager(Structure):
-    pass
+  pass
+
 
 LLVMMCJITMemoryManagerRef = ctypes.POINTER(struct_LLVMOpaqueMCJITMemoryManager)
-class struct_LLVMMCJITCompilerOptions(Structure):
-    pass
 
-struct_LLVMMCJITCompilerOptions._pack_ = 1 # source:False
+
+class struct_LLVMMCJITCompilerOptions(Structure):
+  pass
+
+
+struct_LLVMMCJITCompilerOptions._pack_ = 1  # source:False
 struct_LLVMMCJITCompilerOptions._fields_ = [
-    ('OptLevel', ctypes.c_uint32),
-    ('CodeModel', LLVMCodeModel),
-    ('NoFramePointerElim', ctypes.c_int32),
-    ('EnableFastISel', ctypes.c_int32),
-    ('MCJMM', ctypes.POINTER(struct_LLVMOpaqueMCJITMemoryManager)),
+  ("OptLevel", ctypes.c_uint32),
+  ("CodeModel", LLVMCodeModel),
+  ("NoFramePointerElim", ctypes.c_int32),
+  ("EnableFastISel", ctypes.c_int32),
+  ("MCJMM", ctypes.POINTER(struct_LLVMOpaqueMCJITMemoryManager)),
 ]
 
 try:
-    LLVMCreateGenericValueOfInt = _libraries['llvm'].LLVMCreateGenericValueOfInt
-    LLVMCreateGenericValueOfInt.restype = LLVMGenericValueRef
-    LLVMCreateGenericValueOfInt.argtypes = [LLVMTypeRef, ctypes.c_uint64, LLVMBool]
+  LLVMCreateGenericValueOfInt = _libraries["llvm"].LLVMCreateGenericValueOfInt
+  LLVMCreateGenericValueOfInt.restype = LLVMGenericValueRef
+  LLVMCreateGenericValueOfInt.argtypes = [LLVMTypeRef, ctypes.c_uint64, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateGenericValueOfPointer = _libraries['llvm'].LLVMCreateGenericValueOfPointer
-    LLVMCreateGenericValueOfPointer.restype = LLVMGenericValueRef
-    LLVMCreateGenericValueOfPointer.argtypes = [ctypes.POINTER(None)]
+  LLVMCreateGenericValueOfPointer = _libraries["llvm"].LLVMCreateGenericValueOfPointer
+  LLVMCreateGenericValueOfPointer.restype = LLVMGenericValueRef
+  LLVMCreateGenericValueOfPointer.argtypes = [ctypes.POINTER(None)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateGenericValueOfFloat = _libraries['llvm'].LLVMCreateGenericValueOfFloat
-    LLVMCreateGenericValueOfFloat.restype = LLVMGenericValueRef
-    LLVMCreateGenericValueOfFloat.argtypes = [LLVMTypeRef, ctypes.c_double]
+  LLVMCreateGenericValueOfFloat = _libraries["llvm"].LLVMCreateGenericValueOfFloat
+  LLVMCreateGenericValueOfFloat.restype = LLVMGenericValueRef
+  LLVMCreateGenericValueOfFloat.argtypes = [LLVMTypeRef, ctypes.c_double]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGenericValueIntWidth = _libraries['llvm'].LLVMGenericValueIntWidth
-    LLVMGenericValueIntWidth.restype = ctypes.c_uint32
-    LLVMGenericValueIntWidth.argtypes = [LLVMGenericValueRef]
+  LLVMGenericValueIntWidth = _libraries["llvm"].LLVMGenericValueIntWidth
+  LLVMGenericValueIntWidth.restype = ctypes.c_uint32
+  LLVMGenericValueIntWidth.argtypes = [LLVMGenericValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGenericValueToInt = _libraries['llvm'].LLVMGenericValueToInt
-    LLVMGenericValueToInt.restype = ctypes.c_uint64
-    LLVMGenericValueToInt.argtypes = [LLVMGenericValueRef, LLVMBool]
+  LLVMGenericValueToInt = _libraries["llvm"].LLVMGenericValueToInt
+  LLVMGenericValueToInt.restype = ctypes.c_uint64
+  LLVMGenericValueToInt.argtypes = [LLVMGenericValueRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGenericValueToPointer = _libraries['llvm'].LLVMGenericValueToPointer
-    LLVMGenericValueToPointer.restype = ctypes.POINTER(None)
-    LLVMGenericValueToPointer.argtypes = [LLVMGenericValueRef]
+  LLVMGenericValueToPointer = _libraries["llvm"].LLVMGenericValueToPointer
+  LLVMGenericValueToPointer.restype = ctypes.POINTER(None)
+  LLVMGenericValueToPointer.argtypes = [LLVMGenericValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGenericValueToFloat = _libraries['llvm'].LLVMGenericValueToFloat
-    LLVMGenericValueToFloat.restype = ctypes.c_double
-    LLVMGenericValueToFloat.argtypes = [LLVMTypeRef, LLVMGenericValueRef]
+  LLVMGenericValueToFloat = _libraries["llvm"].LLVMGenericValueToFloat
+  LLVMGenericValueToFloat.restype = ctypes.c_double
+  LLVMGenericValueToFloat.argtypes = [LLVMTypeRef, LLVMGenericValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeGenericValue = _libraries['llvm'].LLVMDisposeGenericValue
-    LLVMDisposeGenericValue.restype = None
-    LLVMDisposeGenericValue.argtypes = [LLVMGenericValueRef]
+  LLVMDisposeGenericValue = _libraries["llvm"].LLVMDisposeGenericValue
+  LLVMDisposeGenericValue.restype = None
+  LLVMDisposeGenericValue.argtypes = [LLVMGenericValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateExecutionEngineForModule = _libraries['llvm'].LLVMCreateExecutionEngineForModule
-    LLVMCreateExecutionEngineForModule.restype = LLVMBool
-    LLVMCreateExecutionEngineForModule.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueExecutionEngine)), LLVMModuleRef, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMCreateExecutionEngineForModule = _libraries[
+    "llvm"
+  ].LLVMCreateExecutionEngineForModule
+  LLVMCreateExecutionEngineForModule.restype = LLVMBool
+  LLVMCreateExecutionEngineForModule.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueExecutionEngine)),
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateInterpreterForModule = _libraries['llvm'].LLVMCreateInterpreterForModule
-    LLVMCreateInterpreterForModule.restype = LLVMBool
-    LLVMCreateInterpreterForModule.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueExecutionEngine)), LLVMModuleRef, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMCreateInterpreterForModule = _libraries["llvm"].LLVMCreateInterpreterForModule
+  LLVMCreateInterpreterForModule.restype = LLVMBool
+  LLVMCreateInterpreterForModule.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueExecutionEngine)),
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateJITCompilerForModule = _libraries['llvm'].LLVMCreateJITCompilerForModule
-    LLVMCreateJITCompilerForModule.restype = LLVMBool
-    LLVMCreateJITCompilerForModule.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueExecutionEngine)), LLVMModuleRef, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMCreateJITCompilerForModule = _libraries["llvm"].LLVMCreateJITCompilerForModule
+  LLVMCreateJITCompilerForModule.restype = LLVMBool
+  LLVMCreateJITCompilerForModule.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueExecutionEngine)),
+    LLVMModuleRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeMCJITCompilerOptions = _libraries['llvm'].LLVMInitializeMCJITCompilerOptions
-    LLVMInitializeMCJITCompilerOptions.restype = None
-    LLVMInitializeMCJITCompilerOptions.argtypes = [ctypes.POINTER(struct_LLVMMCJITCompilerOptions), size_t]
+  LLVMInitializeMCJITCompilerOptions = _libraries[
+    "llvm"
+  ].LLVMInitializeMCJITCompilerOptions
+  LLVMInitializeMCJITCompilerOptions.restype = None
+  LLVMInitializeMCJITCompilerOptions.argtypes = [
+    ctypes.POINTER(struct_LLVMMCJITCompilerOptions),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateMCJITCompilerForModule = _libraries['llvm'].LLVMCreateMCJITCompilerForModule
-    LLVMCreateMCJITCompilerForModule.restype = LLVMBool
-    LLVMCreateMCJITCompilerForModule.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueExecutionEngine)), LLVMModuleRef, ctypes.POINTER(struct_LLVMMCJITCompilerOptions), size_t, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMCreateMCJITCompilerForModule = _libraries["llvm"].LLVMCreateMCJITCompilerForModule
+  LLVMCreateMCJITCompilerForModule.restype = LLVMBool
+  LLVMCreateMCJITCompilerForModule.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueExecutionEngine)),
+    LLVMModuleRef,
+    ctypes.POINTER(struct_LLVMMCJITCompilerOptions),
+    size_t,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeExecutionEngine = _libraries['llvm'].LLVMDisposeExecutionEngine
-    LLVMDisposeExecutionEngine.restype = None
-    LLVMDisposeExecutionEngine.argtypes = [LLVMExecutionEngineRef]
+  LLVMDisposeExecutionEngine = _libraries["llvm"].LLVMDisposeExecutionEngine
+  LLVMDisposeExecutionEngine.restype = None
+  LLVMDisposeExecutionEngine.argtypes = [LLVMExecutionEngineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRunStaticConstructors = _libraries['llvm'].LLVMRunStaticConstructors
-    LLVMRunStaticConstructors.restype = None
-    LLVMRunStaticConstructors.argtypes = [LLVMExecutionEngineRef]
+  LLVMRunStaticConstructors = _libraries["llvm"].LLVMRunStaticConstructors
+  LLVMRunStaticConstructors.restype = None
+  LLVMRunStaticConstructors.argtypes = [LLVMExecutionEngineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRunStaticDestructors = _libraries['llvm'].LLVMRunStaticDestructors
-    LLVMRunStaticDestructors.restype = None
-    LLVMRunStaticDestructors.argtypes = [LLVMExecutionEngineRef]
+  LLVMRunStaticDestructors = _libraries["llvm"].LLVMRunStaticDestructors
+  LLVMRunStaticDestructors.restype = None
+  LLVMRunStaticDestructors.argtypes = [LLVMExecutionEngineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRunFunctionAsMain = _libraries['llvm'].LLVMRunFunctionAsMain
-    LLVMRunFunctionAsMain.restype = ctypes.c_int32
-    LLVMRunFunctionAsMain.argtypes = [LLVMExecutionEngineRef, LLVMValueRef, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(ctypes.c_char)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMRunFunctionAsMain = _libraries["llvm"].LLVMRunFunctionAsMain
+  LLVMRunFunctionAsMain.restype = ctypes.c_int32
+  LLVMRunFunctionAsMain.argtypes = [
+    LLVMExecutionEngineRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRunFunction = _libraries['llvm'].LLVMRunFunction
-    LLVMRunFunction.restype = LLVMGenericValueRef
-    LLVMRunFunction.argtypes = [LLVMExecutionEngineRef, LLVMValueRef, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueGenericValue))]
+  LLVMRunFunction = _libraries["llvm"].LLVMRunFunction
+  LLVMRunFunction.restype = LLVMGenericValueRef
+  LLVMRunFunction.argtypes = [
+    LLVMExecutionEngineRef,
+    LLVMValueRef,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueGenericValue)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMFreeMachineCodeForFunction = _libraries['llvm'].LLVMFreeMachineCodeForFunction
-    LLVMFreeMachineCodeForFunction.restype = None
-    LLVMFreeMachineCodeForFunction.argtypes = [LLVMExecutionEngineRef, LLVMValueRef]
+  LLVMFreeMachineCodeForFunction = _libraries["llvm"].LLVMFreeMachineCodeForFunction
+  LLVMFreeMachineCodeForFunction.restype = None
+  LLVMFreeMachineCodeForFunction.argtypes = [LLVMExecutionEngineRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddModule = _libraries['llvm'].LLVMAddModule
-    LLVMAddModule.restype = None
-    LLVMAddModule.argtypes = [LLVMExecutionEngineRef, LLVMModuleRef]
+  LLVMAddModule = _libraries["llvm"].LLVMAddModule
+  LLVMAddModule.restype = None
+  LLVMAddModule.argtypes = [LLVMExecutionEngineRef, LLVMModuleRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemoveModule = _libraries['llvm'].LLVMRemoveModule
-    LLVMRemoveModule.restype = LLVMBool
-    LLVMRemoveModule.argtypes = [LLVMExecutionEngineRef, LLVMModuleRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMRemoveModule = _libraries["llvm"].LLVMRemoveModule
+  LLVMRemoveModule.restype = LLVMBool
+  LLVMRemoveModule.argtypes = [
+    LLVMExecutionEngineRef,
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMFindFunction = _libraries['llvm'].LLVMFindFunction
-    LLVMFindFunction.restype = LLVMBool
-    LLVMFindFunction.argtypes = [LLVMExecutionEngineRef, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue))]
+  LLVMFindFunction = _libraries["llvm"].LLVMFindFunction
+  LLVMFindFunction.restype = LLVMBool
+  LLVMFindFunction.argtypes = [
+    LLVMExecutionEngineRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueValue)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRecompileAndRelinkFunction = _libraries['llvm'].LLVMRecompileAndRelinkFunction
-    LLVMRecompileAndRelinkFunction.restype = ctypes.POINTER(None)
-    LLVMRecompileAndRelinkFunction.argtypes = [LLVMExecutionEngineRef, LLVMValueRef]
+  LLVMRecompileAndRelinkFunction = _libraries["llvm"].LLVMRecompileAndRelinkFunction
+  LLVMRecompileAndRelinkFunction.restype = ctypes.POINTER(None)
+  LLVMRecompileAndRelinkFunction.argtypes = [LLVMExecutionEngineRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetExecutionEngineTargetData = _libraries['llvm'].LLVMGetExecutionEngineTargetData
-    LLVMGetExecutionEngineTargetData.restype = LLVMTargetDataRef
-    LLVMGetExecutionEngineTargetData.argtypes = [LLVMExecutionEngineRef]
+  LLVMGetExecutionEngineTargetData = _libraries["llvm"].LLVMGetExecutionEngineTargetData
+  LLVMGetExecutionEngineTargetData.restype = LLVMTargetDataRef
+  LLVMGetExecutionEngineTargetData.argtypes = [LLVMExecutionEngineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetExecutionEngineTargetMachine = _libraries['llvm'].LLVMGetExecutionEngineTargetMachine
-    LLVMGetExecutionEngineTargetMachine.restype = LLVMTargetMachineRef
-    LLVMGetExecutionEngineTargetMachine.argtypes = [LLVMExecutionEngineRef]
+  LLVMGetExecutionEngineTargetMachine = _libraries[
+    "llvm"
+  ].LLVMGetExecutionEngineTargetMachine
+  LLVMGetExecutionEngineTargetMachine.restype = LLVMTargetMachineRef
+  LLVMGetExecutionEngineTargetMachine.argtypes = [LLVMExecutionEngineRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddGlobalMapping = _libraries['llvm'].LLVMAddGlobalMapping
-    LLVMAddGlobalMapping.restype = None
-    LLVMAddGlobalMapping.argtypes = [LLVMExecutionEngineRef, LLVMValueRef, ctypes.POINTER(None)]
+  LLVMAddGlobalMapping = _libraries["llvm"].LLVMAddGlobalMapping
+  LLVMAddGlobalMapping.restype = None
+  LLVMAddGlobalMapping.argtypes = [
+    LLVMExecutionEngineRef,
+    LLVMValueRef,
+    ctypes.POINTER(None),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetPointerToGlobal = _libraries['llvm'].LLVMGetPointerToGlobal
-    LLVMGetPointerToGlobal.restype = ctypes.POINTER(None)
-    LLVMGetPointerToGlobal.argtypes = [LLVMExecutionEngineRef, LLVMValueRef]
+  LLVMGetPointerToGlobal = _libraries["llvm"].LLVMGetPointerToGlobal
+  LLVMGetPointerToGlobal.restype = ctypes.POINTER(None)
+  LLVMGetPointerToGlobal.argtypes = [LLVMExecutionEngineRef, LLVMValueRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetGlobalValueAddress = _libraries['llvm'].LLVMGetGlobalValueAddress
-    LLVMGetGlobalValueAddress.restype = uint64_t
-    LLVMGetGlobalValueAddress.argtypes = [LLVMExecutionEngineRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetGlobalValueAddress = _libraries["llvm"].LLVMGetGlobalValueAddress
+  LLVMGetGlobalValueAddress.restype = uint64_t
+  LLVMGetGlobalValueAddress.argtypes = [
+    LLVMExecutionEngineRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetFunctionAddress = _libraries['llvm'].LLVMGetFunctionAddress
-    LLVMGetFunctionAddress.restype = uint64_t
-    LLVMGetFunctionAddress.argtypes = [LLVMExecutionEngineRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMGetFunctionAddress = _libraries["llvm"].LLVMGetFunctionAddress
+  LLVMGetFunctionAddress.restype = uint64_t
+  LLVMGetFunctionAddress.argtypes = [
+    LLVMExecutionEngineRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMExecutionEngineGetErrMsg = _libraries['llvm'].LLVMExecutionEngineGetErrMsg
-    LLVMExecutionEngineGetErrMsg.restype = LLVMBool
-    LLVMExecutionEngineGetErrMsg.argtypes = [LLVMExecutionEngineRef, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMExecutionEngineGetErrMsg = _libraries["llvm"].LLVMExecutionEngineGetErrMsg
+  LLVMExecutionEngineGetErrMsg.restype = LLVMBool
+  LLVMExecutionEngineGetErrMsg.argtypes = [
+    LLVMExecutionEngineRef,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
-LLVMMemoryManagerAllocateCodeSectionCallback = ctypes.CFUNCTYPE(ctypes.POINTER(ctypes.c_ubyte), ctypes.POINTER(None), ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char))
-LLVMMemoryManagerAllocateDataSectionCallback = ctypes.CFUNCTYPE(ctypes.POINTER(ctypes.c_ubyte), ctypes.POINTER(None), ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_char), ctypes.c_int32)
-LLVMMemoryManagerFinalizeMemoryCallback = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.POINTER(None), ctypes.POINTER(ctypes.POINTER(ctypes.c_char)))
+  pass
+LLVMMemoryManagerAllocateCodeSectionCallback = ctypes.CFUNCTYPE(
+  ctypes.POINTER(ctypes.c_ubyte),
+  ctypes.POINTER(None),
+  ctypes.c_uint64,
+  ctypes.c_uint32,
+  ctypes.c_uint32,
+  ctypes.POINTER(ctypes.c_char),
+)
+LLVMMemoryManagerAllocateDataSectionCallback = ctypes.CFUNCTYPE(
+  ctypes.POINTER(ctypes.c_ubyte),
+  ctypes.POINTER(None),
+  ctypes.c_uint64,
+  ctypes.c_uint32,
+  ctypes.c_uint32,
+  ctypes.POINTER(ctypes.c_char),
+  ctypes.c_int32,
+)
+LLVMMemoryManagerFinalizeMemoryCallback = ctypes.CFUNCTYPE(
+  ctypes.c_int32, ctypes.POINTER(None), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))
+)
 LLVMMemoryManagerDestroyCallback = ctypes.CFUNCTYPE(None, ctypes.POINTER(None))
 try:
-    LLVMCreateSimpleMCJITMemoryManager = _libraries['llvm'].LLVMCreateSimpleMCJITMemoryManager
-    LLVMCreateSimpleMCJITMemoryManager.restype = LLVMMCJITMemoryManagerRef
-    LLVMCreateSimpleMCJITMemoryManager.argtypes = [ctypes.POINTER(None), LLVMMemoryManagerAllocateCodeSectionCallback, LLVMMemoryManagerAllocateDataSectionCallback, LLVMMemoryManagerFinalizeMemoryCallback, LLVMMemoryManagerDestroyCallback]
+  LLVMCreateSimpleMCJITMemoryManager = _libraries[
+    "llvm"
+  ].LLVMCreateSimpleMCJITMemoryManager
+  LLVMCreateSimpleMCJITMemoryManager.restype = LLVMMCJITMemoryManagerRef
+  LLVMCreateSimpleMCJITMemoryManager.argtypes = [
+    ctypes.POINTER(None),
+    LLVMMemoryManagerAllocateCodeSectionCallback,
+    LLVMMemoryManagerAllocateDataSectionCallback,
+    LLVMMemoryManagerFinalizeMemoryCallback,
+    LLVMMemoryManagerDestroyCallback,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeMCJITMemoryManager = _libraries['llvm'].LLVMDisposeMCJITMemoryManager
-    LLVMDisposeMCJITMemoryManager.restype = None
-    LLVMDisposeMCJITMemoryManager.argtypes = [LLVMMCJITMemoryManagerRef]
+  LLVMDisposeMCJITMemoryManager = _libraries["llvm"].LLVMDisposeMCJITMemoryManager
+  LLVMDisposeMCJITMemoryManager.restype = None
+  LLVMDisposeMCJITMemoryManager.argtypes = [LLVMMCJITMemoryManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateGDBRegistrationListener = _libraries['llvm'].LLVMCreateGDBRegistrationListener
-    LLVMCreateGDBRegistrationListener.restype = LLVMJITEventListenerRef
-    LLVMCreateGDBRegistrationListener.argtypes = []
+  LLVMCreateGDBRegistrationListener = _libraries[
+    "llvm"
+  ].LLVMCreateGDBRegistrationListener
+  LLVMCreateGDBRegistrationListener.restype = LLVMJITEventListenerRef
+  LLVMCreateGDBRegistrationListener.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateIntelJITEventListener = _libraries['llvm'].LLVMCreateIntelJITEventListener
-    LLVMCreateIntelJITEventListener.restype = LLVMJITEventListenerRef
-    LLVMCreateIntelJITEventListener.argtypes = []
+  LLVMCreateIntelJITEventListener = _libraries["llvm"].LLVMCreateIntelJITEventListener
+  LLVMCreateIntelJITEventListener.restype = LLVMJITEventListenerRef
+  LLVMCreateIntelJITEventListener.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreateOProfileJITEventListener = _libraries['llvm'].LLVMCreateOProfileJITEventListener
-    LLVMCreateOProfileJITEventListener.restype = LLVMJITEventListenerRef
-    LLVMCreateOProfileJITEventListener.argtypes = []
+  LLVMCreateOProfileJITEventListener = _libraries[
+    "llvm"
+  ].LLVMCreateOProfileJITEventListener
+  LLVMCreateOProfileJITEventListener.restype = LLVMJITEventListenerRef
+  LLVMCreateOProfileJITEventListener.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreatePerfJITEventListener = _libraries['llvm'].LLVMCreatePerfJITEventListener
-    LLVMCreatePerfJITEventListener.restype = LLVMJITEventListenerRef
-    LLVMCreatePerfJITEventListener.argtypes = []
+  LLVMCreatePerfJITEventListener = _libraries["llvm"].LLVMCreatePerfJITEventListener
+  LLVMCreatePerfJITEventListener.restype = LLVMJITEventListenerRef
+  LLVMCreatePerfJITEventListener.argtypes = []
 except AttributeError:
-    pass
-LLVM_C_IRREADER_H = True # macro
+  pass
+LLVM_C_IRREADER_H = True  # macro
 try:
-    LLVMParseIRInContext = _libraries['llvm'].LLVMParseIRInContext
-    LLVMParseIRInContext.restype = LLVMBool
-    LLVMParseIRInContext.argtypes = [LLVMContextRef, LLVMMemoryBufferRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)), ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMParseIRInContext = _libraries["llvm"].LLVMParseIRInContext
+  LLVMParseIRInContext.restype = LLVMBool
+  LLVMParseIRInContext.argtypes = [
+    LLVMContextRef,
+    LLVMMemoryBufferRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueModule)),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
-LLVM_C_INITIALIZATION_H = True # macro
+  pass
+LLVM_C_INITIALIZATION_H = True  # macro
 try:
-    LLVMInitializeTransformUtils = _libraries['llvm'].LLVMInitializeTransformUtils
-    LLVMInitializeTransformUtils.restype = None
-    LLVMInitializeTransformUtils.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeTransformUtils = _libraries["llvm"].LLVMInitializeTransformUtils
+  LLVMInitializeTransformUtils.restype = None
+  LLVMInitializeTransformUtils.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeScalarOpts = _libraries['llvm'].LLVMInitializeScalarOpts
-    LLVMInitializeScalarOpts.restype = None
-    LLVMInitializeScalarOpts.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeScalarOpts = _libraries["llvm"].LLVMInitializeScalarOpts
+  LLVMInitializeScalarOpts.restype = None
+  LLVMInitializeScalarOpts.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeObjCARCOpts = _libraries['llvm'].LLVMInitializeObjCARCOpts
-    LLVMInitializeObjCARCOpts.restype = None
-    LLVMInitializeObjCARCOpts.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeObjCARCOpts = _libraries["llvm"].LLVMInitializeObjCARCOpts
+  LLVMInitializeObjCARCOpts.restype = None
+  LLVMInitializeObjCARCOpts.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeVectorization = _libraries['llvm'].LLVMInitializeVectorization
-    LLVMInitializeVectorization.restype = None
-    LLVMInitializeVectorization.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeVectorization = _libraries["llvm"].LLVMInitializeVectorization
+  LLVMInitializeVectorization.restype = None
+  LLVMInitializeVectorization.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeInstCombine = _libraries['llvm'].LLVMInitializeInstCombine
-    LLVMInitializeInstCombine.restype = None
-    LLVMInitializeInstCombine.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeInstCombine = _libraries["llvm"].LLVMInitializeInstCombine
+  LLVMInitializeInstCombine.restype = None
+  LLVMInitializeInstCombine.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAggressiveInstCombiner = _libraries['llvm'].LLVMInitializeAggressiveInstCombiner
-    LLVMInitializeAggressiveInstCombiner.restype = None
-    LLVMInitializeAggressiveInstCombiner.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeAggressiveInstCombiner = _libraries[
+    "llvm"
+  ].LLVMInitializeAggressiveInstCombiner
+  LLVMInitializeAggressiveInstCombiner.restype = None
+  LLVMInitializeAggressiveInstCombiner.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeIPO = _libraries['llvm'].LLVMInitializeIPO
-    LLVMInitializeIPO.restype = None
-    LLVMInitializeIPO.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeIPO = _libraries["llvm"].LLVMInitializeIPO
+  LLVMInitializeIPO.restype = None
+  LLVMInitializeIPO.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeInstrumentation = _libraries['llvm'].LLVMInitializeInstrumentation
-    LLVMInitializeInstrumentation.restype = None
-    LLVMInitializeInstrumentation.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeInstrumentation = _libraries["llvm"].LLVMInitializeInstrumentation
+  LLVMInitializeInstrumentation.restype = None
+  LLVMInitializeInstrumentation.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeAnalysis = _libraries['llvm'].LLVMInitializeAnalysis
-    LLVMInitializeAnalysis.restype = None
-    LLVMInitializeAnalysis.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeAnalysis = _libraries["llvm"].LLVMInitializeAnalysis
+  LLVMInitializeAnalysis.restype = None
+  LLVMInitializeAnalysis.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeIPA = _libraries['llvm'].LLVMInitializeIPA
-    LLVMInitializeIPA.restype = None
-    LLVMInitializeIPA.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeIPA = _libraries["llvm"].LLVMInitializeIPA
+  LLVMInitializeIPA.restype = None
+  LLVMInitializeIPA.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeCodeGen = _libraries['llvm'].LLVMInitializeCodeGen
-    LLVMInitializeCodeGen.restype = None
-    LLVMInitializeCodeGen.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeCodeGen = _libraries["llvm"].LLVMInitializeCodeGen
+  LLVMInitializeCodeGen.restype = None
+  LLVMInitializeCodeGen.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMInitializeTarget = _libraries['llvm'].LLVMInitializeTarget
-    LLVMInitializeTarget.restype = None
-    LLVMInitializeTarget.argtypes = [LLVMPassRegistryRef]
+  LLVMInitializeTarget = _libraries["llvm"].LLVMInitializeTarget
+  LLVMInitializeTarget.restype = None
+  LLVMInitializeTarget.argtypes = [LLVMPassRegistryRef]
 except AttributeError:
-    pass
-LLVM_C_LLJIT_H = True # macro
-LLVM_C_ORC_H = True # macro
+  pass
+LLVM_C_LLJIT_H = True  # macro
+LLVM_C_ORC_H = True  # macro
 LLVMOrcJITTargetAddress = ctypes.c_uint64
 LLVMOrcExecutorAddress = ctypes.c_uint64
 
 # values for enumeration 'c__EA_LLVMJITSymbolGenericFlags'
 c__EA_LLVMJITSymbolGenericFlags__enumvalues = {
-    1: 'LLVMJITSymbolGenericFlagsExported',
-    2: 'LLVMJITSymbolGenericFlagsWeak',
-    4: 'LLVMJITSymbolGenericFlagsCallable',
-    8: 'LLVMJITSymbolGenericFlagsMaterializationSideEffectsOnly',
+  1: "LLVMJITSymbolGenericFlagsExported",
+  2: "LLVMJITSymbolGenericFlagsWeak",
+  4: "LLVMJITSymbolGenericFlagsCallable",
+  8: "LLVMJITSymbolGenericFlagsMaterializationSideEffectsOnly",
 }
 LLVMJITSymbolGenericFlagsExported = 1
 LLVMJITSymbolGenericFlagsWeak = 2
 LLVMJITSymbolGenericFlagsCallable = 4
 LLVMJITSymbolGenericFlagsMaterializationSideEffectsOnly = 8
-c__EA_LLVMJITSymbolGenericFlags = ctypes.c_uint32 # enum
+c__EA_LLVMJITSymbolGenericFlags = ctypes.c_uint32  # enum
 LLVMJITSymbolGenericFlags = c__EA_LLVMJITSymbolGenericFlags
 LLVMJITSymbolGenericFlags__enumvalues = c__EA_LLVMJITSymbolGenericFlags__enumvalues
 LLVMJITSymbolTargetFlags = ctypes.c_ubyte
-class struct_c__SA_LLVMJITSymbolFlags(Structure):
-    pass
 
-struct_c__SA_LLVMJITSymbolFlags._pack_ = 1 # source:False
+
+class struct_c__SA_LLVMJITSymbolFlags(Structure):
+  pass
+
+
+struct_c__SA_LLVMJITSymbolFlags._pack_ = 1  # source:False
 struct_c__SA_LLVMJITSymbolFlags._fields_ = [
-    ('GenericFlags', ctypes.c_ubyte),
-    ('TargetFlags', ctypes.c_ubyte),
+  ("GenericFlags", ctypes.c_ubyte),
+  ("TargetFlags", ctypes.c_ubyte),
 ]
 
 LLVMJITSymbolFlags = struct_c__SA_LLVMJITSymbolFlags
-class struct_c__SA_LLVMJITEvaluatedSymbol(Structure):
-    pass
 
-struct_c__SA_LLVMJITEvaluatedSymbol._pack_ = 1 # source:False
+
+class struct_c__SA_LLVMJITEvaluatedSymbol(Structure):
+  pass
+
+
+struct_c__SA_LLVMJITEvaluatedSymbol._pack_ = 1  # source:False
 struct_c__SA_LLVMJITEvaluatedSymbol._fields_ = [
-    ('Address', ctypes.c_uint64),
-    ('Flags', LLVMJITSymbolFlags),
-    ('PADDING_0', ctypes.c_ubyte * 6),
+  ("Address", ctypes.c_uint64),
+  ("Flags", LLVMJITSymbolFlags),
+  ("PADDING_0", ctypes.c_ubyte * 6),
 ]
 
 LLVMJITEvaluatedSymbol = struct_c__SA_LLVMJITEvaluatedSymbol
+
+
 class struct_LLVMOrcOpaqueExecutionSession(Structure):
-    pass
+  pass
+
 
 LLVMOrcExecutionSessionRef = ctypes.POINTER(struct_LLVMOrcOpaqueExecutionSession)
-LLVMOrcErrorReporterFunction = ctypes.CFUNCTYPE(None, ctypes.POINTER(None), ctypes.POINTER(struct_LLVMOpaqueError))
+LLVMOrcErrorReporterFunction = ctypes.CFUNCTYPE(
+  None, ctypes.POINTER(None), ctypes.POINTER(struct_LLVMOpaqueError)
+)
+
+
 class struct_LLVMOrcOpaqueSymbolStringPool(Structure):
-    pass
+  pass
+
 
 LLVMOrcSymbolStringPoolRef = ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPool)
+
+
 class struct_LLVMOrcOpaqueSymbolStringPoolEntry(Structure):
-    pass
+  pass
 
-LLVMOrcSymbolStringPoolEntryRef = ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)
+
+LLVMOrcSymbolStringPoolEntryRef = ctypes.POINTER(
+  struct_LLVMOrcOpaqueSymbolStringPoolEntry
+)
+
+
 class struct_c__SA_LLVMOrcCSymbolFlagsMapPair(Structure):
-    pass
+  pass
 
-struct_c__SA_LLVMOrcCSymbolFlagsMapPair._pack_ = 1 # source:False
+
+struct_c__SA_LLVMOrcCSymbolFlagsMapPair._pack_ = 1  # source:False
 struct_c__SA_LLVMOrcCSymbolFlagsMapPair._fields_ = [
-    ('Name', ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
-    ('Flags', LLVMJITSymbolFlags),
-    ('PADDING_0', ctypes.c_ubyte * 6),
+  ("Name", ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
+  ("Flags", LLVMJITSymbolFlags),
+  ("PADDING_0", ctypes.c_ubyte * 6),
 ]
 
 LLVMOrcCSymbolFlagsMapPair = struct_c__SA_LLVMOrcCSymbolFlagsMapPair
 LLVMOrcCSymbolFlagsMapPairs = ctypes.POINTER(struct_c__SA_LLVMOrcCSymbolFlagsMapPair)
-class struct_c__SA_LLVMJITCSymbolMapPair(Structure):
-    pass
 
-struct_c__SA_LLVMJITCSymbolMapPair._pack_ = 1 # source:False
+
+class struct_c__SA_LLVMJITCSymbolMapPair(Structure):
+  pass
+
+
+struct_c__SA_LLVMJITCSymbolMapPair._pack_ = 1  # source:False
 struct_c__SA_LLVMJITCSymbolMapPair._fields_ = [
-    ('Name', ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
-    ('Sym', LLVMJITEvaluatedSymbol),
+  ("Name", ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
+  ("Sym", LLVMJITEvaluatedSymbol),
 ]
 
 LLVMJITCSymbolMapPair = struct_c__SA_LLVMJITCSymbolMapPair
 LLVMOrcCSymbolMapPairs = ctypes.POINTER(struct_c__SA_LLVMJITCSymbolMapPair)
-class struct_c__SA_LLVMOrcCSymbolAliasMapEntry(Structure):
-    pass
 
-struct_c__SA_LLVMOrcCSymbolAliasMapEntry._pack_ = 1 # source:False
+
+class struct_c__SA_LLVMOrcCSymbolAliasMapEntry(Structure):
+  pass
+
+
+struct_c__SA_LLVMOrcCSymbolAliasMapEntry._pack_ = 1  # source:False
 struct_c__SA_LLVMOrcCSymbolAliasMapEntry._fields_ = [
-    ('Name', ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
-    ('Flags', LLVMJITSymbolFlags),
-    ('PADDING_0', ctypes.c_ubyte * 6),
+  ("Name", ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
+  ("Flags", LLVMJITSymbolFlags),
+  ("PADDING_0", ctypes.c_ubyte * 6),
 ]
 
 LLVMOrcCSymbolAliasMapEntry = struct_c__SA_LLVMOrcCSymbolAliasMapEntry
-class struct_c__SA_LLVMOrcCSymbolAliasMapPair(Structure):
-    pass
 
-struct_c__SA_LLVMOrcCSymbolAliasMapPair._pack_ = 1 # source:False
+
+class struct_c__SA_LLVMOrcCSymbolAliasMapPair(Structure):
+  pass
+
+
+struct_c__SA_LLVMOrcCSymbolAliasMapPair._pack_ = 1  # source:False
 struct_c__SA_LLVMOrcCSymbolAliasMapPair._fields_ = [
-    ('Name', ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
-    ('Entry', LLVMOrcCSymbolAliasMapEntry),
+  ("Name", ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
+  ("Entry", LLVMOrcCSymbolAliasMapEntry),
 ]
 
 LLVMOrcCSymbolAliasMapPair = struct_c__SA_LLVMOrcCSymbolAliasMapPair
 LLVMOrcCSymbolAliasMapPairs = ctypes.POINTER(struct_c__SA_LLVMOrcCSymbolAliasMapPair)
+
+
 class struct_LLVMOrcOpaqueJITDylib(Structure):
-    pass
+  pass
+
 
 LLVMOrcJITDylibRef = ctypes.POINTER(struct_LLVMOrcOpaqueJITDylib)
-class struct_c__SA_LLVMOrcCSymbolsList(Structure):
-    pass
 
-struct_c__SA_LLVMOrcCSymbolsList._pack_ = 1 # source:False
+
+class struct_c__SA_LLVMOrcCSymbolsList(Structure):
+  pass
+
+
+struct_c__SA_LLVMOrcCSymbolsList._pack_ = 1  # source:False
 struct_c__SA_LLVMOrcCSymbolsList._fields_ = [
-    ('Symbols', ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry))),
-    ('Length', ctypes.c_uint64),
+  (
+    "Symbols",
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
+  ),
+  ("Length", ctypes.c_uint64),
 ]
 
 LLVMOrcCSymbolsList = struct_c__SA_LLVMOrcCSymbolsList
-class struct_c__SA_LLVMOrcCDependenceMapPair(Structure):
-    pass
 
-struct_c__SA_LLVMOrcCDependenceMapPair._pack_ = 1 # source:False
+
+class struct_c__SA_LLVMOrcCDependenceMapPair(Structure):
+  pass
+
+
+struct_c__SA_LLVMOrcCDependenceMapPair._pack_ = 1  # source:False
 struct_c__SA_LLVMOrcCDependenceMapPair._fields_ = [
-    ('JD', ctypes.POINTER(struct_LLVMOrcOpaqueJITDylib)),
-    ('Names', LLVMOrcCSymbolsList),
+  ("JD", ctypes.POINTER(struct_LLVMOrcOpaqueJITDylib)),
+  ("Names", LLVMOrcCSymbolsList),
 ]
 
 LLVMOrcCDependenceMapPair = struct_c__SA_LLVMOrcCDependenceMapPair
@@ -7862,702 +9641,1108 @@ LLVMOrcCDependenceMapPairs = ctypes.POINTER(struct_c__SA_LLVMOrcCDependenceMapPa
 
 # values for enumeration 'c__EA_LLVMOrcLookupKind'
 c__EA_LLVMOrcLookupKind__enumvalues = {
-    0: 'LLVMOrcLookupKindStatic',
-    1: 'LLVMOrcLookupKindDLSym',
+  0: "LLVMOrcLookupKindStatic",
+  1: "LLVMOrcLookupKindDLSym",
 }
 LLVMOrcLookupKindStatic = 0
 LLVMOrcLookupKindDLSym = 1
-c__EA_LLVMOrcLookupKind = ctypes.c_uint32 # enum
+c__EA_LLVMOrcLookupKind = ctypes.c_uint32  # enum
 LLVMOrcLookupKind = c__EA_LLVMOrcLookupKind
 LLVMOrcLookupKind__enumvalues = c__EA_LLVMOrcLookupKind__enumvalues
 
 # values for enumeration 'c__EA_LLVMOrcJITDylibLookupFlags'
 c__EA_LLVMOrcJITDylibLookupFlags__enumvalues = {
-    0: 'LLVMOrcJITDylibLookupFlagsMatchExportedSymbolsOnly',
-    1: 'LLVMOrcJITDylibLookupFlagsMatchAllSymbols',
+  0: "LLVMOrcJITDylibLookupFlagsMatchExportedSymbolsOnly",
+  1: "LLVMOrcJITDylibLookupFlagsMatchAllSymbols",
 }
 LLVMOrcJITDylibLookupFlagsMatchExportedSymbolsOnly = 0
 LLVMOrcJITDylibLookupFlagsMatchAllSymbols = 1
-c__EA_LLVMOrcJITDylibLookupFlags = ctypes.c_uint32 # enum
+c__EA_LLVMOrcJITDylibLookupFlags = ctypes.c_uint32  # enum
 LLVMOrcJITDylibLookupFlags = c__EA_LLVMOrcJITDylibLookupFlags
 LLVMOrcJITDylibLookupFlags__enumvalues = c__EA_LLVMOrcJITDylibLookupFlags__enumvalues
 
 # values for enumeration 'c__EA_LLVMOrcSymbolLookupFlags'
 c__EA_LLVMOrcSymbolLookupFlags__enumvalues = {
-    0: 'LLVMOrcSymbolLookupFlagsRequiredSymbol',
-    1: 'LLVMOrcSymbolLookupFlagsWeaklyReferencedSymbol',
+  0: "LLVMOrcSymbolLookupFlagsRequiredSymbol",
+  1: "LLVMOrcSymbolLookupFlagsWeaklyReferencedSymbol",
 }
 LLVMOrcSymbolLookupFlagsRequiredSymbol = 0
 LLVMOrcSymbolLookupFlagsWeaklyReferencedSymbol = 1
-c__EA_LLVMOrcSymbolLookupFlags = ctypes.c_uint32 # enum
+c__EA_LLVMOrcSymbolLookupFlags = ctypes.c_uint32  # enum
 LLVMOrcSymbolLookupFlags = c__EA_LLVMOrcSymbolLookupFlags
 LLVMOrcSymbolLookupFlags__enumvalues = c__EA_LLVMOrcSymbolLookupFlags__enumvalues
-class struct_c__SA_LLVMOrcCLookupSetElement(Structure):
-    pass
 
-struct_c__SA_LLVMOrcCLookupSetElement._pack_ = 1 # source:False
+
+class struct_c__SA_LLVMOrcCLookupSetElement(Structure):
+  pass
+
+
+struct_c__SA_LLVMOrcCLookupSetElement._pack_ = 1  # source:False
 struct_c__SA_LLVMOrcCLookupSetElement._fields_ = [
-    ('Name', ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
-    ('LookupFlags', LLVMOrcSymbolLookupFlags),
-    ('PADDING_0', ctypes.c_ubyte * 4),
+  ("Name", ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
+  ("LookupFlags", LLVMOrcSymbolLookupFlags),
+  ("PADDING_0", ctypes.c_ubyte * 4),
 ]
 
 LLVMOrcCLookupSetElement = struct_c__SA_LLVMOrcCLookupSetElement
 LLVMOrcCLookupSet = ctypes.POINTER(struct_c__SA_LLVMOrcCLookupSetElement)
+
+
 class struct_LLVMOrcOpaqueMaterializationUnit(Structure):
-    pass
+  pass
+
 
 LLVMOrcMaterializationUnitRef = ctypes.POINTER(struct_LLVMOrcOpaqueMaterializationUnit)
-class struct_LLVMOrcOpaqueMaterializationResponsibility(Structure):
-    pass
 
-LLVMOrcMaterializationResponsibilityRef = ctypes.POINTER(struct_LLVMOrcOpaqueMaterializationResponsibility)
-LLVMOrcMaterializationUnitMaterializeFunction = ctypes.CFUNCTYPE(None, ctypes.POINTER(None), ctypes.POINTER(struct_LLVMOrcOpaqueMaterializationResponsibility))
-LLVMOrcMaterializationUnitDiscardFunction = ctypes.CFUNCTYPE(None, ctypes.POINTER(None), ctypes.POINTER(struct_LLVMOrcOpaqueJITDylib), ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry))
+
+class struct_LLVMOrcOpaqueMaterializationResponsibility(Structure):
+  pass
+
+
+LLVMOrcMaterializationResponsibilityRef = ctypes.POINTER(
+  struct_LLVMOrcOpaqueMaterializationResponsibility
+)
+LLVMOrcMaterializationUnitMaterializeFunction = ctypes.CFUNCTYPE(
+  None,
+  ctypes.POINTER(None),
+  ctypes.POINTER(struct_LLVMOrcOpaqueMaterializationResponsibility),
+)
+LLVMOrcMaterializationUnitDiscardFunction = ctypes.CFUNCTYPE(
+  None,
+  ctypes.POINTER(None),
+  ctypes.POINTER(struct_LLVMOrcOpaqueJITDylib),
+  ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry),
+)
 LLVMOrcMaterializationUnitDestroyFunction = ctypes.CFUNCTYPE(None, ctypes.POINTER(None))
+
+
 class struct_LLVMOrcOpaqueResourceTracker(Structure):
-    pass
+  pass
+
 
 LLVMOrcResourceTrackerRef = ctypes.POINTER(struct_LLVMOrcOpaqueResourceTracker)
+
+
 class struct_LLVMOrcOpaqueDefinitionGenerator(Structure):
-    pass
+  pass
+
 
 LLVMOrcDefinitionGeneratorRef = ctypes.POINTER(struct_LLVMOrcOpaqueDefinitionGenerator)
+
+
 class struct_LLVMOrcOpaqueLookupState(Structure):
-    pass
+  pass
+
 
 LLVMOrcLookupStateRef = ctypes.POINTER(struct_LLVMOrcOpaqueLookupState)
-LLVMOrcCAPIDefinitionGeneratorTryToGenerateFunction = ctypes.CFUNCTYPE(ctypes.POINTER(struct_LLVMOpaqueError), ctypes.POINTER(struct_LLVMOrcOpaqueDefinitionGenerator), ctypes.POINTER(None), ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueLookupState)), c__EA_LLVMOrcLookupKind, ctypes.POINTER(struct_LLVMOrcOpaqueJITDylib), c__EA_LLVMOrcJITDylibLookupFlags, ctypes.POINTER(struct_c__SA_LLVMOrcCLookupSetElement), ctypes.c_uint64)
-LLVMOrcSymbolPredicate = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.POINTER(None), ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry))
+LLVMOrcCAPIDefinitionGeneratorTryToGenerateFunction = ctypes.CFUNCTYPE(
+  ctypes.POINTER(struct_LLVMOpaqueError),
+  ctypes.POINTER(struct_LLVMOrcOpaqueDefinitionGenerator),
+  ctypes.POINTER(None),
+  ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueLookupState)),
+  c__EA_LLVMOrcLookupKind,
+  ctypes.POINTER(struct_LLVMOrcOpaqueJITDylib),
+  c__EA_LLVMOrcJITDylibLookupFlags,
+  ctypes.POINTER(struct_c__SA_LLVMOrcCLookupSetElement),
+  ctypes.c_uint64,
+)
+LLVMOrcSymbolPredicate = ctypes.CFUNCTYPE(
+  ctypes.c_int32,
+  ctypes.POINTER(None),
+  ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry),
+)
+
+
 class struct_LLVMOrcOpaqueThreadSafeContext(Structure):
-    pass
+  pass
+
 
 LLVMOrcThreadSafeContextRef = ctypes.POINTER(struct_LLVMOrcOpaqueThreadSafeContext)
+
+
 class struct_LLVMOrcOpaqueThreadSafeModule(Structure):
-    pass
+  pass
+
 
 LLVMOrcThreadSafeModuleRef = ctypes.POINTER(struct_LLVMOrcOpaqueThreadSafeModule)
-LLVMOrcGenericIRModuleOperationFunction = ctypes.CFUNCTYPE(ctypes.POINTER(struct_LLVMOpaqueError), ctypes.POINTER(None), ctypes.POINTER(struct_LLVMOpaqueModule))
-class struct_LLVMOrcOpaqueJITTargetMachineBuilder(Structure):
-    pass
+LLVMOrcGenericIRModuleOperationFunction = ctypes.CFUNCTYPE(
+  ctypes.POINTER(struct_LLVMOpaqueError),
+  ctypes.POINTER(None),
+  ctypes.POINTER(struct_LLVMOpaqueModule),
+)
 
-LLVMOrcJITTargetMachineBuilderRef = ctypes.POINTER(struct_LLVMOrcOpaqueJITTargetMachineBuilder)
+
+class struct_LLVMOrcOpaqueJITTargetMachineBuilder(Structure):
+  pass
+
+
+LLVMOrcJITTargetMachineBuilderRef = ctypes.POINTER(
+  struct_LLVMOrcOpaqueJITTargetMachineBuilder
+)
+
+
 class struct_LLVMOrcOpaqueObjectLayer(Structure):
-    pass
+  pass
+
 
 LLVMOrcObjectLayerRef = ctypes.POINTER(struct_LLVMOrcOpaqueObjectLayer)
+
+
 class struct_LLVMOrcOpaqueObjectLinkingLayer(Structure):
-    pass
+  pass
+
 
 LLVMOrcObjectLinkingLayerRef = ctypes.POINTER(struct_LLVMOrcOpaqueObjectLinkingLayer)
+
+
 class struct_LLVMOrcOpaqueIRTransformLayer(Structure):
-    pass
+  pass
+
 
 LLVMOrcIRTransformLayerRef = ctypes.POINTER(struct_LLVMOrcOpaqueIRTransformLayer)
-LLVMOrcIRTransformLayerTransformFunction = ctypes.CFUNCTYPE(ctypes.POINTER(struct_LLVMOpaqueError), ctypes.POINTER(None), ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueThreadSafeModule)), ctypes.POINTER(struct_LLVMOrcOpaqueMaterializationResponsibility))
+LLVMOrcIRTransformLayerTransformFunction = ctypes.CFUNCTYPE(
+  ctypes.POINTER(struct_LLVMOpaqueError),
+  ctypes.POINTER(None),
+  ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueThreadSafeModule)),
+  ctypes.POINTER(struct_LLVMOrcOpaqueMaterializationResponsibility),
+)
+
+
 class struct_LLVMOrcOpaqueObjectTransformLayer(Structure):
-    pass
+  pass
 
-LLVMOrcObjectTransformLayerRef = ctypes.POINTER(struct_LLVMOrcOpaqueObjectTransformLayer)
-LLVMOrcObjectTransformLayerTransformFunction = ctypes.CFUNCTYPE(ctypes.POINTER(struct_LLVMOpaqueError), ctypes.POINTER(None), ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer)))
+
+LLVMOrcObjectTransformLayerRef = ctypes.POINTER(
+  struct_LLVMOrcOpaqueObjectTransformLayer
+)
+LLVMOrcObjectTransformLayerTransformFunction = ctypes.CFUNCTYPE(
+  ctypes.POINTER(struct_LLVMOpaqueError),
+  ctypes.POINTER(None),
+  ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer)),
+)
+
+
 class struct_LLVMOrcOpaqueIndirectStubsManager(Structure):
-    pass
+  pass
 
-LLVMOrcIndirectStubsManagerRef = ctypes.POINTER(struct_LLVMOrcOpaqueIndirectStubsManager)
+
+LLVMOrcIndirectStubsManagerRef = ctypes.POINTER(
+  struct_LLVMOrcOpaqueIndirectStubsManager
+)
+
+
 class struct_LLVMOrcOpaqueLazyCallThroughManager(Structure):
-    pass
+  pass
 
-LLVMOrcLazyCallThroughManagerRef = ctypes.POINTER(struct_LLVMOrcOpaqueLazyCallThroughManager)
+
+LLVMOrcLazyCallThroughManagerRef = ctypes.POINTER(
+  struct_LLVMOrcOpaqueLazyCallThroughManager
+)
+
+
 class struct_LLVMOrcOpaqueDumpObjects(Structure):
-    pass
+  pass
+
 
 LLVMOrcDumpObjectsRef = ctypes.POINTER(struct_LLVMOrcOpaqueDumpObjects)
 try:
-    LLVMOrcExecutionSessionSetErrorReporter = _libraries['llvm'].LLVMOrcExecutionSessionSetErrorReporter
-    LLVMOrcExecutionSessionSetErrorReporter.restype = None
-    LLVMOrcExecutionSessionSetErrorReporter.argtypes = [LLVMOrcExecutionSessionRef, LLVMOrcErrorReporterFunction, ctypes.POINTER(None)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcExecutionSessionGetSymbolStringPool = _libraries['llvm'].LLVMOrcExecutionSessionGetSymbolStringPool
-    LLVMOrcExecutionSessionGetSymbolStringPool.restype = LLVMOrcSymbolStringPoolRef
-    LLVMOrcExecutionSessionGetSymbolStringPool.argtypes = [LLVMOrcExecutionSessionRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcSymbolStringPoolClearDeadEntries = _libraries['llvm'].LLVMOrcSymbolStringPoolClearDeadEntries
-    LLVMOrcSymbolStringPoolClearDeadEntries.restype = None
-    LLVMOrcSymbolStringPoolClearDeadEntries.argtypes = [LLVMOrcSymbolStringPoolRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcExecutionSessionIntern = _libraries['llvm'].LLVMOrcExecutionSessionIntern
-    LLVMOrcExecutionSessionIntern.restype = LLVMOrcSymbolStringPoolEntryRef
-    LLVMOrcExecutionSessionIntern.argtypes = [LLVMOrcExecutionSessionRef, ctypes.POINTER(ctypes.c_char)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcRetainSymbolStringPoolEntry = _libraries['llvm'].LLVMOrcRetainSymbolStringPoolEntry
-    LLVMOrcRetainSymbolStringPoolEntry.restype = None
-    LLVMOrcRetainSymbolStringPoolEntry.argtypes = [LLVMOrcSymbolStringPoolEntryRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcReleaseSymbolStringPoolEntry = _libraries['llvm'].LLVMOrcReleaseSymbolStringPoolEntry
-    LLVMOrcReleaseSymbolStringPoolEntry.restype = None
-    LLVMOrcReleaseSymbolStringPoolEntry.argtypes = [LLVMOrcSymbolStringPoolEntryRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcSymbolStringPoolEntryStr = _libraries['llvm'].LLVMOrcSymbolStringPoolEntryStr
-    LLVMOrcSymbolStringPoolEntryStr.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMOrcSymbolStringPoolEntryStr.argtypes = [LLVMOrcSymbolStringPoolEntryRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcReleaseResourceTracker = _libraries['llvm'].LLVMOrcReleaseResourceTracker
-    LLVMOrcReleaseResourceTracker.restype = None
-    LLVMOrcReleaseResourceTracker.argtypes = [LLVMOrcResourceTrackerRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcResourceTrackerTransferTo = _libraries['llvm'].LLVMOrcResourceTrackerTransferTo
-    LLVMOrcResourceTrackerTransferTo.restype = None
-    LLVMOrcResourceTrackerTransferTo.argtypes = [LLVMOrcResourceTrackerRef, LLVMOrcResourceTrackerRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcResourceTrackerRemove = _libraries['llvm'].LLVMOrcResourceTrackerRemove
-    LLVMOrcResourceTrackerRemove.restype = LLVMErrorRef
-    LLVMOrcResourceTrackerRemove.argtypes = [LLVMOrcResourceTrackerRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeDefinitionGenerator = _libraries['llvm'].LLVMOrcDisposeDefinitionGenerator
-    LLVMOrcDisposeDefinitionGenerator.restype = None
-    LLVMOrcDisposeDefinitionGenerator.argtypes = [LLVMOrcDefinitionGeneratorRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeMaterializationUnit = _libraries['llvm'].LLVMOrcDisposeMaterializationUnit
-    LLVMOrcDisposeMaterializationUnit.restype = None
-    LLVMOrcDisposeMaterializationUnit.argtypes = [LLVMOrcMaterializationUnitRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateCustomMaterializationUnit = _libraries['llvm'].LLVMOrcCreateCustomMaterializationUnit
-    LLVMOrcCreateCustomMaterializationUnit.restype = LLVMOrcMaterializationUnitRef
-    LLVMOrcCreateCustomMaterializationUnit.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(None), LLVMOrcCSymbolFlagsMapPairs, size_t, LLVMOrcSymbolStringPoolEntryRef, LLVMOrcMaterializationUnitMaterializeFunction, LLVMOrcMaterializationUnitDiscardFunction, LLVMOrcMaterializationUnitDestroyFunction]
-except AttributeError:
-    pass
-try:
-    LLVMOrcAbsoluteSymbols = _libraries['llvm'].LLVMOrcAbsoluteSymbols
-    LLVMOrcAbsoluteSymbols.restype = LLVMOrcMaterializationUnitRef
-    LLVMOrcAbsoluteSymbols.argtypes = [LLVMOrcCSymbolMapPairs, size_t]
-except AttributeError:
-    pass
-try:
-    LLVMOrcLazyReexports = _libraries['llvm'].LLVMOrcLazyReexports
-    LLVMOrcLazyReexports.restype = LLVMOrcMaterializationUnitRef
-    LLVMOrcLazyReexports.argtypes = [LLVMOrcLazyCallThroughManagerRef, LLVMOrcIndirectStubsManagerRef, LLVMOrcJITDylibRef, LLVMOrcCSymbolAliasMapPairs, size_t]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeMaterializationResponsibility = _libraries['llvm'].LLVMOrcDisposeMaterializationResponsibility
-    LLVMOrcDisposeMaterializationResponsibility.restype = None
-    LLVMOrcDisposeMaterializationResponsibility.argtypes = [LLVMOrcMaterializationResponsibilityRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityGetTargetDylib = _libraries['llvm'].LLVMOrcMaterializationResponsibilityGetTargetDylib
-    LLVMOrcMaterializationResponsibilityGetTargetDylib.restype = LLVMOrcJITDylibRef
-    LLVMOrcMaterializationResponsibilityGetTargetDylib.argtypes = [LLVMOrcMaterializationResponsibilityRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityGetExecutionSession = _libraries['llvm'].LLVMOrcMaterializationResponsibilityGetExecutionSession
-    LLVMOrcMaterializationResponsibilityGetExecutionSession.restype = LLVMOrcExecutionSessionRef
-    LLVMOrcMaterializationResponsibilityGetExecutionSession.argtypes = [LLVMOrcMaterializationResponsibilityRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityGetSymbols = _libraries['llvm'].LLVMOrcMaterializationResponsibilityGetSymbols
-    LLVMOrcMaterializationResponsibilityGetSymbols.restype = LLVMOrcCSymbolFlagsMapPairs
-    LLVMOrcMaterializationResponsibilityGetSymbols.argtypes = [LLVMOrcMaterializationResponsibilityRef, ctypes.POINTER(ctypes.c_uint64)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeCSymbolFlagsMap = _libraries['llvm'].LLVMOrcDisposeCSymbolFlagsMap
-    LLVMOrcDisposeCSymbolFlagsMap.restype = None
-    LLVMOrcDisposeCSymbolFlagsMap.argtypes = [LLVMOrcCSymbolFlagsMapPairs]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityGetInitializerSymbol = _libraries['llvm'].LLVMOrcMaterializationResponsibilityGetInitializerSymbol
-    LLVMOrcMaterializationResponsibilityGetInitializerSymbol.restype = LLVMOrcSymbolStringPoolEntryRef
-    LLVMOrcMaterializationResponsibilityGetInitializerSymbol.argtypes = [LLVMOrcMaterializationResponsibilityRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityGetRequestedSymbols = _libraries['llvm'].LLVMOrcMaterializationResponsibilityGetRequestedSymbols
-    LLVMOrcMaterializationResponsibilityGetRequestedSymbols.restype = ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry))
-    LLVMOrcMaterializationResponsibilityGetRequestedSymbols.argtypes = [LLVMOrcMaterializationResponsibilityRef, ctypes.POINTER(ctypes.c_uint64)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeSymbols = _libraries['llvm'].LLVMOrcDisposeSymbols
-    LLVMOrcDisposeSymbols.restype = None
-    LLVMOrcDisposeSymbols.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry))]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityNotifyResolved = _libraries['llvm'].LLVMOrcMaterializationResponsibilityNotifyResolved
-    LLVMOrcMaterializationResponsibilityNotifyResolved.restype = LLVMErrorRef
-    LLVMOrcMaterializationResponsibilityNotifyResolved.argtypes = [LLVMOrcMaterializationResponsibilityRef, LLVMOrcCSymbolMapPairs, size_t]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityNotifyEmitted = _libraries['llvm'].LLVMOrcMaterializationResponsibilityNotifyEmitted
-    LLVMOrcMaterializationResponsibilityNotifyEmitted.restype = LLVMErrorRef
-    LLVMOrcMaterializationResponsibilityNotifyEmitted.argtypes = [LLVMOrcMaterializationResponsibilityRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityDefineMaterializing = _libraries['llvm'].LLVMOrcMaterializationResponsibilityDefineMaterializing
-    LLVMOrcMaterializationResponsibilityDefineMaterializing.restype = LLVMErrorRef
-    LLVMOrcMaterializationResponsibilityDefineMaterializing.argtypes = [LLVMOrcMaterializationResponsibilityRef, LLVMOrcCSymbolFlagsMapPairs, size_t]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityFailMaterialization = _libraries['llvm'].LLVMOrcMaterializationResponsibilityFailMaterialization
-    LLVMOrcMaterializationResponsibilityFailMaterialization.restype = None
-    LLVMOrcMaterializationResponsibilityFailMaterialization.argtypes = [LLVMOrcMaterializationResponsibilityRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityReplace = _libraries['llvm'].LLVMOrcMaterializationResponsibilityReplace
-    LLVMOrcMaterializationResponsibilityReplace.restype = LLVMErrorRef
-    LLVMOrcMaterializationResponsibilityReplace.argtypes = [LLVMOrcMaterializationResponsibilityRef, LLVMOrcMaterializationUnitRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityDelegate = _libraries['llvm'].LLVMOrcMaterializationResponsibilityDelegate
-    LLVMOrcMaterializationResponsibilityDelegate.restype = LLVMErrorRef
-    LLVMOrcMaterializationResponsibilityDelegate.argtypes = [LLVMOrcMaterializationResponsibilityRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)), size_t, ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueMaterializationResponsibility))]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityAddDependencies = _libraries['llvm'].LLVMOrcMaterializationResponsibilityAddDependencies
-    LLVMOrcMaterializationResponsibilityAddDependencies.restype = None
-    LLVMOrcMaterializationResponsibilityAddDependencies.argtypes = [LLVMOrcMaterializationResponsibilityRef, LLVMOrcSymbolStringPoolEntryRef, LLVMOrcCDependenceMapPairs, size_t]
-except AttributeError:
-    pass
-try:
-    LLVMOrcMaterializationResponsibilityAddDependenciesForAll = _libraries['llvm'].LLVMOrcMaterializationResponsibilityAddDependenciesForAll
-    LLVMOrcMaterializationResponsibilityAddDependenciesForAll.restype = None
-    LLVMOrcMaterializationResponsibilityAddDependenciesForAll.argtypes = [LLVMOrcMaterializationResponsibilityRef, LLVMOrcCDependenceMapPairs, size_t]
-except AttributeError:
-    pass
-try:
-    LLVMOrcExecutionSessionCreateBareJITDylib = _libraries['llvm'].LLVMOrcExecutionSessionCreateBareJITDylib
-    LLVMOrcExecutionSessionCreateBareJITDylib.restype = LLVMOrcJITDylibRef
-    LLVMOrcExecutionSessionCreateBareJITDylib.argtypes = [LLVMOrcExecutionSessionRef, ctypes.POINTER(ctypes.c_char)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcExecutionSessionCreateJITDylib = _libraries['llvm'].LLVMOrcExecutionSessionCreateJITDylib
-    LLVMOrcExecutionSessionCreateJITDylib.restype = LLVMErrorRef
-    LLVMOrcExecutionSessionCreateJITDylib.argtypes = [LLVMOrcExecutionSessionRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueJITDylib)), ctypes.POINTER(ctypes.c_char)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcExecutionSessionGetJITDylibByName = _libraries['llvm'].LLVMOrcExecutionSessionGetJITDylibByName
-    LLVMOrcExecutionSessionGetJITDylibByName.restype = LLVMOrcJITDylibRef
-    LLVMOrcExecutionSessionGetJITDylibByName.argtypes = [LLVMOrcExecutionSessionRef, ctypes.POINTER(ctypes.c_char)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcJITDylibCreateResourceTracker = _libraries['llvm'].LLVMOrcJITDylibCreateResourceTracker
-    LLVMOrcJITDylibCreateResourceTracker.restype = LLVMOrcResourceTrackerRef
-    LLVMOrcJITDylibCreateResourceTracker.argtypes = [LLVMOrcJITDylibRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcJITDylibGetDefaultResourceTracker = _libraries['llvm'].LLVMOrcJITDylibGetDefaultResourceTracker
-    LLVMOrcJITDylibGetDefaultResourceTracker.restype = LLVMOrcResourceTrackerRef
-    LLVMOrcJITDylibGetDefaultResourceTracker.argtypes = [LLVMOrcJITDylibRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcJITDylibDefine = _libraries['llvm'].LLVMOrcJITDylibDefine
-    LLVMOrcJITDylibDefine.restype = LLVMErrorRef
-    LLVMOrcJITDylibDefine.argtypes = [LLVMOrcJITDylibRef, LLVMOrcMaterializationUnitRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcJITDylibClear = _libraries['llvm'].LLVMOrcJITDylibClear
-    LLVMOrcJITDylibClear.restype = LLVMErrorRef
-    LLVMOrcJITDylibClear.argtypes = [LLVMOrcJITDylibRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcJITDylibAddGenerator = _libraries['llvm'].LLVMOrcJITDylibAddGenerator
-    LLVMOrcJITDylibAddGenerator.restype = None
-    LLVMOrcJITDylibAddGenerator.argtypes = [LLVMOrcJITDylibRef, LLVMOrcDefinitionGeneratorRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateCustomCAPIDefinitionGenerator = _libraries['llvm'].LLVMOrcCreateCustomCAPIDefinitionGenerator
-    LLVMOrcCreateCustomCAPIDefinitionGenerator.restype = LLVMOrcDefinitionGeneratorRef
-    LLVMOrcCreateCustomCAPIDefinitionGenerator.argtypes = [LLVMOrcCAPIDefinitionGeneratorTryToGenerateFunction, ctypes.POINTER(None)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess = _libraries['llvm'].LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess
-    LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess.restype = LLVMErrorRef
-    LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueDefinitionGenerator)), ctypes.c_char, LLVMOrcSymbolPredicate, ctypes.POINTER(None)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateDynamicLibrarySearchGeneratorForPath = _libraries['llvm'].LLVMOrcCreateDynamicLibrarySearchGeneratorForPath
-    LLVMOrcCreateDynamicLibrarySearchGeneratorForPath.restype = LLVMErrorRef
-    LLVMOrcCreateDynamicLibrarySearchGeneratorForPath.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueDefinitionGenerator)), ctypes.POINTER(ctypes.c_char), ctypes.c_char, LLVMOrcSymbolPredicate, ctypes.POINTER(None)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateStaticLibrarySearchGeneratorForPath = _libraries['llvm'].LLVMOrcCreateStaticLibrarySearchGeneratorForPath
-    LLVMOrcCreateStaticLibrarySearchGeneratorForPath.restype = LLVMErrorRef
-    LLVMOrcCreateStaticLibrarySearchGeneratorForPath.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueDefinitionGenerator)), LLVMOrcObjectLayerRef, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateNewThreadSafeContext = _libraries['llvm'].LLVMOrcCreateNewThreadSafeContext
-    LLVMOrcCreateNewThreadSafeContext.restype = LLVMOrcThreadSafeContextRef
-    LLVMOrcCreateNewThreadSafeContext.argtypes = []
-except AttributeError:
-    pass
-try:
-    LLVMOrcThreadSafeContextGetContext = _libraries['llvm'].LLVMOrcThreadSafeContextGetContext
-    LLVMOrcThreadSafeContextGetContext.restype = LLVMContextRef
-    LLVMOrcThreadSafeContextGetContext.argtypes = [LLVMOrcThreadSafeContextRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeThreadSafeContext = _libraries['llvm'].LLVMOrcDisposeThreadSafeContext
-    LLVMOrcDisposeThreadSafeContext.restype = None
-    LLVMOrcDisposeThreadSafeContext.argtypes = [LLVMOrcThreadSafeContextRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateNewThreadSafeModule = _libraries['llvm'].LLVMOrcCreateNewThreadSafeModule
-    LLVMOrcCreateNewThreadSafeModule.restype = LLVMOrcThreadSafeModuleRef
-    LLVMOrcCreateNewThreadSafeModule.argtypes = [LLVMModuleRef, LLVMOrcThreadSafeContextRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeThreadSafeModule = _libraries['llvm'].LLVMOrcDisposeThreadSafeModule
-    LLVMOrcDisposeThreadSafeModule.restype = None
-    LLVMOrcDisposeThreadSafeModule.argtypes = [LLVMOrcThreadSafeModuleRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcThreadSafeModuleWithModuleDo = _libraries['llvm'].LLVMOrcThreadSafeModuleWithModuleDo
-    LLVMOrcThreadSafeModuleWithModuleDo.restype = LLVMErrorRef
-    LLVMOrcThreadSafeModuleWithModuleDo.argtypes = [LLVMOrcThreadSafeModuleRef, LLVMOrcGenericIRModuleOperationFunction, ctypes.POINTER(None)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcJITTargetMachineBuilderDetectHost = _libraries['llvm'].LLVMOrcJITTargetMachineBuilderDetectHost
-    LLVMOrcJITTargetMachineBuilderDetectHost.restype = LLVMErrorRef
-    LLVMOrcJITTargetMachineBuilderDetectHost.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueJITTargetMachineBuilder))]
-except AttributeError:
-    pass
-try:
-    LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine = _libraries['llvm'].LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine
-    LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine.restype = LLVMOrcJITTargetMachineBuilderRef
-    LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine.argtypes = [LLVMTargetMachineRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeJITTargetMachineBuilder = _libraries['llvm'].LLVMOrcDisposeJITTargetMachineBuilder
-    LLVMOrcDisposeJITTargetMachineBuilder.restype = None
-    LLVMOrcDisposeJITTargetMachineBuilder.argtypes = [LLVMOrcJITTargetMachineBuilderRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcJITTargetMachineBuilderGetTargetTriple = _libraries['llvm'].LLVMOrcJITTargetMachineBuilderGetTargetTriple
-    LLVMOrcJITTargetMachineBuilderGetTargetTriple.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMOrcJITTargetMachineBuilderGetTargetTriple.argtypes = [LLVMOrcJITTargetMachineBuilderRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcJITTargetMachineBuilderSetTargetTriple = _libraries['llvm'].LLVMOrcJITTargetMachineBuilderSetTargetTriple
-    LLVMOrcJITTargetMachineBuilderSetTargetTriple.restype = None
-    LLVMOrcJITTargetMachineBuilderSetTargetTriple.argtypes = [LLVMOrcJITTargetMachineBuilderRef, ctypes.POINTER(ctypes.c_char)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcObjectLayerAddObjectFile = _libraries['llvm'].LLVMOrcObjectLayerAddObjectFile
-    LLVMOrcObjectLayerAddObjectFile.restype = LLVMErrorRef
-    LLVMOrcObjectLayerAddObjectFile.argtypes = [LLVMOrcObjectLayerRef, LLVMOrcJITDylibRef, LLVMMemoryBufferRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcObjectLayerAddObjectFileWithRT = _libraries['llvm'].LLVMOrcObjectLayerAddObjectFileWithRT
-    LLVMOrcObjectLayerAddObjectFileWithRT.restype = LLVMErrorRef
-    LLVMOrcObjectLayerAddObjectFileWithRT.argtypes = [LLVMOrcObjectLayerRef, LLVMOrcResourceTrackerRef, LLVMMemoryBufferRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcObjectLayerEmit = _libraries['llvm'].LLVMOrcObjectLayerEmit
-    LLVMOrcObjectLayerEmit.restype = None
-    LLVMOrcObjectLayerEmit.argtypes = [LLVMOrcObjectLayerRef, LLVMOrcMaterializationResponsibilityRef, LLVMMemoryBufferRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeObjectLayer = _libraries['llvm'].LLVMOrcDisposeObjectLayer
-    LLVMOrcDisposeObjectLayer.restype = None
-    LLVMOrcDisposeObjectLayer.argtypes = [LLVMOrcObjectLayerRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcIRTransformLayerEmit = _libraries['llvm'].LLVMOrcIRTransformLayerEmit
-    LLVMOrcIRTransformLayerEmit.restype = None
-    LLVMOrcIRTransformLayerEmit.argtypes = [LLVMOrcIRTransformLayerRef, LLVMOrcMaterializationResponsibilityRef, LLVMOrcThreadSafeModuleRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcIRTransformLayerSetTransform = _libraries['llvm'].LLVMOrcIRTransformLayerSetTransform
-    LLVMOrcIRTransformLayerSetTransform.restype = None
-    LLVMOrcIRTransformLayerSetTransform.argtypes = [LLVMOrcIRTransformLayerRef, LLVMOrcIRTransformLayerTransformFunction, ctypes.POINTER(None)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcObjectTransformLayerSetTransform = _libraries['llvm'].LLVMOrcObjectTransformLayerSetTransform
-    LLVMOrcObjectTransformLayerSetTransform.restype = None
-    LLVMOrcObjectTransformLayerSetTransform.argtypes = [LLVMOrcObjectTransformLayerRef, LLVMOrcObjectTransformLayerTransformFunction, ctypes.POINTER(None)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateLocalIndirectStubsManager = _libraries['llvm'].LLVMOrcCreateLocalIndirectStubsManager
-    LLVMOrcCreateLocalIndirectStubsManager.restype = LLVMOrcIndirectStubsManagerRef
-    LLVMOrcCreateLocalIndirectStubsManager.argtypes = [ctypes.POINTER(ctypes.c_char)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeIndirectStubsManager = _libraries['llvm'].LLVMOrcDisposeIndirectStubsManager
-    LLVMOrcDisposeIndirectStubsManager.restype = None
-    LLVMOrcDisposeIndirectStubsManager.argtypes = [LLVMOrcIndirectStubsManagerRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateLocalLazyCallThroughManager = _libraries['llvm'].LLVMOrcCreateLocalLazyCallThroughManager
-    LLVMOrcCreateLocalLazyCallThroughManager.restype = LLVMErrorRef
-    LLVMOrcCreateLocalLazyCallThroughManager.argtypes = [ctypes.POINTER(ctypes.c_char), LLVMOrcExecutionSessionRef, LLVMOrcJITTargetAddress, ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueLazyCallThroughManager))]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeLazyCallThroughManager = _libraries['llvm'].LLVMOrcDisposeLazyCallThroughManager
-    LLVMOrcDisposeLazyCallThroughManager.restype = None
-    LLVMOrcDisposeLazyCallThroughManager.argtypes = [LLVMOrcLazyCallThroughManagerRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcCreateDumpObjects = _libraries['llvm'].LLVMOrcCreateDumpObjects
-    LLVMOrcCreateDumpObjects.restype = LLVMOrcDumpObjectsRef
-    LLVMOrcCreateDumpObjects.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char)]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDisposeDumpObjects = _libraries['llvm'].LLVMOrcDisposeDumpObjects
-    LLVMOrcDisposeDumpObjects.restype = None
-    LLVMOrcDisposeDumpObjects.argtypes = [LLVMOrcDumpObjectsRef]
-except AttributeError:
-    pass
-try:
-    LLVMOrcDumpObjects_CallOperator = _libraries['llvm'].LLVMOrcDumpObjects_CallOperator
-    LLVMOrcDumpObjects_CallOperator.restype = LLVMErrorRef
-    LLVMOrcDumpObjects_CallOperator.argtypes = [LLVMOrcDumpObjectsRef, ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer))]
-except AttributeError:
-    pass
-LLVMOrcLLJITBuilderObjectLinkingLayerCreatorFunction = ctypes.CFUNCTYPE(ctypes.POINTER(struct_LLVMOrcOpaqueObjectLayer), ctypes.POINTER(None), ctypes.POINTER(struct_LLVMOrcOpaqueExecutionSession), ctypes.POINTER(ctypes.c_char))
+  LLVMOrcExecutionSessionSetErrorReporter = _libraries[
+    "llvm"
+  ].LLVMOrcExecutionSessionSetErrorReporter
+  LLVMOrcExecutionSessionSetErrorReporter.restype = None
+  LLVMOrcExecutionSessionSetErrorReporter.argtypes = [
+    LLVMOrcExecutionSessionRef,
+    LLVMOrcErrorReporterFunction,
+    ctypes.POINTER(None),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcExecutionSessionGetSymbolStringPool = _libraries[
+    "llvm"
+  ].LLVMOrcExecutionSessionGetSymbolStringPool
+  LLVMOrcExecutionSessionGetSymbolStringPool.restype = LLVMOrcSymbolStringPoolRef
+  LLVMOrcExecutionSessionGetSymbolStringPool.argtypes = [LLVMOrcExecutionSessionRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcSymbolStringPoolClearDeadEntries = _libraries[
+    "llvm"
+  ].LLVMOrcSymbolStringPoolClearDeadEntries
+  LLVMOrcSymbolStringPoolClearDeadEntries.restype = None
+  LLVMOrcSymbolStringPoolClearDeadEntries.argtypes = [LLVMOrcSymbolStringPoolRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcExecutionSessionIntern = _libraries["llvm"].LLVMOrcExecutionSessionIntern
+  LLVMOrcExecutionSessionIntern.restype = LLVMOrcSymbolStringPoolEntryRef
+  LLVMOrcExecutionSessionIntern.argtypes = [
+    LLVMOrcExecutionSessionRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcRetainSymbolStringPoolEntry = _libraries[
+    "llvm"
+  ].LLVMOrcRetainSymbolStringPoolEntry
+  LLVMOrcRetainSymbolStringPoolEntry.restype = None
+  LLVMOrcRetainSymbolStringPoolEntry.argtypes = [LLVMOrcSymbolStringPoolEntryRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcReleaseSymbolStringPoolEntry = _libraries[
+    "llvm"
+  ].LLVMOrcReleaseSymbolStringPoolEntry
+  LLVMOrcReleaseSymbolStringPoolEntry.restype = None
+  LLVMOrcReleaseSymbolStringPoolEntry.argtypes = [LLVMOrcSymbolStringPoolEntryRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcSymbolStringPoolEntryStr = _libraries["llvm"].LLVMOrcSymbolStringPoolEntryStr
+  LLVMOrcSymbolStringPoolEntryStr.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMOrcSymbolStringPoolEntryStr.argtypes = [LLVMOrcSymbolStringPoolEntryRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcReleaseResourceTracker = _libraries["llvm"].LLVMOrcReleaseResourceTracker
+  LLVMOrcReleaseResourceTracker.restype = None
+  LLVMOrcReleaseResourceTracker.argtypes = [LLVMOrcResourceTrackerRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcResourceTrackerTransferTo = _libraries["llvm"].LLVMOrcResourceTrackerTransferTo
+  LLVMOrcResourceTrackerTransferTo.restype = None
+  LLVMOrcResourceTrackerTransferTo.argtypes = [
+    LLVMOrcResourceTrackerRef,
+    LLVMOrcResourceTrackerRef,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcResourceTrackerRemove = _libraries["llvm"].LLVMOrcResourceTrackerRemove
+  LLVMOrcResourceTrackerRemove.restype = LLVMErrorRef
+  LLVMOrcResourceTrackerRemove.argtypes = [LLVMOrcResourceTrackerRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeDefinitionGenerator = _libraries[
+    "llvm"
+  ].LLVMOrcDisposeDefinitionGenerator
+  LLVMOrcDisposeDefinitionGenerator.restype = None
+  LLVMOrcDisposeDefinitionGenerator.argtypes = [LLVMOrcDefinitionGeneratorRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeMaterializationUnit = _libraries[
+    "llvm"
+  ].LLVMOrcDisposeMaterializationUnit
+  LLVMOrcDisposeMaterializationUnit.restype = None
+  LLVMOrcDisposeMaterializationUnit.argtypes = [LLVMOrcMaterializationUnitRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateCustomMaterializationUnit = _libraries[
+    "llvm"
+  ].LLVMOrcCreateCustomMaterializationUnit
+  LLVMOrcCreateCustomMaterializationUnit.restype = LLVMOrcMaterializationUnitRef
+  LLVMOrcCreateCustomMaterializationUnit.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(None),
+    LLVMOrcCSymbolFlagsMapPairs,
+    size_t,
+    LLVMOrcSymbolStringPoolEntryRef,
+    LLVMOrcMaterializationUnitMaterializeFunction,
+    LLVMOrcMaterializationUnitDiscardFunction,
+    LLVMOrcMaterializationUnitDestroyFunction,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcAbsoluteSymbols = _libraries["llvm"].LLVMOrcAbsoluteSymbols
+  LLVMOrcAbsoluteSymbols.restype = LLVMOrcMaterializationUnitRef
+  LLVMOrcAbsoluteSymbols.argtypes = [LLVMOrcCSymbolMapPairs, size_t]
+except AttributeError:
+  pass
+try:
+  LLVMOrcLazyReexports = _libraries["llvm"].LLVMOrcLazyReexports
+  LLVMOrcLazyReexports.restype = LLVMOrcMaterializationUnitRef
+  LLVMOrcLazyReexports.argtypes = [
+    LLVMOrcLazyCallThroughManagerRef,
+    LLVMOrcIndirectStubsManagerRef,
+    LLVMOrcJITDylibRef,
+    LLVMOrcCSymbolAliasMapPairs,
+    size_t,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeMaterializationResponsibility = _libraries[
+    "llvm"
+  ].LLVMOrcDisposeMaterializationResponsibility
+  LLVMOrcDisposeMaterializationResponsibility.restype = None
+  LLVMOrcDisposeMaterializationResponsibility.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityGetTargetDylib = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityGetTargetDylib
+  LLVMOrcMaterializationResponsibilityGetTargetDylib.restype = LLVMOrcJITDylibRef
+  LLVMOrcMaterializationResponsibilityGetTargetDylib.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityGetExecutionSession = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityGetExecutionSession
+  LLVMOrcMaterializationResponsibilityGetExecutionSession.restype = (
+    LLVMOrcExecutionSessionRef
+  )
+  LLVMOrcMaterializationResponsibilityGetExecutionSession.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityGetSymbols = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityGetSymbols
+  LLVMOrcMaterializationResponsibilityGetSymbols.restype = LLVMOrcCSymbolFlagsMapPairs
+  LLVMOrcMaterializationResponsibilityGetSymbols.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeCSymbolFlagsMap = _libraries["llvm"].LLVMOrcDisposeCSymbolFlagsMap
+  LLVMOrcDisposeCSymbolFlagsMap.restype = None
+  LLVMOrcDisposeCSymbolFlagsMap.argtypes = [LLVMOrcCSymbolFlagsMapPairs]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityGetInitializerSymbol = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityGetInitializerSymbol
+  LLVMOrcMaterializationResponsibilityGetInitializerSymbol.restype = (
+    LLVMOrcSymbolStringPoolEntryRef
+  )
+  LLVMOrcMaterializationResponsibilityGetInitializerSymbol.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityGetRequestedSymbols = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityGetRequestedSymbols
+  LLVMOrcMaterializationResponsibilityGetRequestedSymbols.restype = ctypes.POINTER(
+    ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)
+  )
+  LLVMOrcMaterializationResponsibilityGetRequestedSymbols.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeSymbols = _libraries["llvm"].LLVMOrcDisposeSymbols
+  LLVMOrcDisposeSymbols.restype = None
+  LLVMOrcDisposeSymbols.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry))
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityNotifyResolved = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityNotifyResolved
+  LLVMOrcMaterializationResponsibilityNotifyResolved.restype = LLVMErrorRef
+  LLVMOrcMaterializationResponsibilityNotifyResolved.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef,
+    LLVMOrcCSymbolMapPairs,
+    size_t,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityNotifyEmitted = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityNotifyEmitted
+  LLVMOrcMaterializationResponsibilityNotifyEmitted.restype = LLVMErrorRef
+  LLVMOrcMaterializationResponsibilityNotifyEmitted.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityDefineMaterializing = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityDefineMaterializing
+  LLVMOrcMaterializationResponsibilityDefineMaterializing.restype = LLVMErrorRef
+  LLVMOrcMaterializationResponsibilityDefineMaterializing.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef,
+    LLVMOrcCSymbolFlagsMapPairs,
+    size_t,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityFailMaterialization = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityFailMaterialization
+  LLVMOrcMaterializationResponsibilityFailMaterialization.restype = None
+  LLVMOrcMaterializationResponsibilityFailMaterialization.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityReplace = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityReplace
+  LLVMOrcMaterializationResponsibilityReplace.restype = LLVMErrorRef
+  LLVMOrcMaterializationResponsibilityReplace.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef,
+    LLVMOrcMaterializationUnitRef,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityDelegate = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityDelegate
+  LLVMOrcMaterializationResponsibilityDelegate.restype = LLVMErrorRef
+  LLVMOrcMaterializationResponsibilityDelegate.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueSymbolStringPoolEntry)),
+    size_t,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueMaterializationResponsibility)),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityAddDependencies = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityAddDependencies
+  LLVMOrcMaterializationResponsibilityAddDependencies.restype = None
+  LLVMOrcMaterializationResponsibilityAddDependencies.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef,
+    LLVMOrcSymbolStringPoolEntryRef,
+    LLVMOrcCDependenceMapPairs,
+    size_t,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcMaterializationResponsibilityAddDependenciesForAll = _libraries[
+    "llvm"
+  ].LLVMOrcMaterializationResponsibilityAddDependenciesForAll
+  LLVMOrcMaterializationResponsibilityAddDependenciesForAll.restype = None
+  LLVMOrcMaterializationResponsibilityAddDependenciesForAll.argtypes = [
+    LLVMOrcMaterializationResponsibilityRef,
+    LLVMOrcCDependenceMapPairs,
+    size_t,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcExecutionSessionCreateBareJITDylib = _libraries[
+    "llvm"
+  ].LLVMOrcExecutionSessionCreateBareJITDylib
+  LLVMOrcExecutionSessionCreateBareJITDylib.restype = LLVMOrcJITDylibRef
+  LLVMOrcExecutionSessionCreateBareJITDylib.argtypes = [
+    LLVMOrcExecutionSessionRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcExecutionSessionCreateJITDylib = _libraries[
+    "llvm"
+  ].LLVMOrcExecutionSessionCreateJITDylib
+  LLVMOrcExecutionSessionCreateJITDylib.restype = LLVMErrorRef
+  LLVMOrcExecutionSessionCreateJITDylib.argtypes = [
+    LLVMOrcExecutionSessionRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueJITDylib)),
+    ctypes.POINTER(ctypes.c_char),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcExecutionSessionGetJITDylibByName = _libraries[
+    "llvm"
+  ].LLVMOrcExecutionSessionGetJITDylibByName
+  LLVMOrcExecutionSessionGetJITDylibByName.restype = LLVMOrcJITDylibRef
+  LLVMOrcExecutionSessionGetJITDylibByName.argtypes = [
+    LLVMOrcExecutionSessionRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcJITDylibCreateResourceTracker = _libraries[
+    "llvm"
+  ].LLVMOrcJITDylibCreateResourceTracker
+  LLVMOrcJITDylibCreateResourceTracker.restype = LLVMOrcResourceTrackerRef
+  LLVMOrcJITDylibCreateResourceTracker.argtypes = [LLVMOrcJITDylibRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcJITDylibGetDefaultResourceTracker = _libraries[
+    "llvm"
+  ].LLVMOrcJITDylibGetDefaultResourceTracker
+  LLVMOrcJITDylibGetDefaultResourceTracker.restype = LLVMOrcResourceTrackerRef
+  LLVMOrcJITDylibGetDefaultResourceTracker.argtypes = [LLVMOrcJITDylibRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcJITDylibDefine = _libraries["llvm"].LLVMOrcJITDylibDefine
+  LLVMOrcJITDylibDefine.restype = LLVMErrorRef
+  LLVMOrcJITDylibDefine.argtypes = [LLVMOrcJITDylibRef, LLVMOrcMaterializationUnitRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcJITDylibClear = _libraries["llvm"].LLVMOrcJITDylibClear
+  LLVMOrcJITDylibClear.restype = LLVMErrorRef
+  LLVMOrcJITDylibClear.argtypes = [LLVMOrcJITDylibRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcJITDylibAddGenerator = _libraries["llvm"].LLVMOrcJITDylibAddGenerator
+  LLVMOrcJITDylibAddGenerator.restype = None
+  LLVMOrcJITDylibAddGenerator.argtypes = [
+    LLVMOrcJITDylibRef,
+    LLVMOrcDefinitionGeneratorRef,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateCustomCAPIDefinitionGenerator = _libraries[
+    "llvm"
+  ].LLVMOrcCreateCustomCAPIDefinitionGenerator
+  LLVMOrcCreateCustomCAPIDefinitionGenerator.restype = LLVMOrcDefinitionGeneratorRef
+  LLVMOrcCreateCustomCAPIDefinitionGenerator.argtypes = [
+    LLVMOrcCAPIDefinitionGeneratorTryToGenerateFunction,
+    ctypes.POINTER(None),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess = _libraries[
+    "llvm"
+  ].LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess
+  LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess.restype = LLVMErrorRef
+  LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueDefinitionGenerator)),
+    ctypes.c_char,
+    LLVMOrcSymbolPredicate,
+    ctypes.POINTER(None),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateDynamicLibrarySearchGeneratorForPath = _libraries[
+    "llvm"
+  ].LLVMOrcCreateDynamicLibrarySearchGeneratorForPath
+  LLVMOrcCreateDynamicLibrarySearchGeneratorForPath.restype = LLVMErrorRef
+  LLVMOrcCreateDynamicLibrarySearchGeneratorForPath.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueDefinitionGenerator)),
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_char,
+    LLVMOrcSymbolPredicate,
+    ctypes.POINTER(None),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateStaticLibrarySearchGeneratorForPath = _libraries[
+    "llvm"
+  ].LLVMOrcCreateStaticLibrarySearchGeneratorForPath
+  LLVMOrcCreateStaticLibrarySearchGeneratorForPath.restype = LLVMErrorRef
+  LLVMOrcCreateStaticLibrarySearchGeneratorForPath.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueDefinitionGenerator)),
+    LLVMOrcObjectLayerRef,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateNewThreadSafeContext = _libraries[
+    "llvm"
+  ].LLVMOrcCreateNewThreadSafeContext
+  LLVMOrcCreateNewThreadSafeContext.restype = LLVMOrcThreadSafeContextRef
+  LLVMOrcCreateNewThreadSafeContext.argtypes = []
+except AttributeError:
+  pass
+try:
+  LLVMOrcThreadSafeContextGetContext = _libraries[
+    "llvm"
+  ].LLVMOrcThreadSafeContextGetContext
+  LLVMOrcThreadSafeContextGetContext.restype = LLVMContextRef
+  LLVMOrcThreadSafeContextGetContext.argtypes = [LLVMOrcThreadSafeContextRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeThreadSafeContext = _libraries["llvm"].LLVMOrcDisposeThreadSafeContext
+  LLVMOrcDisposeThreadSafeContext.restype = None
+  LLVMOrcDisposeThreadSafeContext.argtypes = [LLVMOrcThreadSafeContextRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateNewThreadSafeModule = _libraries["llvm"].LLVMOrcCreateNewThreadSafeModule
+  LLVMOrcCreateNewThreadSafeModule.restype = LLVMOrcThreadSafeModuleRef
+  LLVMOrcCreateNewThreadSafeModule.argtypes = [
+    LLVMModuleRef,
+    LLVMOrcThreadSafeContextRef,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeThreadSafeModule = _libraries["llvm"].LLVMOrcDisposeThreadSafeModule
+  LLVMOrcDisposeThreadSafeModule.restype = None
+  LLVMOrcDisposeThreadSafeModule.argtypes = [LLVMOrcThreadSafeModuleRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcThreadSafeModuleWithModuleDo = _libraries[
+    "llvm"
+  ].LLVMOrcThreadSafeModuleWithModuleDo
+  LLVMOrcThreadSafeModuleWithModuleDo.restype = LLVMErrorRef
+  LLVMOrcThreadSafeModuleWithModuleDo.argtypes = [
+    LLVMOrcThreadSafeModuleRef,
+    LLVMOrcGenericIRModuleOperationFunction,
+    ctypes.POINTER(None),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcJITTargetMachineBuilderDetectHost = _libraries[
+    "llvm"
+  ].LLVMOrcJITTargetMachineBuilderDetectHost
+  LLVMOrcJITTargetMachineBuilderDetectHost.restype = LLVMErrorRef
+  LLVMOrcJITTargetMachineBuilderDetectHost.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueJITTargetMachineBuilder))
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine = _libraries[
+    "llvm"
+  ].LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine
+  LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine.restype = (
+    LLVMOrcJITTargetMachineBuilderRef
+  )
+  LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine.argtypes = [
+    LLVMTargetMachineRef
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeJITTargetMachineBuilder = _libraries[
+    "llvm"
+  ].LLVMOrcDisposeJITTargetMachineBuilder
+  LLVMOrcDisposeJITTargetMachineBuilder.restype = None
+  LLVMOrcDisposeJITTargetMachineBuilder.argtypes = [LLVMOrcJITTargetMachineBuilderRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcJITTargetMachineBuilderGetTargetTriple = _libraries[
+    "llvm"
+  ].LLVMOrcJITTargetMachineBuilderGetTargetTriple
+  LLVMOrcJITTargetMachineBuilderGetTargetTriple.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMOrcJITTargetMachineBuilderGetTargetTriple.argtypes = [
+    LLVMOrcJITTargetMachineBuilderRef
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcJITTargetMachineBuilderSetTargetTriple = _libraries[
+    "llvm"
+  ].LLVMOrcJITTargetMachineBuilderSetTargetTriple
+  LLVMOrcJITTargetMachineBuilderSetTargetTriple.restype = None
+  LLVMOrcJITTargetMachineBuilderSetTargetTriple.argtypes = [
+    LLVMOrcJITTargetMachineBuilderRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcObjectLayerAddObjectFile = _libraries["llvm"].LLVMOrcObjectLayerAddObjectFile
+  LLVMOrcObjectLayerAddObjectFile.restype = LLVMErrorRef
+  LLVMOrcObjectLayerAddObjectFile.argtypes = [
+    LLVMOrcObjectLayerRef,
+    LLVMOrcJITDylibRef,
+    LLVMMemoryBufferRef,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcObjectLayerAddObjectFileWithRT = _libraries[
+    "llvm"
+  ].LLVMOrcObjectLayerAddObjectFileWithRT
+  LLVMOrcObjectLayerAddObjectFileWithRT.restype = LLVMErrorRef
+  LLVMOrcObjectLayerAddObjectFileWithRT.argtypes = [
+    LLVMOrcObjectLayerRef,
+    LLVMOrcResourceTrackerRef,
+    LLVMMemoryBufferRef,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcObjectLayerEmit = _libraries["llvm"].LLVMOrcObjectLayerEmit
+  LLVMOrcObjectLayerEmit.restype = None
+  LLVMOrcObjectLayerEmit.argtypes = [
+    LLVMOrcObjectLayerRef,
+    LLVMOrcMaterializationResponsibilityRef,
+    LLVMMemoryBufferRef,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeObjectLayer = _libraries["llvm"].LLVMOrcDisposeObjectLayer
+  LLVMOrcDisposeObjectLayer.restype = None
+  LLVMOrcDisposeObjectLayer.argtypes = [LLVMOrcObjectLayerRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcIRTransformLayerEmit = _libraries["llvm"].LLVMOrcIRTransformLayerEmit
+  LLVMOrcIRTransformLayerEmit.restype = None
+  LLVMOrcIRTransformLayerEmit.argtypes = [
+    LLVMOrcIRTransformLayerRef,
+    LLVMOrcMaterializationResponsibilityRef,
+    LLVMOrcThreadSafeModuleRef,
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcIRTransformLayerSetTransform = _libraries[
+    "llvm"
+  ].LLVMOrcIRTransformLayerSetTransform
+  LLVMOrcIRTransformLayerSetTransform.restype = None
+  LLVMOrcIRTransformLayerSetTransform.argtypes = [
+    LLVMOrcIRTransformLayerRef,
+    LLVMOrcIRTransformLayerTransformFunction,
+    ctypes.POINTER(None),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcObjectTransformLayerSetTransform = _libraries[
+    "llvm"
+  ].LLVMOrcObjectTransformLayerSetTransform
+  LLVMOrcObjectTransformLayerSetTransform.restype = None
+  LLVMOrcObjectTransformLayerSetTransform.argtypes = [
+    LLVMOrcObjectTransformLayerRef,
+    LLVMOrcObjectTransformLayerTransformFunction,
+    ctypes.POINTER(None),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateLocalIndirectStubsManager = _libraries[
+    "llvm"
+  ].LLVMOrcCreateLocalIndirectStubsManager
+  LLVMOrcCreateLocalIndirectStubsManager.restype = LLVMOrcIndirectStubsManagerRef
+  LLVMOrcCreateLocalIndirectStubsManager.argtypes = [ctypes.POINTER(ctypes.c_char)]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeIndirectStubsManager = _libraries[
+    "llvm"
+  ].LLVMOrcDisposeIndirectStubsManager
+  LLVMOrcDisposeIndirectStubsManager.restype = None
+  LLVMOrcDisposeIndirectStubsManager.argtypes = [LLVMOrcIndirectStubsManagerRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateLocalLazyCallThroughManager = _libraries[
+    "llvm"
+  ].LLVMOrcCreateLocalLazyCallThroughManager
+  LLVMOrcCreateLocalLazyCallThroughManager.restype = LLVMErrorRef
+  LLVMOrcCreateLocalLazyCallThroughManager.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    LLVMOrcExecutionSessionRef,
+    LLVMOrcJITTargetAddress,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueLazyCallThroughManager)),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeLazyCallThroughManager = _libraries[
+    "llvm"
+  ].LLVMOrcDisposeLazyCallThroughManager
+  LLVMOrcDisposeLazyCallThroughManager.restype = None
+  LLVMOrcDisposeLazyCallThroughManager.argtypes = [LLVMOrcLazyCallThroughManagerRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcCreateDumpObjects = _libraries["llvm"].LLVMOrcCreateDumpObjects
+  LLVMOrcCreateDumpObjects.restype = LLVMOrcDumpObjectsRef
+  LLVMOrcCreateDumpObjects.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+  ]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDisposeDumpObjects = _libraries["llvm"].LLVMOrcDisposeDumpObjects
+  LLVMOrcDisposeDumpObjects.restype = None
+  LLVMOrcDisposeDumpObjects.argtypes = [LLVMOrcDumpObjectsRef]
+except AttributeError:
+  pass
+try:
+  LLVMOrcDumpObjects_CallOperator = _libraries["llvm"].LLVMOrcDumpObjects_CallOperator
+  LLVMOrcDumpObjects_CallOperator.restype = LLVMErrorRef
+  LLVMOrcDumpObjects_CallOperator.argtypes = [
+    LLVMOrcDumpObjectsRef,
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOpaqueMemoryBuffer)),
+  ]
+except AttributeError:
+  pass
+LLVMOrcLLJITBuilderObjectLinkingLayerCreatorFunction = ctypes.CFUNCTYPE(
+  ctypes.POINTER(struct_LLVMOrcOpaqueObjectLayer),
+  ctypes.POINTER(None),
+  ctypes.POINTER(struct_LLVMOrcOpaqueExecutionSession),
+  ctypes.POINTER(ctypes.c_char),
+)
+
+
 class struct_LLVMOrcOpaqueLLJITBuilder(Structure):
-    pass
+  pass
+
 
 LLVMOrcLLJITBuilderRef = ctypes.POINTER(struct_LLVMOrcOpaqueLLJITBuilder)
+
+
 class struct_LLVMOrcOpaqueLLJIT(Structure):
-    pass
+  pass
+
 
 LLVMOrcLLJITRef = ctypes.POINTER(struct_LLVMOrcOpaqueLLJIT)
 try:
-    LLVMOrcCreateLLJITBuilder = _libraries['llvm'].LLVMOrcCreateLLJITBuilder
-    LLVMOrcCreateLLJITBuilder.restype = LLVMOrcLLJITBuilderRef
-    LLVMOrcCreateLLJITBuilder.argtypes = []
+  LLVMOrcCreateLLJITBuilder = _libraries["llvm"].LLVMOrcCreateLLJITBuilder
+  LLVMOrcCreateLLJITBuilder.restype = LLVMOrcLLJITBuilderRef
+  LLVMOrcCreateLLJITBuilder.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcDisposeLLJITBuilder = _libraries['llvm'].LLVMOrcDisposeLLJITBuilder
-    LLVMOrcDisposeLLJITBuilder.restype = None
-    LLVMOrcDisposeLLJITBuilder.argtypes = [LLVMOrcLLJITBuilderRef]
+  LLVMOrcDisposeLLJITBuilder = _libraries["llvm"].LLVMOrcDisposeLLJITBuilder
+  LLVMOrcDisposeLLJITBuilder.restype = None
+  LLVMOrcDisposeLLJITBuilder.argtypes = [LLVMOrcLLJITBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITBuilderSetJITTargetMachineBuilder = _libraries['llvm'].LLVMOrcLLJITBuilderSetJITTargetMachineBuilder
-    LLVMOrcLLJITBuilderSetJITTargetMachineBuilder.restype = None
-    LLVMOrcLLJITBuilderSetJITTargetMachineBuilder.argtypes = [LLVMOrcLLJITBuilderRef, LLVMOrcJITTargetMachineBuilderRef]
+  LLVMOrcLLJITBuilderSetJITTargetMachineBuilder = _libraries[
+    "llvm"
+  ].LLVMOrcLLJITBuilderSetJITTargetMachineBuilder
+  LLVMOrcLLJITBuilderSetJITTargetMachineBuilder.restype = None
+  LLVMOrcLLJITBuilderSetJITTargetMachineBuilder.argtypes = [
+    LLVMOrcLLJITBuilderRef,
+    LLVMOrcJITTargetMachineBuilderRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator = _libraries['llvm'].LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator
-    LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator.restype = None
-    LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator.argtypes = [LLVMOrcLLJITBuilderRef, LLVMOrcLLJITBuilderObjectLinkingLayerCreatorFunction, ctypes.POINTER(None)]
+  LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator = _libraries[
+    "llvm"
+  ].LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator
+  LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator.restype = None
+  LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator.argtypes = [
+    LLVMOrcLLJITBuilderRef,
+    LLVMOrcLLJITBuilderObjectLinkingLayerCreatorFunction,
+    ctypes.POINTER(None),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcCreateLLJIT = _libraries['llvm'].LLVMOrcCreateLLJIT
-    LLVMOrcCreateLLJIT.restype = LLVMErrorRef
-    LLVMOrcCreateLLJIT.argtypes = [ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueLLJIT)), LLVMOrcLLJITBuilderRef]
+  LLVMOrcCreateLLJIT = _libraries["llvm"].LLVMOrcCreateLLJIT
+  LLVMOrcCreateLLJIT.restype = LLVMErrorRef
+  LLVMOrcCreateLLJIT.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(struct_LLVMOrcOpaqueLLJIT)),
+    LLVMOrcLLJITBuilderRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcDisposeLLJIT = _libraries['llvm'].LLVMOrcDisposeLLJIT
-    LLVMOrcDisposeLLJIT.restype = LLVMErrorRef
-    LLVMOrcDisposeLLJIT.argtypes = [LLVMOrcLLJITRef]
+  LLVMOrcDisposeLLJIT = _libraries["llvm"].LLVMOrcDisposeLLJIT
+  LLVMOrcDisposeLLJIT.restype = LLVMErrorRef
+  LLVMOrcDisposeLLJIT.argtypes = [LLVMOrcLLJITRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITGetExecutionSession = _libraries['llvm'].LLVMOrcLLJITGetExecutionSession
-    LLVMOrcLLJITGetExecutionSession.restype = LLVMOrcExecutionSessionRef
-    LLVMOrcLLJITGetExecutionSession.argtypes = [LLVMOrcLLJITRef]
+  LLVMOrcLLJITGetExecutionSession = _libraries["llvm"].LLVMOrcLLJITGetExecutionSession
+  LLVMOrcLLJITGetExecutionSession.restype = LLVMOrcExecutionSessionRef
+  LLVMOrcLLJITGetExecutionSession.argtypes = [LLVMOrcLLJITRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITGetMainJITDylib = _libraries['llvm'].LLVMOrcLLJITGetMainJITDylib
-    LLVMOrcLLJITGetMainJITDylib.restype = LLVMOrcJITDylibRef
-    LLVMOrcLLJITGetMainJITDylib.argtypes = [LLVMOrcLLJITRef]
+  LLVMOrcLLJITGetMainJITDylib = _libraries["llvm"].LLVMOrcLLJITGetMainJITDylib
+  LLVMOrcLLJITGetMainJITDylib.restype = LLVMOrcJITDylibRef
+  LLVMOrcLLJITGetMainJITDylib.argtypes = [LLVMOrcLLJITRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITGetTripleString = _libraries['llvm'].LLVMOrcLLJITGetTripleString
-    LLVMOrcLLJITGetTripleString.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMOrcLLJITGetTripleString.argtypes = [LLVMOrcLLJITRef]
+  LLVMOrcLLJITGetTripleString = _libraries["llvm"].LLVMOrcLLJITGetTripleString
+  LLVMOrcLLJITGetTripleString.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMOrcLLJITGetTripleString.argtypes = [LLVMOrcLLJITRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITGetGlobalPrefix = _libraries['llvm'].LLVMOrcLLJITGetGlobalPrefix
-    LLVMOrcLLJITGetGlobalPrefix.restype = ctypes.c_char
-    LLVMOrcLLJITGetGlobalPrefix.argtypes = [LLVMOrcLLJITRef]
+  LLVMOrcLLJITGetGlobalPrefix = _libraries["llvm"].LLVMOrcLLJITGetGlobalPrefix
+  LLVMOrcLLJITGetGlobalPrefix.restype = ctypes.c_char
+  LLVMOrcLLJITGetGlobalPrefix.argtypes = [LLVMOrcLLJITRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITMangleAndIntern = _libraries['llvm'].LLVMOrcLLJITMangleAndIntern
-    LLVMOrcLLJITMangleAndIntern.restype = LLVMOrcSymbolStringPoolEntryRef
-    LLVMOrcLLJITMangleAndIntern.argtypes = [LLVMOrcLLJITRef, ctypes.POINTER(ctypes.c_char)]
+  LLVMOrcLLJITMangleAndIntern = _libraries["llvm"].LLVMOrcLLJITMangleAndIntern
+  LLVMOrcLLJITMangleAndIntern.restype = LLVMOrcSymbolStringPoolEntryRef
+  LLVMOrcLLJITMangleAndIntern.argtypes = [
+    LLVMOrcLLJITRef,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITAddObjectFile = _libraries['llvm'].LLVMOrcLLJITAddObjectFile
-    LLVMOrcLLJITAddObjectFile.restype = LLVMErrorRef
-    LLVMOrcLLJITAddObjectFile.argtypes = [LLVMOrcLLJITRef, LLVMOrcJITDylibRef, LLVMMemoryBufferRef]
+  LLVMOrcLLJITAddObjectFile = _libraries["llvm"].LLVMOrcLLJITAddObjectFile
+  LLVMOrcLLJITAddObjectFile.restype = LLVMErrorRef
+  LLVMOrcLLJITAddObjectFile.argtypes = [
+    LLVMOrcLLJITRef,
+    LLVMOrcJITDylibRef,
+    LLVMMemoryBufferRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITAddObjectFileWithRT = _libraries['llvm'].LLVMOrcLLJITAddObjectFileWithRT
-    LLVMOrcLLJITAddObjectFileWithRT.restype = LLVMErrorRef
-    LLVMOrcLLJITAddObjectFileWithRT.argtypes = [LLVMOrcLLJITRef, LLVMOrcResourceTrackerRef, LLVMMemoryBufferRef]
+  LLVMOrcLLJITAddObjectFileWithRT = _libraries["llvm"].LLVMOrcLLJITAddObjectFileWithRT
+  LLVMOrcLLJITAddObjectFileWithRT.restype = LLVMErrorRef
+  LLVMOrcLLJITAddObjectFileWithRT.argtypes = [
+    LLVMOrcLLJITRef,
+    LLVMOrcResourceTrackerRef,
+    LLVMMemoryBufferRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITAddLLVMIRModule = _libraries['llvm'].LLVMOrcLLJITAddLLVMIRModule
-    LLVMOrcLLJITAddLLVMIRModule.restype = LLVMErrorRef
-    LLVMOrcLLJITAddLLVMIRModule.argtypes = [LLVMOrcLLJITRef, LLVMOrcJITDylibRef, LLVMOrcThreadSafeModuleRef]
+  LLVMOrcLLJITAddLLVMIRModule = _libraries["llvm"].LLVMOrcLLJITAddLLVMIRModule
+  LLVMOrcLLJITAddLLVMIRModule.restype = LLVMErrorRef
+  LLVMOrcLLJITAddLLVMIRModule.argtypes = [
+    LLVMOrcLLJITRef,
+    LLVMOrcJITDylibRef,
+    LLVMOrcThreadSafeModuleRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITAddLLVMIRModuleWithRT = _libraries['llvm'].LLVMOrcLLJITAddLLVMIRModuleWithRT
-    LLVMOrcLLJITAddLLVMIRModuleWithRT.restype = LLVMErrorRef
-    LLVMOrcLLJITAddLLVMIRModuleWithRT.argtypes = [LLVMOrcLLJITRef, LLVMOrcResourceTrackerRef, LLVMOrcThreadSafeModuleRef]
+  LLVMOrcLLJITAddLLVMIRModuleWithRT = _libraries[
+    "llvm"
+  ].LLVMOrcLLJITAddLLVMIRModuleWithRT
+  LLVMOrcLLJITAddLLVMIRModuleWithRT.restype = LLVMErrorRef
+  LLVMOrcLLJITAddLLVMIRModuleWithRT.argtypes = [
+    LLVMOrcLLJITRef,
+    LLVMOrcResourceTrackerRef,
+    LLVMOrcThreadSafeModuleRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITLookup = _libraries['llvm'].LLVMOrcLLJITLookup
-    LLVMOrcLLJITLookup.restype = LLVMErrorRef
-    LLVMOrcLLJITLookup.argtypes = [LLVMOrcLLJITRef, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_char)]
+  LLVMOrcLLJITLookup = _libraries["llvm"].LLVMOrcLLJITLookup
+  LLVMOrcLLJITLookup.restype = LLVMErrorRef
+  LLVMOrcLLJITLookup.argtypes = [
+    LLVMOrcLLJITRef,
+    ctypes.POINTER(ctypes.c_uint64),
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITGetObjLinkingLayer = _libraries['llvm'].LLVMOrcLLJITGetObjLinkingLayer
-    LLVMOrcLLJITGetObjLinkingLayer.restype = LLVMOrcObjectLayerRef
-    LLVMOrcLLJITGetObjLinkingLayer.argtypes = [LLVMOrcLLJITRef]
+  LLVMOrcLLJITGetObjLinkingLayer = _libraries["llvm"].LLVMOrcLLJITGetObjLinkingLayer
+  LLVMOrcLLJITGetObjLinkingLayer.restype = LLVMOrcObjectLayerRef
+  LLVMOrcLLJITGetObjLinkingLayer.argtypes = [LLVMOrcLLJITRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITGetObjTransformLayer = _libraries['llvm'].LLVMOrcLLJITGetObjTransformLayer
-    LLVMOrcLLJITGetObjTransformLayer.restype = LLVMOrcObjectTransformLayerRef
-    LLVMOrcLLJITGetObjTransformLayer.argtypes = [LLVMOrcLLJITRef]
+  LLVMOrcLLJITGetObjTransformLayer = _libraries["llvm"].LLVMOrcLLJITGetObjTransformLayer
+  LLVMOrcLLJITGetObjTransformLayer.restype = LLVMOrcObjectTransformLayerRef
+  LLVMOrcLLJITGetObjTransformLayer.argtypes = [LLVMOrcLLJITRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITGetIRTransformLayer = _libraries['llvm'].LLVMOrcLLJITGetIRTransformLayer
-    LLVMOrcLLJITGetIRTransformLayer.restype = LLVMOrcIRTransformLayerRef
-    LLVMOrcLLJITGetIRTransformLayer.argtypes = [LLVMOrcLLJITRef]
+  LLVMOrcLLJITGetIRTransformLayer = _libraries["llvm"].LLVMOrcLLJITGetIRTransformLayer
+  LLVMOrcLLJITGetIRTransformLayer.restype = LLVMOrcIRTransformLayerRef
+  LLVMOrcLLJITGetIRTransformLayer.argtypes = [LLVMOrcLLJITRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcLLJITGetDataLayoutStr = _libraries['llvm'].LLVMOrcLLJITGetDataLayoutStr
-    LLVMOrcLLJITGetDataLayoutStr.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMOrcLLJITGetDataLayoutStr.argtypes = [LLVMOrcLLJITRef]
+  LLVMOrcLLJITGetDataLayoutStr = _libraries["llvm"].LLVMOrcLLJITGetDataLayoutStr
+  LLVMOrcLLJITGetDataLayoutStr.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMOrcLLJITGetDataLayoutStr.argtypes = [LLVMOrcLLJITRef]
 except AttributeError:
-    pass
-LLVM_C_LINKER_H = True # macro
+  pass
+LLVM_C_LINKER_H = True  # macro
 
 # values for enumeration 'c__EA_LLVMLinkerMode'
 c__EA_LLVMLinkerMode__enumvalues = {
-    0: 'LLVMLinkerDestroySource',
-    1: 'LLVMLinkerPreserveSource_Removed',
+  0: "LLVMLinkerDestroySource",
+  1: "LLVMLinkerPreserveSource_Removed",
 }
 LLVMLinkerDestroySource = 0
 LLVMLinkerPreserveSource_Removed = 1
-c__EA_LLVMLinkerMode = ctypes.c_uint32 # enum
+c__EA_LLVMLinkerMode = ctypes.c_uint32  # enum
 LLVMLinkerMode = c__EA_LLVMLinkerMode
 LLVMLinkerMode__enumvalues = c__EA_LLVMLinkerMode__enumvalues
 try:
-    LLVMLinkModules2 = _libraries['llvm'].LLVMLinkModules2
-    LLVMLinkModules2.restype = LLVMBool
-    LLVMLinkModules2.argtypes = [LLVMModuleRef, LLVMModuleRef]
+  LLVMLinkModules2 = _libraries["llvm"].LLVMLinkModules2
+  LLVMLinkModules2.restype = LLVMBool
+  LLVMLinkModules2.argtypes = [LLVMModuleRef, LLVMModuleRef]
 except AttributeError:
-    pass
-LLVM_C_OBJECT_H = True # macro
+  pass
+LLVM_C_OBJECT_H = True  # macro
+
+
 class struct_LLVMOpaqueSectionIterator(Structure):
-    pass
+  pass
+
 
 LLVMSectionIteratorRef = ctypes.POINTER(struct_LLVMOpaqueSectionIterator)
+
+
 class struct_LLVMOpaqueSymbolIterator(Structure):
-    pass
+  pass
+
 
 LLVMSymbolIteratorRef = ctypes.POINTER(struct_LLVMOpaqueSymbolIterator)
+
+
 class struct_LLVMOpaqueRelocationIterator(Structure):
-    pass
+  pass
+
 
 LLVMRelocationIteratorRef = ctypes.POINTER(struct_LLVMOpaqueRelocationIterator)
 
 # values for enumeration 'c__EA_LLVMBinaryType'
 c__EA_LLVMBinaryType__enumvalues = {
-    0: 'LLVMBinaryTypeArchive',
-    1: 'LLVMBinaryTypeMachOUniversalBinary',
-    2: 'LLVMBinaryTypeCOFFImportFile',
-    3: 'LLVMBinaryTypeIR',
-    4: 'LLVMBinaryTypeWinRes',
-    5: 'LLVMBinaryTypeCOFF',
-    6: 'LLVMBinaryTypeELF32L',
-    7: 'LLVMBinaryTypeELF32B',
-    8: 'LLVMBinaryTypeELF64L',
-    9: 'LLVMBinaryTypeELF64B',
-    10: 'LLVMBinaryTypeMachO32L',
-    11: 'LLVMBinaryTypeMachO32B',
-    12: 'LLVMBinaryTypeMachO64L',
-    13: 'LLVMBinaryTypeMachO64B',
-    14: 'LLVMBinaryTypeWasm',
+  0: "LLVMBinaryTypeArchive",
+  1: "LLVMBinaryTypeMachOUniversalBinary",
+  2: "LLVMBinaryTypeCOFFImportFile",
+  3: "LLVMBinaryTypeIR",
+  4: "LLVMBinaryTypeWinRes",
+  5: "LLVMBinaryTypeCOFF",
+  6: "LLVMBinaryTypeELF32L",
+  7: "LLVMBinaryTypeELF32B",
+  8: "LLVMBinaryTypeELF64L",
+  9: "LLVMBinaryTypeELF64B",
+  10: "LLVMBinaryTypeMachO32L",
+  11: "LLVMBinaryTypeMachO32B",
+  12: "LLVMBinaryTypeMachO64L",
+  13: "LLVMBinaryTypeMachO64B",
+  14: "LLVMBinaryTypeWasm",
 }
 LLVMBinaryTypeArchive = 0
 LLVMBinaryTypeMachOUniversalBinary = 1
@@ -8574,260 +10759,300 @@ LLVMBinaryTypeMachO32B = 11
 LLVMBinaryTypeMachO64L = 12
 LLVMBinaryTypeMachO64B = 13
 LLVMBinaryTypeWasm = 14
-c__EA_LLVMBinaryType = ctypes.c_uint32 # enum
+c__EA_LLVMBinaryType = ctypes.c_uint32  # enum
 LLVMBinaryType = c__EA_LLVMBinaryType
 LLVMBinaryType__enumvalues = c__EA_LLVMBinaryType__enumvalues
 try:
-    LLVMCreateBinary = _libraries['llvm'].LLVMCreateBinary
-    LLVMCreateBinary.restype = LLVMBinaryRef
-    LLVMCreateBinary.argtypes = [LLVMMemoryBufferRef, LLVMContextRef, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMCreateBinary = _libraries["llvm"].LLVMCreateBinary
+  LLVMCreateBinary.restype = LLVMBinaryRef
+  LLVMCreateBinary.argtypes = [
+    LLVMMemoryBufferRef,
+    LLVMContextRef,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeBinary = _libraries['llvm'].LLVMDisposeBinary
-    LLVMDisposeBinary.restype = None
-    LLVMDisposeBinary.argtypes = [LLVMBinaryRef]
+  LLVMDisposeBinary = _libraries["llvm"].LLVMDisposeBinary
+  LLVMDisposeBinary.restype = None
+  LLVMDisposeBinary.argtypes = [LLVMBinaryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBinaryCopyMemoryBuffer = _libraries['llvm'].LLVMBinaryCopyMemoryBuffer
-    LLVMBinaryCopyMemoryBuffer.restype = LLVMMemoryBufferRef
-    LLVMBinaryCopyMemoryBuffer.argtypes = [LLVMBinaryRef]
+  LLVMBinaryCopyMemoryBuffer = _libraries["llvm"].LLVMBinaryCopyMemoryBuffer
+  LLVMBinaryCopyMemoryBuffer.restype = LLVMMemoryBufferRef
+  LLVMBinaryCopyMemoryBuffer.argtypes = [LLVMBinaryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMBinaryGetType = _libraries['llvm'].LLVMBinaryGetType
-    LLVMBinaryGetType.restype = LLVMBinaryType
-    LLVMBinaryGetType.argtypes = [LLVMBinaryRef]
+  LLVMBinaryGetType = _libraries["llvm"].LLVMBinaryGetType
+  LLVMBinaryGetType.restype = LLVMBinaryType
+  LLVMBinaryGetType.argtypes = [LLVMBinaryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMachOUniversalBinaryCopyObjectForArch = _libraries['llvm'].LLVMMachOUniversalBinaryCopyObjectForArch
-    LLVMMachOUniversalBinaryCopyObjectForArch.restype = LLVMBinaryRef
-    LLVMMachOUniversalBinaryCopyObjectForArch.argtypes = [LLVMBinaryRef, ctypes.POINTER(ctypes.c_char), size_t, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  LLVMMachOUniversalBinaryCopyObjectForArch = _libraries[
+    "llvm"
+  ].LLVMMachOUniversalBinaryCopyObjectForArch
+  LLVMMachOUniversalBinaryCopyObjectForArch.restype = LLVMBinaryRef
+  LLVMMachOUniversalBinaryCopyObjectForArch.argtypes = [
+    LLVMBinaryRef,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMObjectFileCopySectionIterator = _libraries['llvm'].LLVMObjectFileCopySectionIterator
-    LLVMObjectFileCopySectionIterator.restype = LLVMSectionIteratorRef
-    LLVMObjectFileCopySectionIterator.argtypes = [LLVMBinaryRef]
+  LLVMObjectFileCopySectionIterator = _libraries[
+    "llvm"
+  ].LLVMObjectFileCopySectionIterator
+  LLVMObjectFileCopySectionIterator.restype = LLVMSectionIteratorRef
+  LLVMObjectFileCopySectionIterator.argtypes = [LLVMBinaryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMObjectFileIsSectionIteratorAtEnd = _libraries['llvm'].LLVMObjectFileIsSectionIteratorAtEnd
-    LLVMObjectFileIsSectionIteratorAtEnd.restype = LLVMBool
-    LLVMObjectFileIsSectionIteratorAtEnd.argtypes = [LLVMBinaryRef, LLVMSectionIteratorRef]
+  LLVMObjectFileIsSectionIteratorAtEnd = _libraries[
+    "llvm"
+  ].LLVMObjectFileIsSectionIteratorAtEnd
+  LLVMObjectFileIsSectionIteratorAtEnd.restype = LLVMBool
+  LLVMObjectFileIsSectionIteratorAtEnd.argtypes = [
+    LLVMBinaryRef,
+    LLVMSectionIteratorRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMObjectFileCopySymbolIterator = _libraries['llvm'].LLVMObjectFileCopySymbolIterator
-    LLVMObjectFileCopySymbolIterator.restype = LLVMSymbolIteratorRef
-    LLVMObjectFileCopySymbolIterator.argtypes = [LLVMBinaryRef]
+  LLVMObjectFileCopySymbolIterator = _libraries["llvm"].LLVMObjectFileCopySymbolIterator
+  LLVMObjectFileCopySymbolIterator.restype = LLVMSymbolIteratorRef
+  LLVMObjectFileCopySymbolIterator.argtypes = [LLVMBinaryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMObjectFileIsSymbolIteratorAtEnd = _libraries['llvm'].LLVMObjectFileIsSymbolIteratorAtEnd
-    LLVMObjectFileIsSymbolIteratorAtEnd.restype = LLVMBool
-    LLVMObjectFileIsSymbolIteratorAtEnd.argtypes = [LLVMBinaryRef, LLVMSymbolIteratorRef]
+  LLVMObjectFileIsSymbolIteratorAtEnd = _libraries[
+    "llvm"
+  ].LLVMObjectFileIsSymbolIteratorAtEnd
+  LLVMObjectFileIsSymbolIteratorAtEnd.restype = LLVMBool
+  LLVMObjectFileIsSymbolIteratorAtEnd.argtypes = [LLVMBinaryRef, LLVMSymbolIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeSectionIterator = _libraries['llvm'].LLVMDisposeSectionIterator
-    LLVMDisposeSectionIterator.restype = None
-    LLVMDisposeSectionIterator.argtypes = [LLVMSectionIteratorRef]
+  LLVMDisposeSectionIterator = _libraries["llvm"].LLVMDisposeSectionIterator
+  LLVMDisposeSectionIterator.restype = None
+  LLVMDisposeSectionIterator.argtypes = [LLVMSectionIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMoveToNextSection = _libraries['llvm'].LLVMMoveToNextSection
-    LLVMMoveToNextSection.restype = None
-    LLVMMoveToNextSection.argtypes = [LLVMSectionIteratorRef]
+  LLVMMoveToNextSection = _libraries["llvm"].LLVMMoveToNextSection
+  LLVMMoveToNextSection.restype = None
+  LLVMMoveToNextSection.argtypes = [LLVMSectionIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMoveToContainingSection = _libraries['llvm'].LLVMMoveToContainingSection
-    LLVMMoveToContainingSection.restype = None
-    LLVMMoveToContainingSection.argtypes = [LLVMSectionIteratorRef, LLVMSymbolIteratorRef]
+  LLVMMoveToContainingSection = _libraries["llvm"].LLVMMoveToContainingSection
+  LLVMMoveToContainingSection.restype = None
+  LLVMMoveToContainingSection.argtypes = [LLVMSectionIteratorRef, LLVMSymbolIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeSymbolIterator = _libraries['llvm'].LLVMDisposeSymbolIterator
-    LLVMDisposeSymbolIterator.restype = None
-    LLVMDisposeSymbolIterator.argtypes = [LLVMSymbolIteratorRef]
+  LLVMDisposeSymbolIterator = _libraries["llvm"].LLVMDisposeSymbolIterator
+  LLVMDisposeSymbolIterator.restype = None
+  LLVMDisposeSymbolIterator.argtypes = [LLVMSymbolIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMoveToNextSymbol = _libraries['llvm'].LLVMMoveToNextSymbol
-    LLVMMoveToNextSymbol.restype = None
-    LLVMMoveToNextSymbol.argtypes = [LLVMSymbolIteratorRef]
+  LLVMMoveToNextSymbol = _libraries["llvm"].LLVMMoveToNextSymbol
+  LLVMMoveToNextSymbol.restype = None
+  LLVMMoveToNextSymbol.argtypes = [LLVMSymbolIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSectionName = _libraries['llvm'].LLVMGetSectionName
-    LLVMGetSectionName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetSectionName.argtypes = [LLVMSectionIteratorRef]
+  LLVMGetSectionName = _libraries["llvm"].LLVMGetSectionName
+  LLVMGetSectionName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetSectionName.argtypes = [LLVMSectionIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSectionSize = _libraries['llvm'].LLVMGetSectionSize
-    LLVMGetSectionSize.restype = uint64_t
-    LLVMGetSectionSize.argtypes = [LLVMSectionIteratorRef]
+  LLVMGetSectionSize = _libraries["llvm"].LLVMGetSectionSize
+  LLVMGetSectionSize.restype = uint64_t
+  LLVMGetSectionSize.argtypes = [LLVMSectionIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSectionContents = _libraries['llvm'].LLVMGetSectionContents
-    LLVMGetSectionContents.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetSectionContents.argtypes = [LLVMSectionIteratorRef]
+  LLVMGetSectionContents = _libraries["llvm"].LLVMGetSectionContents
+  LLVMGetSectionContents.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetSectionContents.argtypes = [LLVMSectionIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSectionAddress = _libraries['llvm'].LLVMGetSectionAddress
-    LLVMGetSectionAddress.restype = uint64_t
-    LLVMGetSectionAddress.argtypes = [LLVMSectionIteratorRef]
+  LLVMGetSectionAddress = _libraries["llvm"].LLVMGetSectionAddress
+  LLVMGetSectionAddress.restype = uint64_t
+  LLVMGetSectionAddress.argtypes = [LLVMSectionIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSectionContainsSymbol = _libraries['llvm'].LLVMGetSectionContainsSymbol
-    LLVMGetSectionContainsSymbol.restype = LLVMBool
-    LLVMGetSectionContainsSymbol.argtypes = [LLVMSectionIteratorRef, LLVMSymbolIteratorRef]
+  LLVMGetSectionContainsSymbol = _libraries["llvm"].LLVMGetSectionContainsSymbol
+  LLVMGetSectionContainsSymbol.restype = LLVMBool
+  LLVMGetSectionContainsSymbol.argtypes = [
+    LLVMSectionIteratorRef,
+    LLVMSymbolIteratorRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetRelocations = _libraries['llvm'].LLVMGetRelocations
-    LLVMGetRelocations.restype = LLVMRelocationIteratorRef
-    LLVMGetRelocations.argtypes = [LLVMSectionIteratorRef]
+  LLVMGetRelocations = _libraries["llvm"].LLVMGetRelocations
+  LLVMGetRelocations.restype = LLVMRelocationIteratorRef
+  LLVMGetRelocations.argtypes = [LLVMSectionIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeRelocationIterator = _libraries['llvm'].LLVMDisposeRelocationIterator
-    LLVMDisposeRelocationIterator.restype = None
-    LLVMDisposeRelocationIterator.argtypes = [LLVMRelocationIteratorRef]
+  LLVMDisposeRelocationIterator = _libraries["llvm"].LLVMDisposeRelocationIterator
+  LLVMDisposeRelocationIterator.restype = None
+  LLVMDisposeRelocationIterator.argtypes = [LLVMRelocationIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsRelocationIteratorAtEnd = _libraries['llvm'].LLVMIsRelocationIteratorAtEnd
-    LLVMIsRelocationIteratorAtEnd.restype = LLVMBool
-    LLVMIsRelocationIteratorAtEnd.argtypes = [LLVMSectionIteratorRef, LLVMRelocationIteratorRef]
+  LLVMIsRelocationIteratorAtEnd = _libraries["llvm"].LLVMIsRelocationIteratorAtEnd
+  LLVMIsRelocationIteratorAtEnd.restype = LLVMBool
+  LLVMIsRelocationIteratorAtEnd.argtypes = [
+    LLVMSectionIteratorRef,
+    LLVMRelocationIteratorRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMMoveToNextRelocation = _libraries['llvm'].LLVMMoveToNextRelocation
-    LLVMMoveToNextRelocation.restype = None
-    LLVMMoveToNextRelocation.argtypes = [LLVMRelocationIteratorRef]
+  LLVMMoveToNextRelocation = _libraries["llvm"].LLVMMoveToNextRelocation
+  LLVMMoveToNextRelocation.restype = None
+  LLVMMoveToNextRelocation.argtypes = [LLVMRelocationIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSymbolName = _libraries['llvm'].LLVMGetSymbolName
-    LLVMGetSymbolName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetSymbolName.argtypes = [LLVMSymbolIteratorRef]
+  LLVMGetSymbolName = _libraries["llvm"].LLVMGetSymbolName
+  LLVMGetSymbolName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetSymbolName.argtypes = [LLVMSymbolIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSymbolAddress = _libraries['llvm'].LLVMGetSymbolAddress
-    LLVMGetSymbolAddress.restype = uint64_t
-    LLVMGetSymbolAddress.argtypes = [LLVMSymbolIteratorRef]
+  LLVMGetSymbolAddress = _libraries["llvm"].LLVMGetSymbolAddress
+  LLVMGetSymbolAddress.restype = uint64_t
+  LLVMGetSymbolAddress.argtypes = [LLVMSymbolIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSymbolSize = _libraries['llvm'].LLVMGetSymbolSize
-    LLVMGetSymbolSize.restype = uint64_t
-    LLVMGetSymbolSize.argtypes = [LLVMSymbolIteratorRef]
+  LLVMGetSymbolSize = _libraries["llvm"].LLVMGetSymbolSize
+  LLVMGetSymbolSize.restype = uint64_t
+  LLVMGetSymbolSize.argtypes = [LLVMSymbolIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetRelocationOffset = _libraries['llvm'].LLVMGetRelocationOffset
-    LLVMGetRelocationOffset.restype = uint64_t
-    LLVMGetRelocationOffset.argtypes = [LLVMRelocationIteratorRef]
+  LLVMGetRelocationOffset = _libraries["llvm"].LLVMGetRelocationOffset
+  LLVMGetRelocationOffset.restype = uint64_t
+  LLVMGetRelocationOffset.argtypes = [LLVMRelocationIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetRelocationSymbol = _libraries['llvm'].LLVMGetRelocationSymbol
-    LLVMGetRelocationSymbol.restype = LLVMSymbolIteratorRef
-    LLVMGetRelocationSymbol.argtypes = [LLVMRelocationIteratorRef]
+  LLVMGetRelocationSymbol = _libraries["llvm"].LLVMGetRelocationSymbol
+  LLVMGetRelocationSymbol.restype = LLVMSymbolIteratorRef
+  LLVMGetRelocationSymbol.argtypes = [LLVMRelocationIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetRelocationType = _libraries['llvm'].LLVMGetRelocationType
-    LLVMGetRelocationType.restype = uint64_t
-    LLVMGetRelocationType.argtypes = [LLVMRelocationIteratorRef]
+  LLVMGetRelocationType = _libraries["llvm"].LLVMGetRelocationType
+  LLVMGetRelocationType.restype = uint64_t
+  LLVMGetRelocationType.argtypes = [LLVMRelocationIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetRelocationTypeName = _libraries['llvm'].LLVMGetRelocationTypeName
-    LLVMGetRelocationTypeName.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetRelocationTypeName.argtypes = [LLVMRelocationIteratorRef]
+  LLVMGetRelocationTypeName = _libraries["llvm"].LLVMGetRelocationTypeName
+  LLVMGetRelocationTypeName.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetRelocationTypeName.argtypes = [LLVMRelocationIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetRelocationValueString = _libraries['llvm'].LLVMGetRelocationValueString
-    LLVMGetRelocationValueString.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMGetRelocationValueString.argtypes = [LLVMRelocationIteratorRef]
+  LLVMGetRelocationValueString = _libraries["llvm"].LLVMGetRelocationValueString
+  LLVMGetRelocationValueString.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMGetRelocationValueString.argtypes = [LLVMRelocationIteratorRef]
 except AttributeError:
-    pass
+  pass
+
+
 class struct_LLVMOpaqueObjectFile(Structure):
-    pass
+  pass
+
 
 LLVMObjectFileRef = ctypes.POINTER(struct_LLVMOpaqueObjectFile)
 try:
-    LLVMCreateObjectFile = _libraries['llvm'].LLVMCreateObjectFile
-    LLVMCreateObjectFile.restype = LLVMObjectFileRef
-    LLVMCreateObjectFile.argtypes = [LLVMMemoryBufferRef]
+  LLVMCreateObjectFile = _libraries["llvm"].LLVMCreateObjectFile
+  LLVMCreateObjectFile.restype = LLVMObjectFileRef
+  LLVMCreateObjectFile.argtypes = [LLVMMemoryBufferRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposeObjectFile = _libraries['llvm'].LLVMDisposeObjectFile
-    LLVMDisposeObjectFile.restype = None
-    LLVMDisposeObjectFile.argtypes = [LLVMObjectFileRef]
+  LLVMDisposeObjectFile = _libraries["llvm"].LLVMDisposeObjectFile
+  LLVMDisposeObjectFile.restype = None
+  LLVMDisposeObjectFile.argtypes = [LLVMObjectFileRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSections = _libraries['llvm'].LLVMGetSections
-    LLVMGetSections.restype = LLVMSectionIteratorRef
-    LLVMGetSections.argtypes = [LLVMObjectFileRef]
+  LLVMGetSections = _libraries["llvm"].LLVMGetSections
+  LLVMGetSections.restype = LLVMSectionIteratorRef
+  LLVMGetSections.argtypes = [LLVMObjectFileRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsSectionIteratorAtEnd = _libraries['llvm'].LLVMIsSectionIteratorAtEnd
-    LLVMIsSectionIteratorAtEnd.restype = LLVMBool
-    LLVMIsSectionIteratorAtEnd.argtypes = [LLVMObjectFileRef, LLVMSectionIteratorRef]
+  LLVMIsSectionIteratorAtEnd = _libraries["llvm"].LLVMIsSectionIteratorAtEnd
+  LLVMIsSectionIteratorAtEnd.restype = LLVMBool
+  LLVMIsSectionIteratorAtEnd.argtypes = [LLVMObjectFileRef, LLVMSectionIteratorRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMGetSymbols = _libraries['llvm'].LLVMGetSymbols
-    LLVMGetSymbols.restype = LLVMSymbolIteratorRef
-    LLVMGetSymbols.argtypes = [LLVMObjectFileRef]
+  LLVMGetSymbols = _libraries["llvm"].LLVMGetSymbols
+  LLVMGetSymbols.restype = LLVMSymbolIteratorRef
+  LLVMGetSymbols.argtypes = [LLVMObjectFileRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMIsSymbolIteratorAtEnd = _libraries['llvm'].LLVMIsSymbolIteratorAtEnd
-    LLVMIsSymbolIteratorAtEnd.restype = LLVMBool
-    LLVMIsSymbolIteratorAtEnd.argtypes = [LLVMObjectFileRef, LLVMSymbolIteratorRef]
+  LLVMIsSymbolIteratorAtEnd = _libraries["llvm"].LLVMIsSymbolIteratorAtEnd
+  LLVMIsSymbolIteratorAtEnd.restype = LLVMBool
+  LLVMIsSymbolIteratorAtEnd.argtypes = [LLVMObjectFileRef, LLVMSymbolIteratorRef]
 except AttributeError:
-    pass
-LLVM_C_ORCEE_H = True # macro
+  pass
+LLVM_C_ORCEE_H = True  # macro
 try:
-    LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager = _libraries['llvm'].LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager
-    LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager.restype = LLVMOrcObjectLayerRef
-    LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager.argtypes = [LLVMOrcExecutionSessionRef]
+  LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager = _libraries[
+    "llvm"
+  ].LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager
+  LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager.restype = (
+    LLVMOrcObjectLayerRef
+  )
+  LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager.argtypes = [
+    LLVMOrcExecutionSessionRef
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener = _libraries['llvm'].LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener
-    LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener.restype = None
-    LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener.argtypes = [LLVMOrcObjectLayerRef, LLVMJITEventListenerRef]
+  LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener = _libraries[
+    "llvm"
+  ].LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener
+  LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener.restype = None
+  LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener.argtypes = [
+    LLVMOrcObjectLayerRef,
+    LLVMJITEventListenerRef,
+  ]
 except AttributeError:
-    pass
-LLVM_C_REMARKS_H = True # macro
-REMARKS_API_VERSION = 1 # macro
+  pass
+LLVM_C_REMARKS_H = True  # macro
+REMARKS_API_VERSION = 1  # macro
 
 # values for enumeration 'LLVMRemarkType'
 LLVMRemarkType__enumvalues = {
-    0: 'LLVMRemarkTypeUnknown',
-    1: 'LLVMRemarkTypePassed',
-    2: 'LLVMRemarkTypeMissed',
-    3: 'LLVMRemarkTypeAnalysis',
-    4: 'LLVMRemarkTypeAnalysisFPCommute',
-    5: 'LLVMRemarkTypeAnalysisAliasing',
-    6: 'LLVMRemarkTypeFailure',
+  0: "LLVMRemarkTypeUnknown",
+  1: "LLVMRemarkTypePassed",
+  2: "LLVMRemarkTypeMissed",
+  3: "LLVMRemarkTypeAnalysis",
+  4: "LLVMRemarkTypeAnalysisFPCommute",
+  5: "LLVMRemarkTypeAnalysisAliasing",
+  6: "LLVMRemarkTypeFailure",
 }
 LLVMRemarkTypeUnknown = 0
 LLVMRemarkTypePassed = 1
@@ -8836,814 +11061,983 @@ LLVMRemarkTypeAnalysis = 3
 LLVMRemarkTypeAnalysisFPCommute = 4
 LLVMRemarkTypeAnalysisAliasing = 5
 LLVMRemarkTypeFailure = 6
-LLVMRemarkType = ctypes.c_uint32 # enum
+LLVMRemarkType = ctypes.c_uint32  # enum
+
+
 class struct_LLVMRemarkOpaqueString(Structure):
-    pass
+  pass
+
 
 LLVMRemarkStringRef = ctypes.POINTER(struct_LLVMRemarkOpaqueString)
 try:
-    LLVMRemarkStringGetData = _libraries['llvm'].LLVMRemarkStringGetData
-    LLVMRemarkStringGetData.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMRemarkStringGetData.argtypes = [LLVMRemarkStringRef]
+  LLVMRemarkStringGetData = _libraries["llvm"].LLVMRemarkStringGetData
+  LLVMRemarkStringGetData.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMRemarkStringGetData.argtypes = [LLVMRemarkStringRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkStringGetLen = _libraries['llvm'].LLVMRemarkStringGetLen
-    LLVMRemarkStringGetLen.restype = uint32_t
-    LLVMRemarkStringGetLen.argtypes = [LLVMRemarkStringRef]
+  LLVMRemarkStringGetLen = _libraries["llvm"].LLVMRemarkStringGetLen
+  LLVMRemarkStringGetLen.restype = uint32_t
+  LLVMRemarkStringGetLen.argtypes = [LLVMRemarkStringRef]
 except AttributeError:
-    pass
+  pass
+
+
 class struct_LLVMRemarkOpaqueDebugLoc(Structure):
-    pass
+  pass
+
 
 LLVMRemarkDebugLocRef = ctypes.POINTER(struct_LLVMRemarkOpaqueDebugLoc)
 try:
-    LLVMRemarkDebugLocGetSourceFilePath = _libraries['llvm'].LLVMRemarkDebugLocGetSourceFilePath
-    LLVMRemarkDebugLocGetSourceFilePath.restype = LLVMRemarkStringRef
-    LLVMRemarkDebugLocGetSourceFilePath.argtypes = [LLVMRemarkDebugLocRef]
+  LLVMRemarkDebugLocGetSourceFilePath = _libraries[
+    "llvm"
+  ].LLVMRemarkDebugLocGetSourceFilePath
+  LLVMRemarkDebugLocGetSourceFilePath.restype = LLVMRemarkStringRef
+  LLVMRemarkDebugLocGetSourceFilePath.argtypes = [LLVMRemarkDebugLocRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkDebugLocGetSourceLine = _libraries['llvm'].LLVMRemarkDebugLocGetSourceLine
-    LLVMRemarkDebugLocGetSourceLine.restype = uint32_t
-    LLVMRemarkDebugLocGetSourceLine.argtypes = [LLVMRemarkDebugLocRef]
+  LLVMRemarkDebugLocGetSourceLine = _libraries["llvm"].LLVMRemarkDebugLocGetSourceLine
+  LLVMRemarkDebugLocGetSourceLine.restype = uint32_t
+  LLVMRemarkDebugLocGetSourceLine.argtypes = [LLVMRemarkDebugLocRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkDebugLocGetSourceColumn = _libraries['llvm'].LLVMRemarkDebugLocGetSourceColumn
-    LLVMRemarkDebugLocGetSourceColumn.restype = uint32_t
-    LLVMRemarkDebugLocGetSourceColumn.argtypes = [LLVMRemarkDebugLocRef]
+  LLVMRemarkDebugLocGetSourceColumn = _libraries[
+    "llvm"
+  ].LLVMRemarkDebugLocGetSourceColumn
+  LLVMRemarkDebugLocGetSourceColumn.restype = uint32_t
+  LLVMRemarkDebugLocGetSourceColumn.argtypes = [LLVMRemarkDebugLocRef]
 except AttributeError:
-    pass
+  pass
+
+
 class struct_LLVMRemarkOpaqueArg(Structure):
-    pass
+  pass
+
 
 LLVMRemarkArgRef = ctypes.POINTER(struct_LLVMRemarkOpaqueArg)
 try:
-    LLVMRemarkArgGetKey = _libraries['llvm'].LLVMRemarkArgGetKey
-    LLVMRemarkArgGetKey.restype = LLVMRemarkStringRef
-    LLVMRemarkArgGetKey.argtypes = [LLVMRemarkArgRef]
+  LLVMRemarkArgGetKey = _libraries["llvm"].LLVMRemarkArgGetKey
+  LLVMRemarkArgGetKey.restype = LLVMRemarkStringRef
+  LLVMRemarkArgGetKey.argtypes = [LLVMRemarkArgRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkArgGetValue = _libraries['llvm'].LLVMRemarkArgGetValue
-    LLVMRemarkArgGetValue.restype = LLVMRemarkStringRef
-    LLVMRemarkArgGetValue.argtypes = [LLVMRemarkArgRef]
+  LLVMRemarkArgGetValue = _libraries["llvm"].LLVMRemarkArgGetValue
+  LLVMRemarkArgGetValue.restype = LLVMRemarkStringRef
+  LLVMRemarkArgGetValue.argtypes = [LLVMRemarkArgRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkArgGetDebugLoc = _libraries['llvm'].LLVMRemarkArgGetDebugLoc
-    LLVMRemarkArgGetDebugLoc.restype = LLVMRemarkDebugLocRef
-    LLVMRemarkArgGetDebugLoc.argtypes = [LLVMRemarkArgRef]
+  LLVMRemarkArgGetDebugLoc = _libraries["llvm"].LLVMRemarkArgGetDebugLoc
+  LLVMRemarkArgGetDebugLoc.restype = LLVMRemarkDebugLocRef
+  LLVMRemarkArgGetDebugLoc.argtypes = [LLVMRemarkArgRef]
 except AttributeError:
-    pass
+  pass
+
+
 class struct_LLVMRemarkOpaqueEntry(Structure):
-    pass
+  pass
+
 
 LLVMRemarkEntryRef = ctypes.POINTER(struct_LLVMRemarkOpaqueEntry)
 try:
-    LLVMRemarkEntryDispose = _libraries['llvm'].LLVMRemarkEntryDispose
-    LLVMRemarkEntryDispose.restype = None
-    LLVMRemarkEntryDispose.argtypes = [LLVMRemarkEntryRef]
+  LLVMRemarkEntryDispose = _libraries["llvm"].LLVMRemarkEntryDispose
+  LLVMRemarkEntryDispose.restype = None
+  LLVMRemarkEntryDispose.argtypes = [LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkEntryGetType = _libraries['llvm'].LLVMRemarkEntryGetType
-    LLVMRemarkEntryGetType.restype = LLVMRemarkType
-    LLVMRemarkEntryGetType.argtypes = [LLVMRemarkEntryRef]
+  LLVMRemarkEntryGetType = _libraries["llvm"].LLVMRemarkEntryGetType
+  LLVMRemarkEntryGetType.restype = LLVMRemarkType
+  LLVMRemarkEntryGetType.argtypes = [LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkEntryGetPassName = _libraries['llvm'].LLVMRemarkEntryGetPassName
-    LLVMRemarkEntryGetPassName.restype = LLVMRemarkStringRef
-    LLVMRemarkEntryGetPassName.argtypes = [LLVMRemarkEntryRef]
+  LLVMRemarkEntryGetPassName = _libraries["llvm"].LLVMRemarkEntryGetPassName
+  LLVMRemarkEntryGetPassName.restype = LLVMRemarkStringRef
+  LLVMRemarkEntryGetPassName.argtypes = [LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkEntryGetRemarkName = _libraries['llvm'].LLVMRemarkEntryGetRemarkName
-    LLVMRemarkEntryGetRemarkName.restype = LLVMRemarkStringRef
-    LLVMRemarkEntryGetRemarkName.argtypes = [LLVMRemarkEntryRef]
+  LLVMRemarkEntryGetRemarkName = _libraries["llvm"].LLVMRemarkEntryGetRemarkName
+  LLVMRemarkEntryGetRemarkName.restype = LLVMRemarkStringRef
+  LLVMRemarkEntryGetRemarkName.argtypes = [LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkEntryGetFunctionName = _libraries['llvm'].LLVMRemarkEntryGetFunctionName
-    LLVMRemarkEntryGetFunctionName.restype = LLVMRemarkStringRef
-    LLVMRemarkEntryGetFunctionName.argtypes = [LLVMRemarkEntryRef]
+  LLVMRemarkEntryGetFunctionName = _libraries["llvm"].LLVMRemarkEntryGetFunctionName
+  LLVMRemarkEntryGetFunctionName.restype = LLVMRemarkStringRef
+  LLVMRemarkEntryGetFunctionName.argtypes = [LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkEntryGetDebugLoc = _libraries['llvm'].LLVMRemarkEntryGetDebugLoc
-    LLVMRemarkEntryGetDebugLoc.restype = LLVMRemarkDebugLocRef
-    LLVMRemarkEntryGetDebugLoc.argtypes = [LLVMRemarkEntryRef]
+  LLVMRemarkEntryGetDebugLoc = _libraries["llvm"].LLVMRemarkEntryGetDebugLoc
+  LLVMRemarkEntryGetDebugLoc.restype = LLVMRemarkDebugLocRef
+  LLVMRemarkEntryGetDebugLoc.argtypes = [LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkEntryGetHotness = _libraries['llvm'].LLVMRemarkEntryGetHotness
-    LLVMRemarkEntryGetHotness.restype = uint64_t
-    LLVMRemarkEntryGetHotness.argtypes = [LLVMRemarkEntryRef]
+  LLVMRemarkEntryGetHotness = _libraries["llvm"].LLVMRemarkEntryGetHotness
+  LLVMRemarkEntryGetHotness.restype = uint64_t
+  LLVMRemarkEntryGetHotness.argtypes = [LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkEntryGetNumArgs = _libraries['llvm'].LLVMRemarkEntryGetNumArgs
-    LLVMRemarkEntryGetNumArgs.restype = uint32_t
-    LLVMRemarkEntryGetNumArgs.argtypes = [LLVMRemarkEntryRef]
+  LLVMRemarkEntryGetNumArgs = _libraries["llvm"].LLVMRemarkEntryGetNumArgs
+  LLVMRemarkEntryGetNumArgs.restype = uint32_t
+  LLVMRemarkEntryGetNumArgs.argtypes = [LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkEntryGetFirstArg = _libraries['llvm'].LLVMRemarkEntryGetFirstArg
-    LLVMRemarkEntryGetFirstArg.restype = LLVMRemarkArgRef
-    LLVMRemarkEntryGetFirstArg.argtypes = [LLVMRemarkEntryRef]
+  LLVMRemarkEntryGetFirstArg = _libraries["llvm"].LLVMRemarkEntryGetFirstArg
+  LLVMRemarkEntryGetFirstArg.restype = LLVMRemarkArgRef
+  LLVMRemarkEntryGetFirstArg.argtypes = [LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkEntryGetNextArg = _libraries['llvm'].LLVMRemarkEntryGetNextArg
-    LLVMRemarkEntryGetNextArg.restype = LLVMRemarkArgRef
-    LLVMRemarkEntryGetNextArg.argtypes = [LLVMRemarkArgRef, LLVMRemarkEntryRef]
+  LLVMRemarkEntryGetNextArg = _libraries["llvm"].LLVMRemarkEntryGetNextArg
+  LLVMRemarkEntryGetNextArg.restype = LLVMRemarkArgRef
+  LLVMRemarkEntryGetNextArg.argtypes = [LLVMRemarkArgRef, LLVMRemarkEntryRef]
 except AttributeError:
-    pass
+  pass
+
+
 class struct_LLVMRemarkOpaqueParser(Structure):
-    pass
+  pass
+
 
 LLVMRemarkParserRef = ctypes.POINTER(struct_LLVMRemarkOpaqueParser)
 try:
-    LLVMRemarkParserCreateYAML = _libraries['llvm'].LLVMRemarkParserCreateYAML
-    LLVMRemarkParserCreateYAML.restype = LLVMRemarkParserRef
-    LLVMRemarkParserCreateYAML.argtypes = [ctypes.POINTER(None), uint64_t]
+  LLVMRemarkParserCreateYAML = _libraries["llvm"].LLVMRemarkParserCreateYAML
+  LLVMRemarkParserCreateYAML.restype = LLVMRemarkParserRef
+  LLVMRemarkParserCreateYAML.argtypes = [ctypes.POINTER(None), uint64_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkParserCreateBitstream = _libraries['llvm'].LLVMRemarkParserCreateBitstream
-    LLVMRemarkParserCreateBitstream.restype = LLVMRemarkParserRef
-    LLVMRemarkParserCreateBitstream.argtypes = [ctypes.POINTER(None), uint64_t]
+  LLVMRemarkParserCreateBitstream = _libraries["llvm"].LLVMRemarkParserCreateBitstream
+  LLVMRemarkParserCreateBitstream.restype = LLVMRemarkParserRef
+  LLVMRemarkParserCreateBitstream.argtypes = [ctypes.POINTER(None), uint64_t]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkParserGetNext = _libraries['llvm'].LLVMRemarkParserGetNext
-    LLVMRemarkParserGetNext.restype = LLVMRemarkEntryRef
-    LLVMRemarkParserGetNext.argtypes = [LLVMRemarkParserRef]
+  LLVMRemarkParserGetNext = _libraries["llvm"].LLVMRemarkParserGetNext
+  LLVMRemarkParserGetNext.restype = LLVMRemarkEntryRef
+  LLVMRemarkParserGetNext.argtypes = [LLVMRemarkParserRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkParserHasError = _libraries['llvm'].LLVMRemarkParserHasError
-    LLVMRemarkParserHasError.restype = LLVMBool
-    LLVMRemarkParserHasError.argtypes = [LLVMRemarkParserRef]
+  LLVMRemarkParserHasError = _libraries["llvm"].LLVMRemarkParserHasError
+  LLVMRemarkParserHasError.restype = LLVMBool
+  LLVMRemarkParserHasError.argtypes = [LLVMRemarkParserRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkParserGetErrorMessage = _libraries['llvm'].LLVMRemarkParserGetErrorMessage
-    LLVMRemarkParserGetErrorMessage.restype = ctypes.POINTER(ctypes.c_char)
-    LLVMRemarkParserGetErrorMessage.argtypes = [LLVMRemarkParserRef]
+  LLVMRemarkParserGetErrorMessage = _libraries["llvm"].LLVMRemarkParserGetErrorMessage
+  LLVMRemarkParserGetErrorMessage.restype = ctypes.POINTER(ctypes.c_char)
+  LLVMRemarkParserGetErrorMessage.argtypes = [LLVMRemarkParserRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkParserDispose = _libraries['llvm'].LLVMRemarkParserDispose
-    LLVMRemarkParserDispose.restype = None
-    LLVMRemarkParserDispose.argtypes = [LLVMRemarkParserRef]
+  LLVMRemarkParserDispose = _libraries["llvm"].LLVMRemarkParserDispose
+  LLVMRemarkParserDispose.restype = None
+  LLVMRemarkParserDispose.argtypes = [LLVMRemarkParserRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMRemarkVersion = _libraries['llvm'].LLVMRemarkVersion
-    LLVMRemarkVersion.restype = uint32_t
-    LLVMRemarkVersion.argtypes = []
+  LLVMRemarkVersion = _libraries["llvm"].LLVMRemarkVersion
+  LLVMRemarkVersion.restype = uint32_t
+  LLVMRemarkVersion.argtypes = []
 except AttributeError:
-    pass
-LLVM_C_SUPPORT_H = True # macro
+  pass
+LLVM_C_SUPPORT_H = True  # macro
 try:
-    LLVMLoadLibraryPermanently = _libraries['llvm'].LLVMLoadLibraryPermanently
-    LLVMLoadLibraryPermanently.restype = LLVMBool
-    LLVMLoadLibraryPermanently.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMLoadLibraryPermanently = _libraries["llvm"].LLVMLoadLibraryPermanently
+  LLVMLoadLibraryPermanently.restype = LLVMBool
+  LLVMLoadLibraryPermanently.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMParseCommandLineOptions = _libraries['llvm'].LLVMParseCommandLineOptions
-    LLVMParseCommandLineOptions.restype = None
-    LLVMParseCommandLineOptions.argtypes = [ctypes.c_int32, ctypes.POINTER(ctypes.POINTER(ctypes.c_char)), ctypes.POINTER(ctypes.c_char)]
+  LLVMParseCommandLineOptions = _libraries["llvm"].LLVMParseCommandLineOptions
+  LLVMParseCommandLineOptions.restype = None
+  LLVMParseCommandLineOptions.argtypes = [
+    ctypes.c_int32,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMSearchForAddressOfSymbol = _libraries['llvm'].LLVMSearchForAddressOfSymbol
-    LLVMSearchForAddressOfSymbol.restype = ctypes.POINTER(None)
-    LLVMSearchForAddressOfSymbol.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  LLVMSearchForAddressOfSymbol = _libraries["llvm"].LLVMSearchForAddressOfSymbol
+  LLVMSearchForAddressOfSymbol.restype = ctypes.POINTER(None)
+  LLVMSearchForAddressOfSymbol.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddSymbol = _libraries['llvm'].LLVMAddSymbol
-    LLVMAddSymbol.restype = None
-    LLVMAddSymbol.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(None)]
+  LLVMAddSymbol = _libraries["llvm"].LLVMAddSymbol
+  LLVMAddSymbol.restype = None
+  LLVMAddSymbol.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(None)]
 except AttributeError:
-    pass
-LLVM_C_TRANSFORMS_AGGRESSIVEINSTCOMBINE_H = True # macro
+  pass
+LLVM_C_TRANSFORMS_AGGRESSIVEINSTCOMBINE_H = True  # macro
 try:
-    LLVMAddAggressiveInstCombinerPass = _libraries['llvm'].LLVMAddAggressiveInstCombinerPass
-    LLVMAddAggressiveInstCombinerPass.restype = None
-    LLVMAddAggressiveInstCombinerPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddAggressiveInstCombinerPass = _libraries[
+    "llvm"
+  ].LLVMAddAggressiveInstCombinerPass
+  LLVMAddAggressiveInstCombinerPass.restype = None
+  LLVMAddAggressiveInstCombinerPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
-LLVM_C_TRANSFORMS_COROUTINES_H = True # macro
-LLVM_C_TRANSFORMS_PASSMANAGERBUILDER_H = True # macro
+  pass
+LLVM_C_TRANSFORMS_COROUTINES_H = True  # macro
+LLVM_C_TRANSFORMS_PASSMANAGERBUILDER_H = True  # macro
+
+
 class struct_LLVMOpaquePassManagerBuilder(Structure):
-    pass
+  pass
+
 
 LLVMPassManagerBuilderRef = ctypes.POINTER(struct_LLVMOpaquePassManagerBuilder)
 try:
-    LLVMPassManagerBuilderCreate = _libraries['llvm'].LLVMPassManagerBuilderCreate
-    LLVMPassManagerBuilderCreate.restype = LLVMPassManagerBuilderRef
-    LLVMPassManagerBuilderCreate.argtypes = []
+  LLVMPassManagerBuilderCreate = _libraries["llvm"].LLVMPassManagerBuilderCreate
+  LLVMPassManagerBuilderCreate.restype = LLVMPassManagerBuilderRef
+  LLVMPassManagerBuilderCreate.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderDispose = _libraries['llvm'].LLVMPassManagerBuilderDispose
-    LLVMPassManagerBuilderDispose.restype = None
-    LLVMPassManagerBuilderDispose.argtypes = [LLVMPassManagerBuilderRef]
+  LLVMPassManagerBuilderDispose = _libraries["llvm"].LLVMPassManagerBuilderDispose
+  LLVMPassManagerBuilderDispose.restype = None
+  LLVMPassManagerBuilderDispose.argtypes = [LLVMPassManagerBuilderRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderSetOptLevel = _libraries['llvm'].LLVMPassManagerBuilderSetOptLevel
-    LLVMPassManagerBuilderSetOptLevel.restype = None
-    LLVMPassManagerBuilderSetOptLevel.argtypes = [LLVMPassManagerBuilderRef, ctypes.c_uint32]
+  LLVMPassManagerBuilderSetOptLevel = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderSetOptLevel
+  LLVMPassManagerBuilderSetOptLevel.restype = None
+  LLVMPassManagerBuilderSetOptLevel.argtypes = [
+    LLVMPassManagerBuilderRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderSetSizeLevel = _libraries['llvm'].LLVMPassManagerBuilderSetSizeLevel
-    LLVMPassManagerBuilderSetSizeLevel.restype = None
-    LLVMPassManagerBuilderSetSizeLevel.argtypes = [LLVMPassManagerBuilderRef, ctypes.c_uint32]
+  LLVMPassManagerBuilderSetSizeLevel = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderSetSizeLevel
+  LLVMPassManagerBuilderSetSizeLevel.restype = None
+  LLVMPassManagerBuilderSetSizeLevel.argtypes = [
+    LLVMPassManagerBuilderRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderSetDisableUnitAtATime = _libraries['llvm'].LLVMPassManagerBuilderSetDisableUnitAtATime
-    LLVMPassManagerBuilderSetDisableUnitAtATime.restype = None
-    LLVMPassManagerBuilderSetDisableUnitAtATime.argtypes = [LLVMPassManagerBuilderRef, LLVMBool]
+  LLVMPassManagerBuilderSetDisableUnitAtATime = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderSetDisableUnitAtATime
+  LLVMPassManagerBuilderSetDisableUnitAtATime.restype = None
+  LLVMPassManagerBuilderSetDisableUnitAtATime.argtypes = [
+    LLVMPassManagerBuilderRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderSetDisableUnrollLoops = _libraries['llvm'].LLVMPassManagerBuilderSetDisableUnrollLoops
-    LLVMPassManagerBuilderSetDisableUnrollLoops.restype = None
-    LLVMPassManagerBuilderSetDisableUnrollLoops.argtypes = [LLVMPassManagerBuilderRef, LLVMBool]
+  LLVMPassManagerBuilderSetDisableUnrollLoops = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderSetDisableUnrollLoops
+  LLVMPassManagerBuilderSetDisableUnrollLoops.restype = None
+  LLVMPassManagerBuilderSetDisableUnrollLoops.argtypes = [
+    LLVMPassManagerBuilderRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderSetDisableSimplifyLibCalls = _libraries['llvm'].LLVMPassManagerBuilderSetDisableSimplifyLibCalls
-    LLVMPassManagerBuilderSetDisableSimplifyLibCalls.restype = None
-    LLVMPassManagerBuilderSetDisableSimplifyLibCalls.argtypes = [LLVMPassManagerBuilderRef, LLVMBool]
+  LLVMPassManagerBuilderSetDisableSimplifyLibCalls = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderSetDisableSimplifyLibCalls
+  LLVMPassManagerBuilderSetDisableSimplifyLibCalls.restype = None
+  LLVMPassManagerBuilderSetDisableSimplifyLibCalls.argtypes = [
+    LLVMPassManagerBuilderRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderUseInlinerWithThreshold = _libraries['llvm'].LLVMPassManagerBuilderUseInlinerWithThreshold
-    LLVMPassManagerBuilderUseInlinerWithThreshold.restype = None
-    LLVMPassManagerBuilderUseInlinerWithThreshold.argtypes = [LLVMPassManagerBuilderRef, ctypes.c_uint32]
+  LLVMPassManagerBuilderUseInlinerWithThreshold = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderUseInlinerWithThreshold
+  LLVMPassManagerBuilderUseInlinerWithThreshold.restype = None
+  LLVMPassManagerBuilderUseInlinerWithThreshold.argtypes = [
+    LLVMPassManagerBuilderRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderPopulateFunctionPassManager = _libraries['llvm'].LLVMPassManagerBuilderPopulateFunctionPassManager
-    LLVMPassManagerBuilderPopulateFunctionPassManager.restype = None
-    LLVMPassManagerBuilderPopulateFunctionPassManager.argtypes = [LLVMPassManagerBuilderRef, LLVMPassManagerRef]
+  LLVMPassManagerBuilderPopulateFunctionPassManager = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderPopulateFunctionPassManager
+  LLVMPassManagerBuilderPopulateFunctionPassManager.restype = None
+  LLVMPassManagerBuilderPopulateFunctionPassManager.argtypes = [
+    LLVMPassManagerBuilderRef,
+    LLVMPassManagerRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderPopulateModulePassManager = _libraries['llvm'].LLVMPassManagerBuilderPopulateModulePassManager
-    LLVMPassManagerBuilderPopulateModulePassManager.restype = None
-    LLVMPassManagerBuilderPopulateModulePassManager.argtypes = [LLVMPassManagerBuilderRef, LLVMPassManagerRef]
+  LLVMPassManagerBuilderPopulateModulePassManager = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderPopulateModulePassManager
+  LLVMPassManagerBuilderPopulateModulePassManager.restype = None
+  LLVMPassManagerBuilderPopulateModulePassManager.argtypes = [
+    LLVMPassManagerBuilderRef,
+    LLVMPassManagerRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderPopulateLTOPassManager = _libraries['llvm'].LLVMPassManagerBuilderPopulateLTOPassManager
-    LLVMPassManagerBuilderPopulateLTOPassManager.restype = None
-    LLVMPassManagerBuilderPopulateLTOPassManager.argtypes = [LLVMPassManagerBuilderRef, LLVMPassManagerRef, LLVMBool, LLVMBool]
+  LLVMPassManagerBuilderPopulateLTOPassManager = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderPopulateLTOPassManager
+  LLVMPassManagerBuilderPopulateLTOPassManager.restype = None
+  LLVMPassManagerBuilderPopulateLTOPassManager.argtypes = [
+    LLVMPassManagerBuilderRef,
+    LLVMPassManagerRef,
+    LLVMBool,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddCoroEarlyPass = _libraries['llvm'].LLVMAddCoroEarlyPass
-    LLVMAddCoroEarlyPass.restype = None
-    LLVMAddCoroEarlyPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddCoroEarlyPass = _libraries["llvm"].LLVMAddCoroEarlyPass
+  LLVMAddCoroEarlyPass.restype = None
+  LLVMAddCoroEarlyPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddCoroSplitPass = _libraries['llvm'].LLVMAddCoroSplitPass
-    LLVMAddCoroSplitPass.restype = None
-    LLVMAddCoroSplitPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddCoroSplitPass = _libraries["llvm"].LLVMAddCoroSplitPass
+  LLVMAddCoroSplitPass.restype = None
+  LLVMAddCoroSplitPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddCoroElidePass = _libraries['llvm'].LLVMAddCoroElidePass
-    LLVMAddCoroElidePass.restype = None
-    LLVMAddCoroElidePass.argtypes = [LLVMPassManagerRef]
+  LLVMAddCoroElidePass = _libraries["llvm"].LLVMAddCoroElidePass
+  LLVMAddCoroElidePass.restype = None
+  LLVMAddCoroElidePass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddCoroCleanupPass = _libraries['llvm'].LLVMAddCoroCleanupPass
-    LLVMAddCoroCleanupPass.restype = None
-    LLVMAddCoroCleanupPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddCoroCleanupPass = _libraries["llvm"].LLVMAddCoroCleanupPass
+  LLVMAddCoroCleanupPass.restype = None
+  LLVMAddCoroCleanupPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints = _libraries['llvm'].LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints
-    LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints.restype = None
-    LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints.argtypes = [LLVMPassManagerBuilderRef]
+  LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints = _libraries[
+    "llvm"
+  ].LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints
+  LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints.restype = None
+  LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints.argtypes = [
+    LLVMPassManagerBuilderRef
+  ]
 except AttributeError:
-    pass
-LLVM_C_TRANSFORMS_IPO_H = True # macro
+  pass
+LLVM_C_TRANSFORMS_IPO_H = True  # macro
 try:
-    LLVMAddArgumentPromotionPass = _libraries['llvm'].LLVMAddArgumentPromotionPass
-    LLVMAddArgumentPromotionPass.restype = None
-    LLVMAddArgumentPromotionPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddArgumentPromotionPass = _libraries["llvm"].LLVMAddArgumentPromotionPass
+  LLVMAddArgumentPromotionPass.restype = None
+  LLVMAddArgumentPromotionPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddConstantMergePass = _libraries['llvm'].LLVMAddConstantMergePass
-    LLVMAddConstantMergePass.restype = None
-    LLVMAddConstantMergePass.argtypes = [LLVMPassManagerRef]
+  LLVMAddConstantMergePass = _libraries["llvm"].LLVMAddConstantMergePass
+  LLVMAddConstantMergePass.restype = None
+  LLVMAddConstantMergePass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddMergeFunctionsPass = _libraries['llvm'].LLVMAddMergeFunctionsPass
-    LLVMAddMergeFunctionsPass.restype = None
-    LLVMAddMergeFunctionsPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddMergeFunctionsPass = _libraries["llvm"].LLVMAddMergeFunctionsPass
+  LLVMAddMergeFunctionsPass.restype = None
+  LLVMAddMergeFunctionsPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddCalledValuePropagationPass = _libraries['llvm'].LLVMAddCalledValuePropagationPass
-    LLVMAddCalledValuePropagationPass.restype = None
-    LLVMAddCalledValuePropagationPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddCalledValuePropagationPass = _libraries[
+    "llvm"
+  ].LLVMAddCalledValuePropagationPass
+  LLVMAddCalledValuePropagationPass.restype = None
+  LLVMAddCalledValuePropagationPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddDeadArgEliminationPass = _libraries['llvm'].LLVMAddDeadArgEliminationPass
-    LLVMAddDeadArgEliminationPass.restype = None
-    LLVMAddDeadArgEliminationPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddDeadArgEliminationPass = _libraries["llvm"].LLVMAddDeadArgEliminationPass
+  LLVMAddDeadArgEliminationPass.restype = None
+  LLVMAddDeadArgEliminationPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddFunctionAttrsPass = _libraries['llvm'].LLVMAddFunctionAttrsPass
-    LLVMAddFunctionAttrsPass.restype = None
-    LLVMAddFunctionAttrsPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddFunctionAttrsPass = _libraries["llvm"].LLVMAddFunctionAttrsPass
+  LLVMAddFunctionAttrsPass.restype = None
+  LLVMAddFunctionAttrsPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddFunctionInliningPass = _libraries['llvm'].LLVMAddFunctionInliningPass
-    LLVMAddFunctionInliningPass.restype = None
-    LLVMAddFunctionInliningPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddFunctionInliningPass = _libraries["llvm"].LLVMAddFunctionInliningPass
+  LLVMAddFunctionInliningPass.restype = None
+  LLVMAddFunctionInliningPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddAlwaysInlinerPass = _libraries['llvm'].LLVMAddAlwaysInlinerPass
-    LLVMAddAlwaysInlinerPass.restype = None
-    LLVMAddAlwaysInlinerPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddAlwaysInlinerPass = _libraries["llvm"].LLVMAddAlwaysInlinerPass
+  LLVMAddAlwaysInlinerPass.restype = None
+  LLVMAddAlwaysInlinerPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddGlobalDCEPass = _libraries['llvm'].LLVMAddGlobalDCEPass
-    LLVMAddGlobalDCEPass.restype = None
-    LLVMAddGlobalDCEPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddGlobalDCEPass = _libraries["llvm"].LLVMAddGlobalDCEPass
+  LLVMAddGlobalDCEPass.restype = None
+  LLVMAddGlobalDCEPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddGlobalOptimizerPass = _libraries['llvm'].LLVMAddGlobalOptimizerPass
-    LLVMAddGlobalOptimizerPass.restype = None
-    LLVMAddGlobalOptimizerPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddGlobalOptimizerPass = _libraries["llvm"].LLVMAddGlobalOptimizerPass
+  LLVMAddGlobalOptimizerPass.restype = None
+  LLVMAddGlobalOptimizerPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddPruneEHPass = _libraries['llvm'].LLVMAddPruneEHPass
-    LLVMAddPruneEHPass.restype = None
-    LLVMAddPruneEHPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddPruneEHPass = _libraries["llvm"].LLVMAddPruneEHPass
+  LLVMAddPruneEHPass.restype = None
+  LLVMAddPruneEHPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddIPSCCPPass = _libraries['llvm'].LLVMAddIPSCCPPass
-    LLVMAddIPSCCPPass.restype = None
-    LLVMAddIPSCCPPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddIPSCCPPass = _libraries["llvm"].LLVMAddIPSCCPPass
+  LLVMAddIPSCCPPass.restype = None
+  LLVMAddIPSCCPPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddInternalizePass = _libraries['llvm'].LLVMAddInternalizePass
-    LLVMAddInternalizePass.restype = None
-    LLVMAddInternalizePass.argtypes = [LLVMPassManagerRef, ctypes.c_uint32]
+  LLVMAddInternalizePass = _libraries["llvm"].LLVMAddInternalizePass
+  LLVMAddInternalizePass.restype = None
+  LLVMAddInternalizePass.argtypes = [LLVMPassManagerRef, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddInternalizePassWithMustPreservePredicate = _libraries['llvm'].LLVMAddInternalizePassWithMustPreservePredicate
-    LLVMAddInternalizePassWithMustPreservePredicate.restype = None
-    LLVMAddInternalizePassWithMustPreservePredicate.argtypes = [LLVMPassManagerRef, ctypes.POINTER(None), ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.POINTER(struct_LLVMOpaqueValue), ctypes.POINTER(None))]
+  LLVMAddInternalizePassWithMustPreservePredicate = _libraries[
+    "llvm"
+  ].LLVMAddInternalizePassWithMustPreservePredicate
+  LLVMAddInternalizePassWithMustPreservePredicate.restype = None
+  LLVMAddInternalizePassWithMustPreservePredicate.argtypes = [
+    LLVMPassManagerRef,
+    ctypes.POINTER(None),
+    ctypes.CFUNCTYPE(
+      ctypes.c_int32, ctypes.POINTER(struct_LLVMOpaqueValue), ctypes.POINTER(None)
+    ),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddStripDeadPrototypesPass = _libraries['llvm'].LLVMAddStripDeadPrototypesPass
-    LLVMAddStripDeadPrototypesPass.restype = None
-    LLVMAddStripDeadPrototypesPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddStripDeadPrototypesPass = _libraries["llvm"].LLVMAddStripDeadPrototypesPass
+  LLVMAddStripDeadPrototypesPass.restype = None
+  LLVMAddStripDeadPrototypesPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddStripSymbolsPass = _libraries['llvm'].LLVMAddStripSymbolsPass
-    LLVMAddStripSymbolsPass.restype = None
-    LLVMAddStripSymbolsPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddStripSymbolsPass = _libraries["llvm"].LLVMAddStripSymbolsPass
+  LLVMAddStripSymbolsPass.restype = None
+  LLVMAddStripSymbolsPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
-LLVM_C_TRANSFORMS_INSTCOMBINE_H = True # macro
+  pass
+LLVM_C_TRANSFORMS_INSTCOMBINE_H = True  # macro
 try:
-    LLVMAddInstructionCombiningPass = _libraries['llvm'].LLVMAddInstructionCombiningPass
-    LLVMAddInstructionCombiningPass.restype = None
-    LLVMAddInstructionCombiningPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddInstructionCombiningPass = _libraries["llvm"].LLVMAddInstructionCombiningPass
+  LLVMAddInstructionCombiningPass.restype = None
+  LLVMAddInstructionCombiningPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
-LLVM_C_TRANSFORMS_PASSBUILDER_H = True # macro
+  pass
+LLVM_C_TRANSFORMS_PASSBUILDER_H = True  # macro
+
+
 class struct_LLVMOpaquePassBuilderOptions(Structure):
-    pass
+  pass
+
 
 LLVMPassBuilderOptionsRef = ctypes.POINTER(struct_LLVMOpaquePassBuilderOptions)
 try:
-    LLVMRunPasses = _libraries['llvm'].LLVMRunPasses
-    LLVMRunPasses.restype = LLVMErrorRef
-    LLVMRunPasses.argtypes = [LLVMModuleRef, ctypes.POINTER(ctypes.c_char), LLVMTargetMachineRef, LLVMPassBuilderOptionsRef]
+  LLVMRunPasses = _libraries["llvm"].LLVMRunPasses
+  LLVMRunPasses.restype = LLVMErrorRef
+  LLVMRunPasses.argtypes = [
+    LLVMModuleRef,
+    ctypes.POINTER(ctypes.c_char),
+    LLVMTargetMachineRef,
+    LLVMPassBuilderOptionsRef,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMCreatePassBuilderOptions = _libraries['llvm'].LLVMCreatePassBuilderOptions
-    LLVMCreatePassBuilderOptions.restype = LLVMPassBuilderOptionsRef
-    LLVMCreatePassBuilderOptions.argtypes = []
+  LLVMCreatePassBuilderOptions = _libraries["llvm"].LLVMCreatePassBuilderOptions
+  LLVMCreatePassBuilderOptions.restype = LLVMPassBuilderOptionsRef
+  LLVMCreatePassBuilderOptions.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetVerifyEach = _libraries['llvm'].LLVMPassBuilderOptionsSetVerifyEach
-    LLVMPassBuilderOptionsSetVerifyEach.restype = None
-    LLVMPassBuilderOptionsSetVerifyEach.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
+  LLVMPassBuilderOptionsSetVerifyEach = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetVerifyEach
+  LLVMPassBuilderOptionsSetVerifyEach.restype = None
+  LLVMPassBuilderOptionsSetVerifyEach.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetDebugLogging = _libraries['llvm'].LLVMPassBuilderOptionsSetDebugLogging
-    LLVMPassBuilderOptionsSetDebugLogging.restype = None
-    LLVMPassBuilderOptionsSetDebugLogging.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
+  LLVMPassBuilderOptionsSetDebugLogging = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetDebugLogging
+  LLVMPassBuilderOptionsSetDebugLogging.restype = None
+  LLVMPassBuilderOptionsSetDebugLogging.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetLoopInterleaving = _libraries['llvm'].LLVMPassBuilderOptionsSetLoopInterleaving
-    LLVMPassBuilderOptionsSetLoopInterleaving.restype = None
-    LLVMPassBuilderOptionsSetLoopInterleaving.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
+  LLVMPassBuilderOptionsSetLoopInterleaving = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetLoopInterleaving
+  LLVMPassBuilderOptionsSetLoopInterleaving.restype = None
+  LLVMPassBuilderOptionsSetLoopInterleaving.argtypes = [
+    LLVMPassBuilderOptionsRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetLoopVectorization = _libraries['llvm'].LLVMPassBuilderOptionsSetLoopVectorization
-    LLVMPassBuilderOptionsSetLoopVectorization.restype = None
-    LLVMPassBuilderOptionsSetLoopVectorization.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
+  LLVMPassBuilderOptionsSetLoopVectorization = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetLoopVectorization
+  LLVMPassBuilderOptionsSetLoopVectorization.restype = None
+  LLVMPassBuilderOptionsSetLoopVectorization.argtypes = [
+    LLVMPassBuilderOptionsRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetSLPVectorization = _libraries['llvm'].LLVMPassBuilderOptionsSetSLPVectorization
-    LLVMPassBuilderOptionsSetSLPVectorization.restype = None
-    LLVMPassBuilderOptionsSetSLPVectorization.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
+  LLVMPassBuilderOptionsSetSLPVectorization = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetSLPVectorization
+  LLVMPassBuilderOptionsSetSLPVectorization.restype = None
+  LLVMPassBuilderOptionsSetSLPVectorization.argtypes = [
+    LLVMPassBuilderOptionsRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetLoopUnrolling = _libraries['llvm'].LLVMPassBuilderOptionsSetLoopUnrolling
-    LLVMPassBuilderOptionsSetLoopUnrolling.restype = None
-    LLVMPassBuilderOptionsSetLoopUnrolling.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
+  LLVMPassBuilderOptionsSetLoopUnrolling = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetLoopUnrolling
+  LLVMPassBuilderOptionsSetLoopUnrolling.restype = None
+  LLVMPassBuilderOptionsSetLoopUnrolling.argtypes = [
+    LLVMPassBuilderOptionsRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll = _libraries['llvm'].LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll
-    LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll.restype = None
-    LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
+  LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll
+  LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll.restype = None
+  LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll.argtypes = [
+    LLVMPassBuilderOptionsRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetLicmMssaOptCap = _libraries['llvm'].LLVMPassBuilderOptionsSetLicmMssaOptCap
-    LLVMPassBuilderOptionsSetLicmMssaOptCap.restype = None
-    LLVMPassBuilderOptionsSetLicmMssaOptCap.argtypes = [LLVMPassBuilderOptionsRef, ctypes.c_uint32]
+  LLVMPassBuilderOptionsSetLicmMssaOptCap = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetLicmMssaOptCap
+  LLVMPassBuilderOptionsSetLicmMssaOptCap.restype = None
+  LLVMPassBuilderOptionsSetLicmMssaOptCap.argtypes = [
+    LLVMPassBuilderOptionsRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap = _libraries['llvm'].LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap
-    LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap.restype = None
-    LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap.argtypes = [LLVMPassBuilderOptionsRef, ctypes.c_uint32]
+  LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap
+  LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap.restype = None
+  LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap.argtypes = [
+    LLVMPassBuilderOptionsRef,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetCallGraphProfile = _libraries['llvm'].LLVMPassBuilderOptionsSetCallGraphProfile
-    LLVMPassBuilderOptionsSetCallGraphProfile.restype = None
-    LLVMPassBuilderOptionsSetCallGraphProfile.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
+  LLVMPassBuilderOptionsSetCallGraphProfile = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetCallGraphProfile
+  LLVMPassBuilderOptionsSetCallGraphProfile.restype = None
+  LLVMPassBuilderOptionsSetCallGraphProfile.argtypes = [
+    LLVMPassBuilderOptionsRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMPassBuilderOptionsSetMergeFunctions = _libraries['llvm'].LLVMPassBuilderOptionsSetMergeFunctions
-    LLVMPassBuilderOptionsSetMergeFunctions.restype = None
-    LLVMPassBuilderOptionsSetMergeFunctions.argtypes = [LLVMPassBuilderOptionsRef, LLVMBool]
+  LLVMPassBuilderOptionsSetMergeFunctions = _libraries[
+    "llvm"
+  ].LLVMPassBuilderOptionsSetMergeFunctions
+  LLVMPassBuilderOptionsSetMergeFunctions.restype = None
+  LLVMPassBuilderOptionsSetMergeFunctions.argtypes = [
+    LLVMPassBuilderOptionsRef,
+    LLVMBool,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMDisposePassBuilderOptions = _libraries['llvm'].LLVMDisposePassBuilderOptions
-    LLVMDisposePassBuilderOptions.restype = None
-    LLVMDisposePassBuilderOptions.argtypes = [LLVMPassBuilderOptionsRef]
+  LLVMDisposePassBuilderOptions = _libraries["llvm"].LLVMDisposePassBuilderOptions
+  LLVMDisposePassBuilderOptions.restype = None
+  LLVMDisposePassBuilderOptions.argtypes = [LLVMPassBuilderOptionsRef]
 except AttributeError:
-    pass
-LLVM_C_TRANSFORMS_SCALAR_H = True # macro
+  pass
+LLVM_C_TRANSFORMS_SCALAR_H = True  # macro
 try:
-    LLVMAddAggressiveDCEPass = _libraries['llvm'].LLVMAddAggressiveDCEPass
-    LLVMAddAggressiveDCEPass.restype = None
-    LLVMAddAggressiveDCEPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddAggressiveDCEPass = _libraries["llvm"].LLVMAddAggressiveDCEPass
+  LLVMAddAggressiveDCEPass.restype = None
+  LLVMAddAggressiveDCEPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddDCEPass = _libraries['llvm'].LLVMAddDCEPass
-    LLVMAddDCEPass.restype = None
-    LLVMAddDCEPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddDCEPass = _libraries["llvm"].LLVMAddDCEPass
+  LLVMAddDCEPass.restype = None
+  LLVMAddDCEPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddBitTrackingDCEPass = _libraries['llvm'].LLVMAddBitTrackingDCEPass
-    LLVMAddBitTrackingDCEPass.restype = None
-    LLVMAddBitTrackingDCEPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddBitTrackingDCEPass = _libraries["llvm"].LLVMAddBitTrackingDCEPass
+  LLVMAddBitTrackingDCEPass.restype = None
+  LLVMAddBitTrackingDCEPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddAlignmentFromAssumptionsPass = _libraries['llvm'].LLVMAddAlignmentFromAssumptionsPass
-    LLVMAddAlignmentFromAssumptionsPass.restype = None
-    LLVMAddAlignmentFromAssumptionsPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddAlignmentFromAssumptionsPass = _libraries[
+    "llvm"
+  ].LLVMAddAlignmentFromAssumptionsPass
+  LLVMAddAlignmentFromAssumptionsPass.restype = None
+  LLVMAddAlignmentFromAssumptionsPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddCFGSimplificationPass = _libraries['llvm'].LLVMAddCFGSimplificationPass
-    LLVMAddCFGSimplificationPass.restype = None
-    LLVMAddCFGSimplificationPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddCFGSimplificationPass = _libraries["llvm"].LLVMAddCFGSimplificationPass
+  LLVMAddCFGSimplificationPass.restype = None
+  LLVMAddCFGSimplificationPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddDeadStoreEliminationPass = _libraries['llvm'].LLVMAddDeadStoreEliminationPass
-    LLVMAddDeadStoreEliminationPass.restype = None
-    LLVMAddDeadStoreEliminationPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddDeadStoreEliminationPass = _libraries["llvm"].LLVMAddDeadStoreEliminationPass
+  LLVMAddDeadStoreEliminationPass.restype = None
+  LLVMAddDeadStoreEliminationPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddScalarizerPass = _libraries['llvm'].LLVMAddScalarizerPass
-    LLVMAddScalarizerPass.restype = None
-    LLVMAddScalarizerPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddScalarizerPass = _libraries["llvm"].LLVMAddScalarizerPass
+  LLVMAddScalarizerPass.restype = None
+  LLVMAddScalarizerPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddMergedLoadStoreMotionPass = _libraries['llvm'].LLVMAddMergedLoadStoreMotionPass
-    LLVMAddMergedLoadStoreMotionPass.restype = None
-    LLVMAddMergedLoadStoreMotionPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddMergedLoadStoreMotionPass = _libraries["llvm"].LLVMAddMergedLoadStoreMotionPass
+  LLVMAddMergedLoadStoreMotionPass.restype = None
+  LLVMAddMergedLoadStoreMotionPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddGVNPass = _libraries['llvm'].LLVMAddGVNPass
-    LLVMAddGVNPass.restype = None
-    LLVMAddGVNPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddGVNPass = _libraries["llvm"].LLVMAddGVNPass
+  LLVMAddGVNPass.restype = None
+  LLVMAddGVNPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddNewGVNPass = _libraries['llvm'].LLVMAddNewGVNPass
-    LLVMAddNewGVNPass.restype = None
-    LLVMAddNewGVNPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddNewGVNPass = _libraries["llvm"].LLVMAddNewGVNPass
+  LLVMAddNewGVNPass.restype = None
+  LLVMAddNewGVNPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddIndVarSimplifyPass = _libraries['llvm'].LLVMAddIndVarSimplifyPass
-    LLVMAddIndVarSimplifyPass.restype = None
-    LLVMAddIndVarSimplifyPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddIndVarSimplifyPass = _libraries["llvm"].LLVMAddIndVarSimplifyPass
+  LLVMAddIndVarSimplifyPass.restype = None
+  LLVMAddIndVarSimplifyPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddInstructionSimplifyPass = _libraries['llvm'].LLVMAddInstructionSimplifyPass
-    LLVMAddInstructionSimplifyPass.restype = None
-    LLVMAddInstructionSimplifyPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddInstructionSimplifyPass = _libraries["llvm"].LLVMAddInstructionSimplifyPass
+  LLVMAddInstructionSimplifyPass.restype = None
+  LLVMAddInstructionSimplifyPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddJumpThreadingPass = _libraries['llvm'].LLVMAddJumpThreadingPass
-    LLVMAddJumpThreadingPass.restype = None
-    LLVMAddJumpThreadingPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddJumpThreadingPass = _libraries["llvm"].LLVMAddJumpThreadingPass
+  LLVMAddJumpThreadingPass.restype = None
+  LLVMAddJumpThreadingPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLICMPass = _libraries['llvm'].LLVMAddLICMPass
-    LLVMAddLICMPass.restype = None
-    LLVMAddLICMPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLICMPass = _libraries["llvm"].LLVMAddLICMPass
+  LLVMAddLICMPass.restype = None
+  LLVMAddLICMPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLoopDeletionPass = _libraries['llvm'].LLVMAddLoopDeletionPass
-    LLVMAddLoopDeletionPass.restype = None
-    LLVMAddLoopDeletionPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLoopDeletionPass = _libraries["llvm"].LLVMAddLoopDeletionPass
+  LLVMAddLoopDeletionPass.restype = None
+  LLVMAddLoopDeletionPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLoopIdiomPass = _libraries['llvm'].LLVMAddLoopIdiomPass
-    LLVMAddLoopIdiomPass.restype = None
-    LLVMAddLoopIdiomPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLoopIdiomPass = _libraries["llvm"].LLVMAddLoopIdiomPass
+  LLVMAddLoopIdiomPass.restype = None
+  LLVMAddLoopIdiomPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLoopRotatePass = _libraries['llvm'].LLVMAddLoopRotatePass
-    LLVMAddLoopRotatePass.restype = None
-    LLVMAddLoopRotatePass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLoopRotatePass = _libraries["llvm"].LLVMAddLoopRotatePass
+  LLVMAddLoopRotatePass.restype = None
+  LLVMAddLoopRotatePass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLoopRerollPass = _libraries['llvm'].LLVMAddLoopRerollPass
-    LLVMAddLoopRerollPass.restype = None
-    LLVMAddLoopRerollPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLoopRerollPass = _libraries["llvm"].LLVMAddLoopRerollPass
+  LLVMAddLoopRerollPass.restype = None
+  LLVMAddLoopRerollPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLoopUnrollPass = _libraries['llvm'].LLVMAddLoopUnrollPass
-    LLVMAddLoopUnrollPass.restype = None
-    LLVMAddLoopUnrollPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLoopUnrollPass = _libraries["llvm"].LLVMAddLoopUnrollPass
+  LLVMAddLoopUnrollPass.restype = None
+  LLVMAddLoopUnrollPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLoopUnrollAndJamPass = _libraries['llvm'].LLVMAddLoopUnrollAndJamPass
-    LLVMAddLoopUnrollAndJamPass.restype = None
-    LLVMAddLoopUnrollAndJamPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLoopUnrollAndJamPass = _libraries["llvm"].LLVMAddLoopUnrollAndJamPass
+  LLVMAddLoopUnrollAndJamPass.restype = None
+  LLVMAddLoopUnrollAndJamPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLoopUnswitchPass = _libraries['llvm'].LLVMAddLoopUnswitchPass
-    LLVMAddLoopUnswitchPass.restype = None
-    LLVMAddLoopUnswitchPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLoopUnswitchPass = _libraries["llvm"].LLVMAddLoopUnswitchPass
+  LLVMAddLoopUnswitchPass.restype = None
+  LLVMAddLoopUnswitchPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLowerAtomicPass = _libraries['llvm'].LLVMAddLowerAtomicPass
-    LLVMAddLowerAtomicPass.restype = None
-    LLVMAddLowerAtomicPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLowerAtomicPass = _libraries["llvm"].LLVMAddLowerAtomicPass
+  LLVMAddLowerAtomicPass.restype = None
+  LLVMAddLowerAtomicPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddMemCpyOptPass = _libraries['llvm'].LLVMAddMemCpyOptPass
-    LLVMAddMemCpyOptPass.restype = None
-    LLVMAddMemCpyOptPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddMemCpyOptPass = _libraries["llvm"].LLVMAddMemCpyOptPass
+  LLVMAddMemCpyOptPass.restype = None
+  LLVMAddMemCpyOptPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddPartiallyInlineLibCallsPass = _libraries['llvm'].LLVMAddPartiallyInlineLibCallsPass
-    LLVMAddPartiallyInlineLibCallsPass.restype = None
-    LLVMAddPartiallyInlineLibCallsPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddPartiallyInlineLibCallsPass = _libraries[
+    "llvm"
+  ].LLVMAddPartiallyInlineLibCallsPass
+  LLVMAddPartiallyInlineLibCallsPass.restype = None
+  LLVMAddPartiallyInlineLibCallsPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddReassociatePass = _libraries['llvm'].LLVMAddReassociatePass
-    LLVMAddReassociatePass.restype = None
-    LLVMAddReassociatePass.argtypes = [LLVMPassManagerRef]
+  LLVMAddReassociatePass = _libraries["llvm"].LLVMAddReassociatePass
+  LLVMAddReassociatePass.restype = None
+  LLVMAddReassociatePass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddSCCPPass = _libraries['llvm'].LLVMAddSCCPPass
-    LLVMAddSCCPPass.restype = None
-    LLVMAddSCCPPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddSCCPPass = _libraries["llvm"].LLVMAddSCCPPass
+  LLVMAddSCCPPass.restype = None
+  LLVMAddSCCPPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddScalarReplAggregatesPass = _libraries['llvm'].LLVMAddScalarReplAggregatesPass
-    LLVMAddScalarReplAggregatesPass.restype = None
-    LLVMAddScalarReplAggregatesPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddScalarReplAggregatesPass = _libraries["llvm"].LLVMAddScalarReplAggregatesPass
+  LLVMAddScalarReplAggregatesPass.restype = None
+  LLVMAddScalarReplAggregatesPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddScalarReplAggregatesPassSSA = _libraries['llvm'].LLVMAddScalarReplAggregatesPassSSA
-    LLVMAddScalarReplAggregatesPassSSA.restype = None
-    LLVMAddScalarReplAggregatesPassSSA.argtypes = [LLVMPassManagerRef]
+  LLVMAddScalarReplAggregatesPassSSA = _libraries[
+    "llvm"
+  ].LLVMAddScalarReplAggregatesPassSSA
+  LLVMAddScalarReplAggregatesPassSSA.restype = None
+  LLVMAddScalarReplAggregatesPassSSA.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddScalarReplAggregatesPassWithThreshold = _libraries['llvm'].LLVMAddScalarReplAggregatesPassWithThreshold
-    LLVMAddScalarReplAggregatesPassWithThreshold.restype = None
-    LLVMAddScalarReplAggregatesPassWithThreshold.argtypes = [LLVMPassManagerRef, ctypes.c_int32]
+  LLVMAddScalarReplAggregatesPassWithThreshold = _libraries[
+    "llvm"
+  ].LLVMAddScalarReplAggregatesPassWithThreshold
+  LLVMAddScalarReplAggregatesPassWithThreshold.restype = None
+  LLVMAddScalarReplAggregatesPassWithThreshold.argtypes = [
+    LLVMPassManagerRef,
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddSimplifyLibCallsPass = _libraries['llvm'].LLVMAddSimplifyLibCallsPass
-    LLVMAddSimplifyLibCallsPass.restype = None
-    LLVMAddSimplifyLibCallsPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddSimplifyLibCallsPass = _libraries["llvm"].LLVMAddSimplifyLibCallsPass
+  LLVMAddSimplifyLibCallsPass.restype = None
+  LLVMAddSimplifyLibCallsPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddTailCallEliminationPass = _libraries['llvm'].LLVMAddTailCallEliminationPass
-    LLVMAddTailCallEliminationPass.restype = None
-    LLVMAddTailCallEliminationPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddTailCallEliminationPass = _libraries["llvm"].LLVMAddTailCallEliminationPass
+  LLVMAddTailCallEliminationPass.restype = None
+  LLVMAddTailCallEliminationPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddDemoteMemoryToRegisterPass = _libraries['llvm'].LLVMAddDemoteMemoryToRegisterPass
-    LLVMAddDemoteMemoryToRegisterPass.restype = None
-    LLVMAddDemoteMemoryToRegisterPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddDemoteMemoryToRegisterPass = _libraries[
+    "llvm"
+  ].LLVMAddDemoteMemoryToRegisterPass
+  LLVMAddDemoteMemoryToRegisterPass.restype = None
+  LLVMAddDemoteMemoryToRegisterPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddVerifierPass = _libraries['llvm'].LLVMAddVerifierPass
-    LLVMAddVerifierPass.restype = None
-    LLVMAddVerifierPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddVerifierPass = _libraries["llvm"].LLVMAddVerifierPass
+  LLVMAddVerifierPass.restype = None
+  LLVMAddVerifierPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddCorrelatedValuePropagationPass = _libraries['llvm'].LLVMAddCorrelatedValuePropagationPass
-    LLVMAddCorrelatedValuePropagationPass.restype = None
-    LLVMAddCorrelatedValuePropagationPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddCorrelatedValuePropagationPass = _libraries[
+    "llvm"
+  ].LLVMAddCorrelatedValuePropagationPass
+  LLVMAddCorrelatedValuePropagationPass.restype = None
+  LLVMAddCorrelatedValuePropagationPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddEarlyCSEPass = _libraries['llvm'].LLVMAddEarlyCSEPass
-    LLVMAddEarlyCSEPass.restype = None
-    LLVMAddEarlyCSEPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddEarlyCSEPass = _libraries["llvm"].LLVMAddEarlyCSEPass
+  LLVMAddEarlyCSEPass.restype = None
+  LLVMAddEarlyCSEPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddEarlyCSEMemSSAPass = _libraries['llvm'].LLVMAddEarlyCSEMemSSAPass
-    LLVMAddEarlyCSEMemSSAPass.restype = None
-    LLVMAddEarlyCSEMemSSAPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddEarlyCSEMemSSAPass = _libraries["llvm"].LLVMAddEarlyCSEMemSSAPass
+  LLVMAddEarlyCSEMemSSAPass.restype = None
+  LLVMAddEarlyCSEMemSSAPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLowerExpectIntrinsicPass = _libraries['llvm'].LLVMAddLowerExpectIntrinsicPass
-    LLVMAddLowerExpectIntrinsicPass.restype = None
-    LLVMAddLowerExpectIntrinsicPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLowerExpectIntrinsicPass = _libraries["llvm"].LLVMAddLowerExpectIntrinsicPass
+  LLVMAddLowerExpectIntrinsicPass.restype = None
+  LLVMAddLowerExpectIntrinsicPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddLowerConstantIntrinsicsPass = _libraries['llvm'].LLVMAddLowerConstantIntrinsicsPass
-    LLVMAddLowerConstantIntrinsicsPass.restype = None
-    LLVMAddLowerConstantIntrinsicsPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLowerConstantIntrinsicsPass = _libraries[
+    "llvm"
+  ].LLVMAddLowerConstantIntrinsicsPass
+  LLVMAddLowerConstantIntrinsicsPass.restype = None
+  LLVMAddLowerConstantIntrinsicsPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddTypeBasedAliasAnalysisPass = _libraries['llvm'].LLVMAddTypeBasedAliasAnalysisPass
-    LLVMAddTypeBasedAliasAnalysisPass.restype = None
-    LLVMAddTypeBasedAliasAnalysisPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddTypeBasedAliasAnalysisPass = _libraries[
+    "llvm"
+  ].LLVMAddTypeBasedAliasAnalysisPass
+  LLVMAddTypeBasedAliasAnalysisPass.restype = None
+  LLVMAddTypeBasedAliasAnalysisPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddScopedNoAliasAAPass = _libraries['llvm'].LLVMAddScopedNoAliasAAPass
-    LLVMAddScopedNoAliasAAPass.restype = None
-    LLVMAddScopedNoAliasAAPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddScopedNoAliasAAPass = _libraries["llvm"].LLVMAddScopedNoAliasAAPass
+  LLVMAddScopedNoAliasAAPass.restype = None
+  LLVMAddScopedNoAliasAAPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddBasicAliasAnalysisPass = _libraries['llvm'].LLVMAddBasicAliasAnalysisPass
-    LLVMAddBasicAliasAnalysisPass.restype = None
-    LLVMAddBasicAliasAnalysisPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddBasicAliasAnalysisPass = _libraries["llvm"].LLVMAddBasicAliasAnalysisPass
+  LLVMAddBasicAliasAnalysisPass.restype = None
+  LLVMAddBasicAliasAnalysisPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddUnifyFunctionExitNodesPass = _libraries['llvm'].LLVMAddUnifyFunctionExitNodesPass
-    LLVMAddUnifyFunctionExitNodesPass.restype = None
-    LLVMAddUnifyFunctionExitNodesPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddUnifyFunctionExitNodesPass = _libraries[
+    "llvm"
+  ].LLVMAddUnifyFunctionExitNodesPass
+  LLVMAddUnifyFunctionExitNodesPass.restype = None
+  LLVMAddUnifyFunctionExitNodesPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
-LLVM_C_TRANSFORMS_UTILS_H = True # macro
+  pass
+LLVM_C_TRANSFORMS_UTILS_H = True  # macro
 try:
-    LLVMAddLowerSwitchPass = _libraries['llvm'].LLVMAddLowerSwitchPass
-    LLVMAddLowerSwitchPass.restype = None
-    LLVMAddLowerSwitchPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLowerSwitchPass = _libraries["llvm"].LLVMAddLowerSwitchPass
+  LLVMAddLowerSwitchPass.restype = None
+  LLVMAddLowerSwitchPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddPromoteMemoryToRegisterPass = _libraries['llvm'].LLVMAddPromoteMemoryToRegisterPass
-    LLVMAddPromoteMemoryToRegisterPass.restype = None
-    LLVMAddPromoteMemoryToRegisterPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddPromoteMemoryToRegisterPass = _libraries[
+    "llvm"
+  ].LLVMAddPromoteMemoryToRegisterPass
+  LLVMAddPromoteMemoryToRegisterPass.restype = None
+  LLVMAddPromoteMemoryToRegisterPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddAddDiscriminatorsPass = _libraries['llvm'].LLVMAddAddDiscriminatorsPass
-    LLVMAddAddDiscriminatorsPass.restype = None
-    LLVMAddAddDiscriminatorsPass.argtypes = [LLVMPassManagerRef]
+  LLVMAddAddDiscriminatorsPass = _libraries["llvm"].LLVMAddAddDiscriminatorsPass
+  LLVMAddAddDiscriminatorsPass.restype = None
+  LLVMAddAddDiscriminatorsPass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
-LLVM_C_TRANSFORMS_VECTORIZE_H = True # macro
+  pass
+LLVM_C_TRANSFORMS_VECTORIZE_H = True  # macro
 try:
-    LLVMAddLoopVectorizePass = _libraries['llvm'].LLVMAddLoopVectorizePass
-    LLVMAddLoopVectorizePass.restype = None
-    LLVMAddLoopVectorizePass.argtypes = [LLVMPassManagerRef]
+  LLVMAddLoopVectorizePass = _libraries["llvm"].LLVMAddLoopVectorizePass
+  LLVMAddLoopVectorizePass.restype = None
+  LLVMAddLoopVectorizePass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
+  pass
 try:
-    LLVMAddSLPVectorizePass = _libraries['llvm'].LLVMAddSLPVectorizePass
-    LLVMAddSLPVectorizePass.restype = None
-    LLVMAddSLPVectorizePass.argtypes = [LLVMPassManagerRef]
+  LLVMAddSLPVectorizePass = _libraries["llvm"].LLVMAddSLPVectorizePass
+  LLVMAddSLPVectorizePass.restype = None
+  LLVMAddSLPVectorizePass.argtypes = [LLVMPassManagerRef]
 except AttributeError:
-    pass
-LLVM_C_LTO_H = True # macro
-LTO_API_VERSION = 29 # macro
+  pass
+LLVM_C_LTO_H = True  # macro
+LTO_API_VERSION = 29  # macro
 lto_bool_t = ctypes.c_bool
 
 # values for enumeration 'c__EA_lto_symbol_attributes'
 c__EA_lto_symbol_attributes__enumvalues = {
-    31: 'LTO_SYMBOL_ALIGNMENT_MASK',
-    224: 'LTO_SYMBOL_PERMISSIONS_MASK',
-    160: 'LTO_SYMBOL_PERMISSIONS_CODE',
-    192: 'LTO_SYMBOL_PERMISSIONS_DATA',
-    128: 'LTO_SYMBOL_PERMISSIONS_RODATA',
-    1792: 'LTO_SYMBOL_DEFINITION_MASK',
-    256: 'LTO_SYMBOL_DEFINITION_REGULAR',
-    512: 'LTO_SYMBOL_DEFINITION_TENTATIVE',
-    768: 'LTO_SYMBOL_DEFINITION_WEAK',
-    1024: 'LTO_SYMBOL_DEFINITION_UNDEFINED',
-    1280: 'LTO_SYMBOL_DEFINITION_WEAKUNDEF',
-    14336: 'LTO_SYMBOL_SCOPE_MASK',
-    2048: 'LTO_SYMBOL_SCOPE_INTERNAL',
-    4096: 'LTO_SYMBOL_SCOPE_HIDDEN',
-    8192: 'LTO_SYMBOL_SCOPE_PROTECTED',
-    6144: 'LTO_SYMBOL_SCOPE_DEFAULT',
-    10240: 'LTO_SYMBOL_SCOPE_DEFAULT_CAN_BE_HIDDEN',
-    16384: 'LTO_SYMBOL_COMDAT',
-    32768: 'LTO_SYMBOL_ALIAS',
+  31: "LTO_SYMBOL_ALIGNMENT_MASK",
+  224: "LTO_SYMBOL_PERMISSIONS_MASK",
+  160: "LTO_SYMBOL_PERMISSIONS_CODE",
+  192: "LTO_SYMBOL_PERMISSIONS_DATA",
+  128: "LTO_SYMBOL_PERMISSIONS_RODATA",
+  1792: "LTO_SYMBOL_DEFINITION_MASK",
+  256: "LTO_SYMBOL_DEFINITION_REGULAR",
+  512: "LTO_SYMBOL_DEFINITION_TENTATIVE",
+  768: "LTO_SYMBOL_DEFINITION_WEAK",
+  1024: "LTO_SYMBOL_DEFINITION_UNDEFINED",
+  1280: "LTO_SYMBOL_DEFINITION_WEAKUNDEF",
+  14336: "LTO_SYMBOL_SCOPE_MASK",
+  2048: "LTO_SYMBOL_SCOPE_INTERNAL",
+  4096: "LTO_SYMBOL_SCOPE_HIDDEN",
+  8192: "LTO_SYMBOL_SCOPE_PROTECTED",
+  6144: "LTO_SYMBOL_SCOPE_DEFAULT",
+  10240: "LTO_SYMBOL_SCOPE_DEFAULT_CAN_BE_HIDDEN",
+  16384: "LTO_SYMBOL_COMDAT",
+  32768: "LTO_SYMBOL_ALIAS",
 }
 LTO_SYMBOL_ALIGNMENT_MASK = 31
 LTO_SYMBOL_PERMISSIONS_MASK = 224
@@ -9664,1718 +12058,2942 @@ LTO_SYMBOL_SCOPE_DEFAULT = 6144
 LTO_SYMBOL_SCOPE_DEFAULT_CAN_BE_HIDDEN = 10240
 LTO_SYMBOL_COMDAT = 16384
 LTO_SYMBOL_ALIAS = 32768
-c__EA_lto_symbol_attributes = ctypes.c_uint32 # enum
+c__EA_lto_symbol_attributes = ctypes.c_uint32  # enum
 lto_symbol_attributes = c__EA_lto_symbol_attributes
 lto_symbol_attributes__enumvalues = c__EA_lto_symbol_attributes__enumvalues
 
 # values for enumeration 'c__EA_lto_debug_model'
 c__EA_lto_debug_model__enumvalues = {
-    0: 'LTO_DEBUG_MODEL_NONE',
-    1: 'LTO_DEBUG_MODEL_DWARF',
+  0: "LTO_DEBUG_MODEL_NONE",
+  1: "LTO_DEBUG_MODEL_DWARF",
 }
 LTO_DEBUG_MODEL_NONE = 0
 LTO_DEBUG_MODEL_DWARF = 1
-c__EA_lto_debug_model = ctypes.c_uint32 # enum
+c__EA_lto_debug_model = ctypes.c_uint32  # enum
 lto_debug_model = c__EA_lto_debug_model
 lto_debug_model__enumvalues = c__EA_lto_debug_model__enumvalues
 
 # values for enumeration 'c__EA_lto_codegen_model'
 c__EA_lto_codegen_model__enumvalues = {
-    0: 'LTO_CODEGEN_PIC_MODEL_STATIC',
-    1: 'LTO_CODEGEN_PIC_MODEL_DYNAMIC',
-    2: 'LTO_CODEGEN_PIC_MODEL_DYNAMIC_NO_PIC',
-    3: 'LTO_CODEGEN_PIC_MODEL_DEFAULT',
+  0: "LTO_CODEGEN_PIC_MODEL_STATIC",
+  1: "LTO_CODEGEN_PIC_MODEL_DYNAMIC",
+  2: "LTO_CODEGEN_PIC_MODEL_DYNAMIC_NO_PIC",
+  3: "LTO_CODEGEN_PIC_MODEL_DEFAULT",
 }
 LTO_CODEGEN_PIC_MODEL_STATIC = 0
 LTO_CODEGEN_PIC_MODEL_DYNAMIC = 1
 LTO_CODEGEN_PIC_MODEL_DYNAMIC_NO_PIC = 2
 LTO_CODEGEN_PIC_MODEL_DEFAULT = 3
-c__EA_lto_codegen_model = ctypes.c_uint32 # enum
+c__EA_lto_codegen_model = ctypes.c_uint32  # enum
 lto_codegen_model = c__EA_lto_codegen_model
 lto_codegen_model__enumvalues = c__EA_lto_codegen_model__enumvalues
+
+
 class struct_LLVMOpaqueLTOModule(Structure):
-    pass
+  pass
+
 
 lto_module_t = ctypes.POINTER(struct_LLVMOpaqueLTOModule)
+
+
 class struct_LLVMOpaqueLTOCodeGenerator(Structure):
-    pass
+  pass
+
 
 lto_code_gen_t = ctypes.POINTER(struct_LLVMOpaqueLTOCodeGenerator)
+
+
 class struct_LLVMOpaqueThinLTOCodeGenerator(Structure):
-    pass
+  pass
+
 
 thinlto_code_gen_t = ctypes.POINTER(struct_LLVMOpaqueThinLTOCodeGenerator)
 try:
-    lto_get_version = _libraries['llvm'].lto_get_version
-    lto_get_version.restype = ctypes.POINTER(ctypes.c_char)
-    lto_get_version.argtypes = []
+  lto_get_version = _libraries["llvm"].lto_get_version
+  lto_get_version.restype = ctypes.POINTER(ctypes.c_char)
+  lto_get_version.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    lto_get_error_message = _libraries['llvm'].lto_get_error_message
-    lto_get_error_message.restype = ctypes.POINTER(ctypes.c_char)
-    lto_get_error_message.argtypes = []
+  lto_get_error_message = _libraries["llvm"].lto_get_error_message
+  lto_get_error_message.restype = ctypes.POINTER(ctypes.c_char)
+  lto_get_error_message.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_is_object_file = _libraries['llvm'].lto_module_is_object_file
-    lto_module_is_object_file.restype = lto_bool_t
-    lto_module_is_object_file.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  lto_module_is_object_file = _libraries["llvm"].lto_module_is_object_file
+  lto_module_is_object_file.restype = lto_bool_t
+  lto_module_is_object_file.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_is_object_file_for_target = _libraries['llvm'].lto_module_is_object_file_for_target
-    lto_module_is_object_file_for_target.restype = lto_bool_t
-    lto_module_is_object_file_for_target.argtypes = [ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char)]
+  lto_module_is_object_file_for_target = _libraries[
+    "llvm"
+  ].lto_module_is_object_file_for_target
+  lto_module_is_object_file_for_target.restype = lto_bool_t
+  lto_module_is_object_file_for_target.argtypes = [
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_has_objc_category = _libraries['llvm'].lto_module_has_objc_category
-    lto_module_has_objc_category.restype = lto_bool_t
-    lto_module_has_objc_category.argtypes = [ctypes.POINTER(None), size_t]
+  lto_module_has_objc_category = _libraries["llvm"].lto_module_has_objc_category
+  lto_module_has_objc_category.restype = lto_bool_t
+  lto_module_has_objc_category.argtypes = [ctypes.POINTER(None), size_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_is_object_file_in_memory = _libraries['llvm'].lto_module_is_object_file_in_memory
-    lto_module_is_object_file_in_memory.restype = lto_bool_t
-    lto_module_is_object_file_in_memory.argtypes = [ctypes.POINTER(None), size_t]
+  lto_module_is_object_file_in_memory = _libraries[
+    "llvm"
+  ].lto_module_is_object_file_in_memory
+  lto_module_is_object_file_in_memory.restype = lto_bool_t
+  lto_module_is_object_file_in_memory.argtypes = [ctypes.POINTER(None), size_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_is_object_file_in_memory_for_target = _libraries['llvm'].lto_module_is_object_file_in_memory_for_target
-    lto_module_is_object_file_in_memory_for_target.restype = lto_bool_t
-    lto_module_is_object_file_in_memory_for_target.argtypes = [ctypes.POINTER(None), size_t, ctypes.POINTER(ctypes.c_char)]
+  lto_module_is_object_file_in_memory_for_target = _libraries[
+    "llvm"
+  ].lto_module_is_object_file_in_memory_for_target
+  lto_module_is_object_file_in_memory_for_target.restype = lto_bool_t
+  lto_module_is_object_file_in_memory_for_target.argtypes = [
+    ctypes.POINTER(None),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_create = _libraries['llvm'].lto_module_create
-    lto_module_create.restype = lto_module_t
-    lto_module_create.argtypes = [ctypes.POINTER(ctypes.c_char)]
+  lto_module_create = _libraries["llvm"].lto_module_create
+  lto_module_create.restype = lto_module_t
+  lto_module_create.argtypes = [ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_create_from_memory = _libraries['llvm'].lto_module_create_from_memory
-    lto_module_create_from_memory.restype = lto_module_t
-    lto_module_create_from_memory.argtypes = [ctypes.POINTER(None), size_t]
+  lto_module_create_from_memory = _libraries["llvm"].lto_module_create_from_memory
+  lto_module_create_from_memory.restype = lto_module_t
+  lto_module_create_from_memory.argtypes = [ctypes.POINTER(None), size_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_create_from_memory_with_path = _libraries['llvm'].lto_module_create_from_memory_with_path
-    lto_module_create_from_memory_with_path.restype = lto_module_t
-    lto_module_create_from_memory_with_path.argtypes = [ctypes.POINTER(None), size_t, ctypes.POINTER(ctypes.c_char)]
+  lto_module_create_from_memory_with_path = _libraries[
+    "llvm"
+  ].lto_module_create_from_memory_with_path
+  lto_module_create_from_memory_with_path.restype = lto_module_t
+  lto_module_create_from_memory_with_path.argtypes = [
+    ctypes.POINTER(None),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_create_in_local_context = _libraries['llvm'].lto_module_create_in_local_context
-    lto_module_create_in_local_context.restype = lto_module_t
-    lto_module_create_in_local_context.argtypes = [ctypes.POINTER(None), size_t, ctypes.POINTER(ctypes.c_char)]
+  lto_module_create_in_local_context = _libraries[
+    "llvm"
+  ].lto_module_create_in_local_context
+  lto_module_create_in_local_context.restype = lto_module_t
+  lto_module_create_in_local_context.argtypes = [
+    ctypes.POINTER(None),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_create_in_codegen_context = _libraries['llvm'].lto_module_create_in_codegen_context
-    lto_module_create_in_codegen_context.restype = lto_module_t
-    lto_module_create_in_codegen_context.argtypes = [ctypes.POINTER(None), size_t, ctypes.POINTER(ctypes.c_char), lto_code_gen_t]
+  lto_module_create_in_codegen_context = _libraries[
+    "llvm"
+  ].lto_module_create_in_codegen_context
+  lto_module_create_in_codegen_context.restype = lto_module_t
+  lto_module_create_in_codegen_context.argtypes = [
+    ctypes.POINTER(None),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+    lto_code_gen_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_create_from_fd = _libraries['llvm'].lto_module_create_from_fd
-    lto_module_create_from_fd.restype = lto_module_t
-    lto_module_create_from_fd.argtypes = [ctypes.c_int32, ctypes.POINTER(ctypes.c_char), size_t]
+  lto_module_create_from_fd = _libraries["llvm"].lto_module_create_from_fd
+  lto_module_create_from_fd.restype = lto_module_t
+  lto_module_create_from_fd.argtypes = [
+    ctypes.c_int32,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+  ]
 except AttributeError:
-    pass
+  pass
 off_t = ctypes.c_int64
 try:
-    lto_module_create_from_fd_at_offset = _libraries['llvm'].lto_module_create_from_fd_at_offset
-    lto_module_create_from_fd_at_offset.restype = lto_module_t
-    lto_module_create_from_fd_at_offset.argtypes = [ctypes.c_int32, ctypes.POINTER(ctypes.c_char), size_t, size_t, off_t]
+  lto_module_create_from_fd_at_offset = _libraries[
+    "llvm"
+  ].lto_module_create_from_fd_at_offset
+  lto_module_create_from_fd_at_offset.restype = lto_module_t
+  lto_module_create_from_fd_at_offset.argtypes = [
+    ctypes.c_int32,
+    ctypes.POINTER(ctypes.c_char),
+    size_t,
+    size_t,
+    off_t,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_dispose = _libraries['llvm'].lto_module_dispose
-    lto_module_dispose.restype = None
-    lto_module_dispose.argtypes = [lto_module_t]
+  lto_module_dispose = _libraries["llvm"].lto_module_dispose
+  lto_module_dispose.restype = None
+  lto_module_dispose.argtypes = [lto_module_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_get_target_triple = _libraries['llvm'].lto_module_get_target_triple
-    lto_module_get_target_triple.restype = ctypes.POINTER(ctypes.c_char)
-    lto_module_get_target_triple.argtypes = [lto_module_t]
+  lto_module_get_target_triple = _libraries["llvm"].lto_module_get_target_triple
+  lto_module_get_target_triple.restype = ctypes.POINTER(ctypes.c_char)
+  lto_module_get_target_triple.argtypes = [lto_module_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_set_target_triple = _libraries['llvm'].lto_module_set_target_triple
-    lto_module_set_target_triple.restype = None
-    lto_module_set_target_triple.argtypes = [lto_module_t, ctypes.POINTER(ctypes.c_char)]
+  lto_module_set_target_triple = _libraries["llvm"].lto_module_set_target_triple
+  lto_module_set_target_triple.restype = None
+  lto_module_set_target_triple.argtypes = [lto_module_t, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_get_num_symbols = _libraries['llvm'].lto_module_get_num_symbols
-    lto_module_get_num_symbols.restype = ctypes.c_uint32
-    lto_module_get_num_symbols.argtypes = [lto_module_t]
+  lto_module_get_num_symbols = _libraries["llvm"].lto_module_get_num_symbols
+  lto_module_get_num_symbols.restype = ctypes.c_uint32
+  lto_module_get_num_symbols.argtypes = [lto_module_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_get_symbol_name = _libraries['llvm'].lto_module_get_symbol_name
-    lto_module_get_symbol_name.restype = ctypes.POINTER(ctypes.c_char)
-    lto_module_get_symbol_name.argtypes = [lto_module_t, ctypes.c_uint32]
+  lto_module_get_symbol_name = _libraries["llvm"].lto_module_get_symbol_name
+  lto_module_get_symbol_name.restype = ctypes.POINTER(ctypes.c_char)
+  lto_module_get_symbol_name.argtypes = [lto_module_t, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_get_symbol_attribute = _libraries['llvm'].lto_module_get_symbol_attribute
-    lto_module_get_symbol_attribute.restype = lto_symbol_attributes
-    lto_module_get_symbol_attribute.argtypes = [lto_module_t, ctypes.c_uint32]
+  lto_module_get_symbol_attribute = _libraries["llvm"].lto_module_get_symbol_attribute
+  lto_module_get_symbol_attribute.restype = lto_symbol_attributes
+  lto_module_get_symbol_attribute.argtypes = [lto_module_t, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_get_linkeropts = _libraries['llvm'].lto_module_get_linkeropts
-    lto_module_get_linkeropts.restype = ctypes.POINTER(ctypes.c_char)
-    lto_module_get_linkeropts.argtypes = [lto_module_t]
+  lto_module_get_linkeropts = _libraries["llvm"].lto_module_get_linkeropts
+  lto_module_get_linkeropts.restype = ctypes.POINTER(ctypes.c_char)
+  lto_module_get_linkeropts.argtypes = [lto_module_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_get_macho_cputype = _libraries['llvm'].lto_module_get_macho_cputype
-    lto_module_get_macho_cputype.restype = lto_bool_t
-    lto_module_get_macho_cputype.argtypes = [lto_module_t, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+  lto_module_get_macho_cputype = _libraries["llvm"].lto_module_get_macho_cputype
+  lto_module_get_macho_cputype.restype = lto_bool_t
+  lto_module_get_macho_cputype.argtypes = [
+    lto_module_t,
+    ctypes.POINTER(ctypes.c_uint32),
+    ctypes.POINTER(ctypes.c_uint32),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_has_ctor_dtor = _libraries['llvm'].lto_module_has_ctor_dtor
-    lto_module_has_ctor_dtor.restype = lto_bool_t
-    lto_module_has_ctor_dtor.argtypes = [lto_module_t]
+  lto_module_has_ctor_dtor = _libraries["llvm"].lto_module_has_ctor_dtor
+  lto_module_has_ctor_dtor.restype = lto_bool_t
+  lto_module_has_ctor_dtor.argtypes = [lto_module_t]
 except AttributeError:
-    pass
+  pass
 
 # values for enumeration 'c__EA_lto_codegen_diagnostic_severity_t'
 c__EA_lto_codegen_diagnostic_severity_t__enumvalues = {
-    0: 'LTO_DS_ERROR',
-    1: 'LTO_DS_WARNING',
-    3: 'LTO_DS_REMARK',
-    2: 'LTO_DS_NOTE',
+  0: "LTO_DS_ERROR",
+  1: "LTO_DS_WARNING",
+  3: "LTO_DS_REMARK",
+  2: "LTO_DS_NOTE",
 }
 LTO_DS_ERROR = 0
 LTO_DS_WARNING = 1
 LTO_DS_REMARK = 3
 LTO_DS_NOTE = 2
-c__EA_lto_codegen_diagnostic_severity_t = ctypes.c_uint32 # enum
+c__EA_lto_codegen_diagnostic_severity_t = ctypes.c_uint32  # enum
 lto_codegen_diagnostic_severity_t = c__EA_lto_codegen_diagnostic_severity_t
-lto_codegen_diagnostic_severity_t__enumvalues = c__EA_lto_codegen_diagnostic_severity_t__enumvalues
-lto_diagnostic_handler_t = ctypes.CFUNCTYPE(None, c__EA_lto_codegen_diagnostic_severity_t, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(None))
+lto_codegen_diagnostic_severity_t__enumvalues = (
+  c__EA_lto_codegen_diagnostic_severity_t__enumvalues
+)
+lto_diagnostic_handler_t = ctypes.CFUNCTYPE(
+  None,
+  c__EA_lto_codegen_diagnostic_severity_t,
+  ctypes.POINTER(ctypes.c_char),
+  ctypes.POINTER(None),
+)
 try:
-    lto_codegen_set_diagnostic_handler = _libraries['llvm'].lto_codegen_set_diagnostic_handler
-    lto_codegen_set_diagnostic_handler.restype = None
-    lto_codegen_set_diagnostic_handler.argtypes = [lto_code_gen_t, lto_diagnostic_handler_t, ctypes.POINTER(None)]
+  lto_codegen_set_diagnostic_handler = _libraries[
+    "llvm"
+  ].lto_codegen_set_diagnostic_handler
+  lto_codegen_set_diagnostic_handler.restype = None
+  lto_codegen_set_diagnostic_handler.argtypes = [
+    lto_code_gen_t,
+    lto_diagnostic_handler_t,
+    ctypes.POINTER(None),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_create = _libraries['llvm'].lto_codegen_create
-    lto_codegen_create.restype = lto_code_gen_t
-    lto_codegen_create.argtypes = []
+  lto_codegen_create = _libraries["llvm"].lto_codegen_create
+  lto_codegen_create.restype = lto_code_gen_t
+  lto_codegen_create.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_create_in_local_context = _libraries['llvm'].lto_codegen_create_in_local_context
-    lto_codegen_create_in_local_context.restype = lto_code_gen_t
-    lto_codegen_create_in_local_context.argtypes = []
+  lto_codegen_create_in_local_context = _libraries[
+    "llvm"
+  ].lto_codegen_create_in_local_context
+  lto_codegen_create_in_local_context.restype = lto_code_gen_t
+  lto_codegen_create_in_local_context.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_dispose = _libraries['llvm'].lto_codegen_dispose
-    lto_codegen_dispose.restype = None
-    lto_codegen_dispose.argtypes = [lto_code_gen_t]
+  lto_codegen_dispose = _libraries["llvm"].lto_codegen_dispose
+  lto_codegen_dispose.restype = None
+  lto_codegen_dispose.argtypes = [lto_code_gen_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_add_module = _libraries['llvm'].lto_codegen_add_module
-    lto_codegen_add_module.restype = lto_bool_t
-    lto_codegen_add_module.argtypes = [lto_code_gen_t, lto_module_t]
+  lto_codegen_add_module = _libraries["llvm"].lto_codegen_add_module
+  lto_codegen_add_module.restype = lto_bool_t
+  lto_codegen_add_module.argtypes = [lto_code_gen_t, lto_module_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_set_module = _libraries['llvm'].lto_codegen_set_module
-    lto_codegen_set_module.restype = None
-    lto_codegen_set_module.argtypes = [lto_code_gen_t, lto_module_t]
+  lto_codegen_set_module = _libraries["llvm"].lto_codegen_set_module
+  lto_codegen_set_module.restype = None
+  lto_codegen_set_module.argtypes = [lto_code_gen_t, lto_module_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_set_debug_model = _libraries['llvm'].lto_codegen_set_debug_model
-    lto_codegen_set_debug_model.restype = lto_bool_t
-    lto_codegen_set_debug_model.argtypes = [lto_code_gen_t, lto_debug_model]
+  lto_codegen_set_debug_model = _libraries["llvm"].lto_codegen_set_debug_model
+  lto_codegen_set_debug_model.restype = lto_bool_t
+  lto_codegen_set_debug_model.argtypes = [lto_code_gen_t, lto_debug_model]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_set_pic_model = _libraries['llvm'].lto_codegen_set_pic_model
-    lto_codegen_set_pic_model.restype = lto_bool_t
-    lto_codegen_set_pic_model.argtypes = [lto_code_gen_t, lto_codegen_model]
+  lto_codegen_set_pic_model = _libraries["llvm"].lto_codegen_set_pic_model
+  lto_codegen_set_pic_model.restype = lto_bool_t
+  lto_codegen_set_pic_model.argtypes = [lto_code_gen_t, lto_codegen_model]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_set_cpu = _libraries['llvm'].lto_codegen_set_cpu
-    lto_codegen_set_cpu.restype = None
-    lto_codegen_set_cpu.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
+  lto_codegen_set_cpu = _libraries["llvm"].lto_codegen_set_cpu
+  lto_codegen_set_cpu.restype = None
+  lto_codegen_set_cpu.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_set_assembler_path = _libraries['llvm'].lto_codegen_set_assembler_path
-    lto_codegen_set_assembler_path.restype = None
-    lto_codegen_set_assembler_path.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
+  lto_codegen_set_assembler_path = _libraries["llvm"].lto_codegen_set_assembler_path
+  lto_codegen_set_assembler_path.restype = None
+  lto_codegen_set_assembler_path.argtypes = [
+    lto_code_gen_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_set_assembler_args = _libraries['llvm'].lto_codegen_set_assembler_args
-    lto_codegen_set_assembler_args.restype = None
-    lto_codegen_set_assembler_args.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.POINTER(ctypes.c_char)), ctypes.c_int32]
+  lto_codegen_set_assembler_args = _libraries["llvm"].lto_codegen_set_assembler_args
+  lto_codegen_set_assembler_args.restype = None
+  lto_codegen_set_assembler_args.argtypes = [
+    lto_code_gen_t,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_add_must_preserve_symbol = _libraries['llvm'].lto_codegen_add_must_preserve_symbol
-    lto_codegen_add_must_preserve_symbol.restype = None
-    lto_codegen_add_must_preserve_symbol.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
+  lto_codegen_add_must_preserve_symbol = _libraries[
+    "llvm"
+  ].lto_codegen_add_must_preserve_symbol
+  lto_codegen_add_must_preserve_symbol.restype = None
+  lto_codegen_add_must_preserve_symbol.argtypes = [
+    lto_code_gen_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_write_merged_modules = _libraries['llvm'].lto_codegen_write_merged_modules
-    lto_codegen_write_merged_modules.restype = lto_bool_t
-    lto_codegen_write_merged_modules.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
+  lto_codegen_write_merged_modules = _libraries["llvm"].lto_codegen_write_merged_modules
+  lto_codegen_write_merged_modules.restype = lto_bool_t
+  lto_codegen_write_merged_modules.argtypes = [
+    lto_code_gen_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_compile = _libraries['llvm'].lto_codegen_compile
-    lto_codegen_compile.restype = ctypes.POINTER(None)
-    lto_codegen_compile.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_uint64)]
+  lto_codegen_compile = _libraries["llvm"].lto_codegen_compile
+  lto_codegen_compile.restype = ctypes.POINTER(None)
+  lto_codegen_compile.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_compile_to_file = _libraries['llvm'].lto_codegen_compile_to_file
-    lto_codegen_compile_to_file.restype = lto_bool_t
-    lto_codegen_compile_to_file.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.POINTER(ctypes.c_char))]
+  lto_codegen_compile_to_file = _libraries["llvm"].lto_codegen_compile_to_file
+  lto_codegen_compile_to_file.restype = lto_bool_t
+  lto_codegen_compile_to_file.argtypes = [
+    lto_code_gen_t,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_optimize = _libraries['llvm'].lto_codegen_optimize
-    lto_codegen_optimize.restype = lto_bool_t
-    lto_codegen_optimize.argtypes = [lto_code_gen_t]
+  lto_codegen_optimize = _libraries["llvm"].lto_codegen_optimize
+  lto_codegen_optimize.restype = lto_bool_t
+  lto_codegen_optimize.argtypes = [lto_code_gen_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_compile_optimized = _libraries['llvm'].lto_codegen_compile_optimized
-    lto_codegen_compile_optimized.restype = ctypes.POINTER(None)
-    lto_codegen_compile_optimized.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_uint64)]
+  lto_codegen_compile_optimized = _libraries["llvm"].lto_codegen_compile_optimized
+  lto_codegen_compile_optimized.restype = ctypes.POINTER(None)
+  lto_codegen_compile_optimized.argtypes = [
+    lto_code_gen_t,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_api_version = _libraries['llvm'].lto_api_version
-    lto_api_version.restype = ctypes.c_uint32
-    lto_api_version.argtypes = []
+  lto_api_version = _libraries["llvm"].lto_api_version
+  lto_api_version.restype = ctypes.c_uint32
+  lto_api_version.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    lto_set_debug_options = _libraries['llvm'].lto_set_debug_options
-    lto_set_debug_options.restype = None
-    lto_set_debug_options.argtypes = [ctypes.POINTER(ctypes.POINTER(ctypes.c_char)), ctypes.c_int32]
+  lto_set_debug_options = _libraries["llvm"].lto_set_debug_options
+  lto_set_debug_options.restype = None
+  lto_set_debug_options.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_debug_options = _libraries['llvm'].lto_codegen_debug_options
-    lto_codegen_debug_options.restype = None
-    lto_codegen_debug_options.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
+  lto_codegen_debug_options = _libraries["llvm"].lto_codegen_debug_options
+  lto_codegen_debug_options.restype = None
+  lto_codegen_debug_options.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_debug_options_array = _libraries['llvm'].lto_codegen_debug_options_array
-    lto_codegen_debug_options_array.restype = None
-    lto_codegen_debug_options_array.argtypes = [lto_code_gen_t, ctypes.POINTER(ctypes.POINTER(ctypes.c_char)), ctypes.c_int32]
+  lto_codegen_debug_options_array = _libraries["llvm"].lto_codegen_debug_options_array
+  lto_codegen_debug_options_array.restype = None
+  lto_codegen_debug_options_array.argtypes = [
+    lto_code_gen_t,
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_initialize_disassembler = _libraries['llvm'].lto_initialize_disassembler
-    lto_initialize_disassembler.restype = None
-    lto_initialize_disassembler.argtypes = []
+  lto_initialize_disassembler = _libraries["llvm"].lto_initialize_disassembler
+  lto_initialize_disassembler.restype = None
+  lto_initialize_disassembler.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_set_should_internalize = _libraries['llvm'].lto_codegen_set_should_internalize
-    lto_codegen_set_should_internalize.restype = None
-    lto_codegen_set_should_internalize.argtypes = [lto_code_gen_t, lto_bool_t]
+  lto_codegen_set_should_internalize = _libraries[
+    "llvm"
+  ].lto_codegen_set_should_internalize
+  lto_codegen_set_should_internalize.restype = None
+  lto_codegen_set_should_internalize.argtypes = [lto_code_gen_t, lto_bool_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_codegen_set_should_embed_uselists = _libraries['llvm'].lto_codegen_set_should_embed_uselists
-    lto_codegen_set_should_embed_uselists.restype = None
-    lto_codegen_set_should_embed_uselists.argtypes = [lto_code_gen_t, lto_bool_t]
+  lto_codegen_set_should_embed_uselists = _libraries[
+    "llvm"
+  ].lto_codegen_set_should_embed_uselists
+  lto_codegen_set_should_embed_uselists.restype = None
+  lto_codegen_set_should_embed_uselists.argtypes = [lto_code_gen_t, lto_bool_t]
 except AttributeError:
-    pass
+  pass
+
+
 class struct_LLVMOpaqueLTOInput(Structure):
-    pass
+  pass
+
 
 lto_input_t = ctypes.POINTER(struct_LLVMOpaqueLTOInput)
 try:
-    lto_input_create = _libraries['llvm'].lto_input_create
-    lto_input_create.restype = lto_input_t
-    lto_input_create.argtypes = [ctypes.POINTER(None), size_t, ctypes.POINTER(ctypes.c_char)]
+  lto_input_create = _libraries["llvm"].lto_input_create
+  lto_input_create.restype = lto_input_t
+  lto_input_create.argtypes = [
+    ctypes.POINTER(None),
+    size_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_input_dispose = _libraries['llvm'].lto_input_dispose
-    lto_input_dispose.restype = None
-    lto_input_dispose.argtypes = [lto_input_t]
+  lto_input_dispose = _libraries["llvm"].lto_input_dispose
+  lto_input_dispose.restype = None
+  lto_input_dispose.argtypes = [lto_input_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_input_get_num_dependent_libraries = _libraries['llvm'].lto_input_get_num_dependent_libraries
-    lto_input_get_num_dependent_libraries.restype = ctypes.c_uint32
-    lto_input_get_num_dependent_libraries.argtypes = [lto_input_t]
+  lto_input_get_num_dependent_libraries = _libraries[
+    "llvm"
+  ].lto_input_get_num_dependent_libraries
+  lto_input_get_num_dependent_libraries.restype = ctypes.c_uint32
+  lto_input_get_num_dependent_libraries.argtypes = [lto_input_t]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_input_get_dependent_library = _libraries['llvm'].lto_input_get_dependent_library
-    lto_input_get_dependent_library.restype = ctypes.POINTER(ctypes.c_char)
-    lto_input_get_dependent_library.argtypes = [lto_input_t, size_t, ctypes.POINTER(ctypes.c_uint64)]
+  lto_input_get_dependent_library = _libraries["llvm"].lto_input_get_dependent_library
+  lto_input_get_dependent_library.restype = ctypes.POINTER(ctypes.c_char)
+  lto_input_get_dependent_library.argtypes = [
+    lto_input_t,
+    size_t,
+    ctypes.POINTER(ctypes.c_uint64),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_runtime_lib_symbols_list = _libraries['llvm'].lto_runtime_lib_symbols_list
-    lto_runtime_lib_symbols_list.restype = ctypes.POINTER(ctypes.POINTER(ctypes.c_char))
-    lto_runtime_lib_symbols_list.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
+  lto_runtime_lib_symbols_list = _libraries["llvm"].lto_runtime_lib_symbols_list
+  lto_runtime_lib_symbols_list.restype = ctypes.POINTER(ctypes.POINTER(ctypes.c_char))
+  lto_runtime_lib_symbols_list.argtypes = [ctypes.POINTER(ctypes.c_uint64)]
 except AttributeError:
-    pass
-class struct_c__SA_LTOObjectBuffer(Structure):
-    pass
+  pass
 
-struct_c__SA_LTOObjectBuffer._pack_ = 1 # source:False
+
+class struct_c__SA_LTOObjectBuffer(Structure):
+  pass
+
+
+struct_c__SA_LTOObjectBuffer._pack_ = 1  # source:False
 struct_c__SA_LTOObjectBuffer._fields_ = [
-    ('Buffer', ctypes.POINTER(ctypes.c_char)),
-    ('Size', ctypes.c_uint64),
+  ("Buffer", ctypes.POINTER(ctypes.c_char)),
+  ("Size", ctypes.c_uint64),
 ]
 
 LTOObjectBuffer = struct_c__SA_LTOObjectBuffer
 try:
-    thinlto_create_codegen = _libraries['llvm'].thinlto_create_codegen
-    thinlto_create_codegen.restype = thinlto_code_gen_t
-    thinlto_create_codegen.argtypes = []
+  thinlto_create_codegen = _libraries["llvm"].thinlto_create_codegen
+  thinlto_create_codegen.restype = thinlto_code_gen_t
+  thinlto_create_codegen.argtypes = []
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_dispose = _libraries['llvm'].thinlto_codegen_dispose
-    thinlto_codegen_dispose.restype = None
-    thinlto_codegen_dispose.argtypes = [thinlto_code_gen_t]
+  thinlto_codegen_dispose = _libraries["llvm"].thinlto_codegen_dispose
+  thinlto_codegen_dispose.restype = None
+  thinlto_codegen_dispose.argtypes = [thinlto_code_gen_t]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_add_module = _libraries['llvm'].thinlto_codegen_add_module
-    thinlto_codegen_add_module.restype = None
-    thinlto_codegen_add_module.argtypes = [thinlto_code_gen_t, ctypes.POINTER(ctypes.c_char), ctypes.POINTER(ctypes.c_char), ctypes.c_int32]
+  thinlto_codegen_add_module = _libraries["llvm"].thinlto_codegen_add_module
+  thinlto_codegen_add_module.restype = None
+  thinlto_codegen_add_module.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_process = _libraries['llvm'].thinlto_codegen_process
-    thinlto_codegen_process.restype = None
-    thinlto_codegen_process.argtypes = [thinlto_code_gen_t]
+  thinlto_codegen_process = _libraries["llvm"].thinlto_codegen_process
+  thinlto_codegen_process.restype = None
+  thinlto_codegen_process.argtypes = [thinlto_code_gen_t]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_module_get_num_objects = _libraries['llvm'].thinlto_module_get_num_objects
-    thinlto_module_get_num_objects.restype = ctypes.c_uint32
-    thinlto_module_get_num_objects.argtypes = [thinlto_code_gen_t]
+  thinlto_module_get_num_objects = _libraries["llvm"].thinlto_module_get_num_objects
+  thinlto_module_get_num_objects.restype = ctypes.c_uint32
+  thinlto_module_get_num_objects.argtypes = [thinlto_code_gen_t]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_module_get_object = _libraries['llvm'].thinlto_module_get_object
-    thinlto_module_get_object.restype = LTOObjectBuffer
-    thinlto_module_get_object.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
+  thinlto_module_get_object = _libraries["llvm"].thinlto_module_get_object
+  thinlto_module_get_object.restype = LTOObjectBuffer
+  thinlto_module_get_object.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_module_get_num_object_files = _libraries['llvm'].thinlto_module_get_num_object_files
-    thinlto_module_get_num_object_files.restype = ctypes.c_uint32
-    thinlto_module_get_num_object_files.argtypes = [thinlto_code_gen_t]
+  thinlto_module_get_num_object_files = _libraries[
+    "llvm"
+  ].thinlto_module_get_num_object_files
+  thinlto_module_get_num_object_files.restype = ctypes.c_uint32
+  thinlto_module_get_num_object_files.argtypes = [thinlto_code_gen_t]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_module_get_object_file = _libraries['llvm'].thinlto_module_get_object_file
-    thinlto_module_get_object_file.restype = ctypes.POINTER(ctypes.c_char)
-    thinlto_module_get_object_file.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
+  thinlto_module_get_object_file = _libraries["llvm"].thinlto_module_get_object_file
+  thinlto_module_get_object_file.restype = ctypes.POINTER(ctypes.c_char)
+  thinlto_module_get_object_file.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_pic_model = _libraries['llvm'].thinlto_codegen_set_pic_model
-    thinlto_codegen_set_pic_model.restype = lto_bool_t
-    thinlto_codegen_set_pic_model.argtypes = [thinlto_code_gen_t, lto_codegen_model]
+  thinlto_codegen_set_pic_model = _libraries["llvm"].thinlto_codegen_set_pic_model
+  thinlto_codegen_set_pic_model.restype = lto_bool_t
+  thinlto_codegen_set_pic_model.argtypes = [thinlto_code_gen_t, lto_codegen_model]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_savetemps_dir = _libraries['llvm'].thinlto_codegen_set_savetemps_dir
-    thinlto_codegen_set_savetemps_dir.restype = None
-    thinlto_codegen_set_savetemps_dir.argtypes = [thinlto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
+  thinlto_codegen_set_savetemps_dir = _libraries[
+    "llvm"
+  ].thinlto_codegen_set_savetemps_dir
+  thinlto_codegen_set_savetemps_dir.restype = None
+  thinlto_codegen_set_savetemps_dir.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_set_generated_objects_dir = _libraries['llvm'].thinlto_set_generated_objects_dir
-    thinlto_set_generated_objects_dir.restype = None
-    thinlto_set_generated_objects_dir.argtypes = [thinlto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
+  thinlto_set_generated_objects_dir = _libraries[
+    "llvm"
+  ].thinlto_set_generated_objects_dir
+  thinlto_set_generated_objects_dir.restype = None
+  thinlto_set_generated_objects_dir.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_cpu = _libraries['llvm'].thinlto_codegen_set_cpu
-    thinlto_codegen_set_cpu.restype = None
-    thinlto_codegen_set_cpu.argtypes = [thinlto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
+  thinlto_codegen_set_cpu = _libraries["llvm"].thinlto_codegen_set_cpu
+  thinlto_codegen_set_cpu.restype = None
+  thinlto_codegen_set_cpu.argtypes = [thinlto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_disable_codegen = _libraries['llvm'].thinlto_codegen_disable_codegen
-    thinlto_codegen_disable_codegen.restype = None
-    thinlto_codegen_disable_codegen.argtypes = [thinlto_code_gen_t, lto_bool_t]
+  thinlto_codegen_disable_codegen = _libraries["llvm"].thinlto_codegen_disable_codegen
+  thinlto_codegen_disable_codegen.restype = None
+  thinlto_codegen_disable_codegen.argtypes = [thinlto_code_gen_t, lto_bool_t]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_codegen_only = _libraries['llvm'].thinlto_codegen_set_codegen_only
-    thinlto_codegen_set_codegen_only.restype = None
-    thinlto_codegen_set_codegen_only.argtypes = [thinlto_code_gen_t, lto_bool_t]
+  thinlto_codegen_set_codegen_only = _libraries["llvm"].thinlto_codegen_set_codegen_only
+  thinlto_codegen_set_codegen_only.restype = None
+  thinlto_codegen_set_codegen_only.argtypes = [thinlto_code_gen_t, lto_bool_t]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_debug_options = _libraries['llvm'].thinlto_debug_options
-    thinlto_debug_options.restype = None
-    thinlto_debug_options.argtypes = [ctypes.POINTER(ctypes.POINTER(ctypes.c_char)), ctypes.c_int32]
+  thinlto_debug_options = _libraries["llvm"].thinlto_debug_options
+  thinlto_debug_options.restype = None
+  thinlto_debug_options.argtypes = [
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_char)),
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    lto_module_is_thinlto = _libraries['llvm'].lto_module_is_thinlto
-    lto_module_is_thinlto.restype = lto_bool_t
-    lto_module_is_thinlto.argtypes = [lto_module_t]
+  lto_module_is_thinlto = _libraries["llvm"].lto_module_is_thinlto
+  lto_module_is_thinlto.restype = lto_bool_t
+  lto_module_is_thinlto.argtypes = [lto_module_t]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_add_must_preserve_symbol = _libraries['llvm'].thinlto_codegen_add_must_preserve_symbol
-    thinlto_codegen_add_must_preserve_symbol.restype = None
-    thinlto_codegen_add_must_preserve_symbol.argtypes = [thinlto_code_gen_t, ctypes.POINTER(ctypes.c_char), ctypes.c_int32]
+  thinlto_codegen_add_must_preserve_symbol = _libraries[
+    "llvm"
+  ].thinlto_codegen_add_must_preserve_symbol
+  thinlto_codegen_add_must_preserve_symbol.restype = None
+  thinlto_codegen_add_must_preserve_symbol.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_add_cross_referenced_symbol = _libraries['llvm'].thinlto_codegen_add_cross_referenced_symbol
-    thinlto_codegen_add_cross_referenced_symbol.restype = None
-    thinlto_codegen_add_cross_referenced_symbol.argtypes = [thinlto_code_gen_t, ctypes.POINTER(ctypes.c_char), ctypes.c_int32]
+  thinlto_codegen_add_cross_referenced_symbol = _libraries[
+    "llvm"
+  ].thinlto_codegen_add_cross_referenced_symbol
+  thinlto_codegen_add_cross_referenced_symbol.restype = None
+  thinlto_codegen_add_cross_referenced_symbol.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_cache_dir = _libraries['llvm'].thinlto_codegen_set_cache_dir
-    thinlto_codegen_set_cache_dir.restype = None
-    thinlto_codegen_set_cache_dir.argtypes = [thinlto_code_gen_t, ctypes.POINTER(ctypes.c_char)]
+  thinlto_codegen_set_cache_dir = _libraries["llvm"].thinlto_codegen_set_cache_dir
+  thinlto_codegen_set_cache_dir.restype = None
+  thinlto_codegen_set_cache_dir.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.POINTER(ctypes.c_char),
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_cache_pruning_interval = _libraries['llvm'].thinlto_codegen_set_cache_pruning_interval
-    thinlto_codegen_set_cache_pruning_interval.restype = None
-    thinlto_codegen_set_cache_pruning_interval.argtypes = [thinlto_code_gen_t, ctypes.c_int32]
+  thinlto_codegen_set_cache_pruning_interval = _libraries[
+    "llvm"
+  ].thinlto_codegen_set_cache_pruning_interval
+  thinlto_codegen_set_cache_pruning_interval.restype = None
+  thinlto_codegen_set_cache_pruning_interval.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.c_int32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_final_cache_size_relative_to_available_space = _libraries['llvm'].thinlto_codegen_set_final_cache_size_relative_to_available_space
-    thinlto_codegen_set_final_cache_size_relative_to_available_space.restype = None
-    thinlto_codegen_set_final_cache_size_relative_to_available_space.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
+  thinlto_codegen_set_final_cache_size_relative_to_available_space = _libraries[
+    "llvm"
+  ].thinlto_codegen_set_final_cache_size_relative_to_available_space
+  thinlto_codegen_set_final_cache_size_relative_to_available_space.restype = None
+  thinlto_codegen_set_final_cache_size_relative_to_available_space.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_cache_entry_expiration = _libraries['llvm'].thinlto_codegen_set_cache_entry_expiration
-    thinlto_codegen_set_cache_entry_expiration.restype = None
-    thinlto_codegen_set_cache_entry_expiration.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
+  thinlto_codegen_set_cache_entry_expiration = _libraries[
+    "llvm"
+  ].thinlto_codegen_set_cache_entry_expiration
+  thinlto_codegen_set_cache_entry_expiration.restype = None
+  thinlto_codegen_set_cache_entry_expiration.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_cache_size_bytes = _libraries['llvm'].thinlto_codegen_set_cache_size_bytes
-    thinlto_codegen_set_cache_size_bytes.restype = None
-    thinlto_codegen_set_cache_size_bytes.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
+  thinlto_codegen_set_cache_size_bytes = _libraries[
+    "llvm"
+  ].thinlto_codegen_set_cache_size_bytes
+  thinlto_codegen_set_cache_size_bytes.restype = None
+  thinlto_codegen_set_cache_size_bytes.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_cache_size_megabytes = _libraries['llvm'].thinlto_codegen_set_cache_size_megabytes
-    thinlto_codegen_set_cache_size_megabytes.restype = None
-    thinlto_codegen_set_cache_size_megabytes.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
+  thinlto_codegen_set_cache_size_megabytes = _libraries[
+    "llvm"
+  ].thinlto_codegen_set_cache_size_megabytes
+  thinlto_codegen_set_cache_size_megabytes.restype = None
+  thinlto_codegen_set_cache_size_megabytes.argtypes = [
+    thinlto_code_gen_t,
+    ctypes.c_uint32,
+  ]
 except AttributeError:
-    pass
+  pass
 try:
-    thinlto_codegen_set_cache_size_files = _libraries['llvm'].thinlto_codegen_set_cache_size_files
-    thinlto_codegen_set_cache_size_files.restype = None
-    thinlto_codegen_set_cache_size_files.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
+  thinlto_codegen_set_cache_size_files = _libraries[
+    "llvm"
+  ].thinlto_codegen_set_cache_size_files
+  thinlto_codegen_set_cache_size_files.restype = None
+  thinlto_codegen_set_cache_size_files.argtypes = [thinlto_code_gen_t, ctypes.c_uint32]
 except AttributeError:
-    pass
-__all__ = \
-    ['LLVMABIAlignmentOfType', 'LLVMABISizeOfType',
-    'LLVMAMDGPUCSCallConv', 'LLVMAMDGPUESCallConv',
-    'LLVMAMDGPUGSCallConv', 'LLVMAMDGPUHSCallConv',
-    'LLVMAMDGPUKERNELCallConv', 'LLVMAMDGPULSCallConv',
-    'LLVMAMDGPUPSCallConv', 'LLVMAMDGPUVSCallConv',
-    'LLVMARMAAPCSCallConv', 'LLVMARMAAPCSVFPCallConv',
-    'LLVMARMAPCSCallConv', 'LLVMAShr', 'LLVMAVRBUILTINCallConv',
-    'LLVMAVRINTRCallConv', 'LLVMAVRSIGNALCallConv',
-    'LLVMAbortProcessAction', 'LLVMAdd',
-    'LLVMAddAddDiscriminatorsPass', 'LLVMAddAggressiveDCEPass',
-    'LLVMAddAggressiveInstCombinerPass', 'LLVMAddAlias',
-    'LLVMAddAlias2', 'LLVMAddAlignmentFromAssumptionsPass',
-    'LLVMAddAlwaysInlinerPass', 'LLVMAddAnalysisPasses',
-    'LLVMAddArgumentPromotionPass', 'LLVMAddAttributeAtIndex',
-    'LLVMAddBasicAliasAnalysisPass', 'LLVMAddBitTrackingDCEPass',
-    'LLVMAddCFGSimplificationPass', 'LLVMAddCallSiteAttribute',
-    'LLVMAddCalledValuePropagationPass', 'LLVMAddCase',
-    'LLVMAddClause', 'LLVMAddConstantMergePass',
-    'LLVMAddCoroCleanupPass', 'LLVMAddCoroEarlyPass',
-    'LLVMAddCoroElidePass', 'LLVMAddCoroSplitPass',
-    'LLVMAddCorrelatedValuePropagationPass', 'LLVMAddDCEPass',
-    'LLVMAddDeadArgEliminationPass',
-    'LLVMAddDeadStoreEliminationPass',
-    'LLVMAddDemoteMemoryToRegisterPass', 'LLVMAddDestination',
-    'LLVMAddEarlyCSEMemSSAPass', 'LLVMAddEarlyCSEPass',
-    'LLVMAddFunction', 'LLVMAddFunctionAttrsPass',
-    'LLVMAddFunctionInliningPass', 'LLVMAddGVNPass', 'LLVMAddGlobal',
-    'LLVMAddGlobalDCEPass', 'LLVMAddGlobalIFunc',
-    'LLVMAddGlobalInAddressSpace', 'LLVMAddGlobalMapping',
-    'LLVMAddGlobalOptimizerPass', 'LLVMAddHandler',
-    'LLVMAddIPSCCPPass', 'LLVMAddIncoming',
-    'LLVMAddIndVarSimplifyPass', 'LLVMAddInstructionCombiningPass',
-    'LLVMAddInstructionSimplifyPass', 'LLVMAddInternalizePass',
-    'LLVMAddInternalizePassWithMustPreservePredicate',
-    'LLVMAddJumpThreadingPass', 'LLVMAddLICMPass',
-    'LLVMAddLoopDeletionPass', 'LLVMAddLoopIdiomPass',
-    'LLVMAddLoopRerollPass', 'LLVMAddLoopRotatePass',
-    'LLVMAddLoopUnrollAndJamPass', 'LLVMAddLoopUnrollPass',
-    'LLVMAddLoopUnswitchPass', 'LLVMAddLoopVectorizePass',
-    'LLVMAddLowerAtomicPass', 'LLVMAddLowerConstantIntrinsicsPass',
-    'LLVMAddLowerExpectIntrinsicPass', 'LLVMAddLowerSwitchPass',
-    'LLVMAddMemCpyOptPass', 'LLVMAddMergeFunctionsPass',
-    'LLVMAddMergedLoadStoreMotionPass', 'LLVMAddMetadataToInst',
-    'LLVMAddModule', 'LLVMAddModuleFlag',
-    'LLVMAddNamedMetadataOperand', 'LLVMAddNewGVNPass',
-    'LLVMAddPartiallyInlineLibCallsPass',
-    'LLVMAddPromoteMemoryToRegisterPass', 'LLVMAddPruneEHPass',
-    'LLVMAddReassociatePass', 'LLVMAddSCCPPass',
-    'LLVMAddSLPVectorizePass', 'LLVMAddScalarReplAggregatesPass',
-    'LLVMAddScalarReplAggregatesPassSSA',
-    'LLVMAddScalarReplAggregatesPassWithThreshold',
-    'LLVMAddScalarizerPass', 'LLVMAddScopedNoAliasAAPass',
-    'LLVMAddSimplifyLibCallsPass', 'LLVMAddStripDeadPrototypesPass',
-    'LLVMAddStripSymbolsPass', 'LLVMAddSymbol',
-    'LLVMAddTailCallEliminationPass',
-    'LLVMAddTargetDependentFunctionAttr', 'LLVMAddTargetLibraryInfo',
-    'LLVMAddTypeBasedAliasAnalysisPass',
-    'LLVMAddUnifyFunctionExitNodesPass', 'LLVMAddVerifierPass',
-    'LLVMAddrSpaceCast', 'LLVMAliasGetAliasee', 'LLVMAliasSetAliasee',
-    'LLVMAlignOf', 'LLVMAlloca', 'LLVMAnd',
-    'LLVMAnyComdatSelectionKind', 'LLVMAnyRegCallConv',
-    'LLVMAppendBasicBlock', 'LLVMAppendBasicBlockInContext',
-    'LLVMAppendExistingBasicBlock', 'LLVMAppendModuleInlineAsm',
-    'LLVMAppendingLinkage', 'LLVMArgumentValueKind', 'LLVMArrayType',
-    'LLVMArrayTypeKind', 'LLVMAssemblyFile', 'LLVMAtomicCmpXchg',
-    'LLVMAtomicOrdering', 'LLVMAtomicOrderingAcquire',
-    'LLVMAtomicOrderingAcquireRelease', 'LLVMAtomicOrderingMonotonic',
-    'LLVMAtomicOrderingNotAtomic', 'LLVMAtomicOrderingRelease',
-    'LLVMAtomicOrderingSequentiallyConsistent',
-    'LLVMAtomicOrderingUnordered', 'LLVMAtomicOrdering__enumvalues',
-    'LLVMAtomicRMW', 'LLVMAtomicRMWBinOp', 'LLVMAtomicRMWBinOpAdd',
-    'LLVMAtomicRMWBinOpAnd', 'LLVMAtomicRMWBinOpFAdd',
-    'LLVMAtomicRMWBinOpFSub', 'LLVMAtomicRMWBinOpMax',
-    'LLVMAtomicRMWBinOpMin', 'LLVMAtomicRMWBinOpNand',
-    'LLVMAtomicRMWBinOpOr', 'LLVMAtomicRMWBinOpSub',
-    'LLVMAtomicRMWBinOpUMax', 'LLVMAtomicRMWBinOpUMin',
-    'LLVMAtomicRMWBinOpXchg', 'LLVMAtomicRMWBinOpXor',
-    'LLVMAtomicRMWBinOp__enumvalues', 'LLVMAttributeFunctionIndex',
-    'LLVMAttributeIndex', 'LLVMAttributeRef',
-    'LLVMAttributeReturnIndex', 'LLVMAvailableExternallyLinkage',
-    'LLVMBFloatType', 'LLVMBFloatTypeInContext', 'LLVMBFloatTypeKind',
-    'LLVMBasicBlockAsValue', 'LLVMBasicBlockRef',
-    'LLVMBasicBlockValueKind', 'LLVMBigEndian',
-    'LLVMBinaryCopyMemoryBuffer', 'LLVMBinaryGetType',
-    'LLVMBinaryRef', 'LLVMBinaryType', 'LLVMBinaryTypeArchive',
-    'LLVMBinaryTypeCOFF', 'LLVMBinaryTypeCOFFImportFile',
-    'LLVMBinaryTypeELF32B', 'LLVMBinaryTypeELF32L',
-    'LLVMBinaryTypeELF64B', 'LLVMBinaryTypeELF64L',
-    'LLVMBinaryTypeIR', 'LLVMBinaryTypeMachO32B',
-    'LLVMBinaryTypeMachO32L', 'LLVMBinaryTypeMachO64B',
-    'LLVMBinaryTypeMachO64L', 'LLVMBinaryTypeMachOUniversalBinary',
-    'LLVMBinaryTypeWasm', 'LLVMBinaryTypeWinRes',
-    'LLVMBinaryType__enumvalues', 'LLVMBitCast', 'LLVMBlockAddress',
-    'LLVMBlockAddressValueKind', 'LLVMBool', 'LLVMBr',
-    'LLVMBuildAShr', 'LLVMBuildAdd', 'LLVMBuildAddrSpaceCast',
-    'LLVMBuildAggregateRet', 'LLVMBuildAlloca', 'LLVMBuildAnd',
-    'LLVMBuildArrayAlloca', 'LLVMBuildArrayMalloc',
-    'LLVMBuildAtomicCmpXchg', 'LLVMBuildAtomicRMW', 'LLVMBuildBinOp',
-    'LLVMBuildBitCast', 'LLVMBuildBr', 'LLVMBuildCall',
-    'LLVMBuildCall2', 'LLVMBuildCast', 'LLVMBuildCatchPad',
-    'LLVMBuildCatchRet', 'LLVMBuildCatchSwitch',
-    'LLVMBuildCleanupPad', 'LLVMBuildCleanupRet', 'LLVMBuildCondBr',
-    'LLVMBuildExactSDiv', 'LLVMBuildExactUDiv',
-    'LLVMBuildExtractElement', 'LLVMBuildExtractValue',
-    'LLVMBuildFAdd', 'LLVMBuildFCmp', 'LLVMBuildFDiv',
-    'LLVMBuildFMul', 'LLVMBuildFNeg', 'LLVMBuildFPCast',
-    'LLVMBuildFPExt', 'LLVMBuildFPToSI', 'LLVMBuildFPToUI',
-    'LLVMBuildFPTrunc', 'LLVMBuildFRem', 'LLVMBuildFSub',
-    'LLVMBuildFence', 'LLVMBuildFree', 'LLVMBuildFreeze',
-    'LLVMBuildGEP', 'LLVMBuildGEP2', 'LLVMBuildGlobalString',
-    'LLVMBuildGlobalStringPtr', 'LLVMBuildICmp',
-    'LLVMBuildInBoundsGEP', 'LLVMBuildInBoundsGEP2',
-    'LLVMBuildIndirectBr', 'LLVMBuildInsertElement',
-    'LLVMBuildInsertValue', 'LLVMBuildIntCast', 'LLVMBuildIntCast2',
-    'LLVMBuildIntToPtr', 'LLVMBuildInvoke', 'LLVMBuildInvoke2',
-    'LLVMBuildIsNotNull', 'LLVMBuildIsNull', 'LLVMBuildLShr',
-    'LLVMBuildLandingPad', 'LLVMBuildLoad', 'LLVMBuildLoad2',
-    'LLVMBuildMalloc', 'LLVMBuildMemCpy', 'LLVMBuildMemMove',
-    'LLVMBuildMemSet', 'LLVMBuildMul', 'LLVMBuildNSWAdd',
-    'LLVMBuildNSWMul', 'LLVMBuildNSWNeg', 'LLVMBuildNSWSub',
-    'LLVMBuildNUWAdd', 'LLVMBuildNUWMul', 'LLVMBuildNUWNeg',
-    'LLVMBuildNUWSub', 'LLVMBuildNeg', 'LLVMBuildNot', 'LLVMBuildOr',
-    'LLVMBuildPhi', 'LLVMBuildPointerCast', 'LLVMBuildPtrDiff',
-    'LLVMBuildPtrDiff2', 'LLVMBuildPtrToInt', 'LLVMBuildResume',
-    'LLVMBuildRet', 'LLVMBuildRetVoid', 'LLVMBuildSDiv',
-    'LLVMBuildSExt', 'LLVMBuildSExtOrBitCast', 'LLVMBuildSIToFP',
-    'LLVMBuildSRem', 'LLVMBuildSelect', 'LLVMBuildShl',
-    'LLVMBuildShuffleVector', 'LLVMBuildStore', 'LLVMBuildStructGEP',
-    'LLVMBuildStructGEP2', 'LLVMBuildSub', 'LLVMBuildSwitch',
-    'LLVMBuildTrunc', 'LLVMBuildTruncOrBitCast', 'LLVMBuildUDiv',
-    'LLVMBuildUIToFP', 'LLVMBuildURem', 'LLVMBuildUnreachable',
-    'LLVMBuildVAArg', 'LLVMBuildXor', 'LLVMBuildZExt',
-    'LLVMBuildZExtOrBitCast', 'LLVMBuilderGetDefaultFPMathTag',
-    'LLVMBuilderRef', 'LLVMBuilderSetDefaultFPMathTag',
-    'LLVMByteOrder', 'LLVMByteOrdering', 'LLVMCCallConv',
-    'LLVMCXXFASTTLSCallConv', 'LLVMCall', 'LLVMCallBr',
-    'LLVMCallConv', 'LLVMCallConv__enumvalues',
-    'LLVMCallFrameAlignmentOfType', 'LLVMCatchPad', 'LLVMCatchRet',
-    'LLVMCatchSwitch', 'LLVMCleanupPad', 'LLVMCleanupRet',
-    'LLVMClearInsertionPosition', 'LLVMCloneModule',
-    'LLVMCodeGenFileType', 'LLVMCodeGenFileType__enumvalues',
-    'LLVMCodeGenLevelAggressive', 'LLVMCodeGenLevelDefault',
-    'LLVMCodeGenLevelLess', 'LLVMCodeGenLevelNone',
-    'LLVMCodeGenOptLevel', 'LLVMCodeGenOptLevel__enumvalues',
-    'LLVMCodeModel', 'LLVMCodeModelDefault',
-    'LLVMCodeModelJITDefault', 'LLVMCodeModelKernel',
-    'LLVMCodeModelLarge', 'LLVMCodeModelMedium', 'LLVMCodeModelSmall',
-    'LLVMCodeModelTiny', 'LLVMCodeModel__enumvalues',
-    'LLVMColdCallConv', 'LLVMComdatRef', 'LLVMComdatSelectionKind',
-    'LLVMComdatSelectionKind__enumvalues', 'LLVMCommonLinkage',
-    'LLVMConstAShr', 'LLVMConstAdd', 'LLVMConstAddrSpaceCast',
-    'LLVMConstAllOnes', 'LLVMConstAnd', 'LLVMConstArray',
-    'LLVMConstBitCast', 'LLVMConstExactSDiv', 'LLVMConstExactUDiv',
-    'LLVMConstExtractElement', 'LLVMConstExtractValue',
-    'LLVMConstFAdd', 'LLVMConstFCmp', 'LLVMConstFDiv',
-    'LLVMConstFMul', 'LLVMConstFNeg', 'LLVMConstFPCast',
-    'LLVMConstFPExt', 'LLVMConstFPToSI', 'LLVMConstFPToUI',
-    'LLVMConstFPTrunc', 'LLVMConstFRem', 'LLVMConstFSub',
-    'LLVMConstGEP', 'LLVMConstGEP2', 'LLVMConstICmp',
-    'LLVMConstInBoundsGEP', 'LLVMConstInBoundsGEP2',
-    'LLVMConstInlineAsm', 'LLVMConstInsertElement',
-    'LLVMConstInsertValue', 'LLVMConstInt', 'LLVMConstIntCast',
-    'LLVMConstIntGetSExtValue', 'LLVMConstIntGetZExtValue',
-    'LLVMConstIntOfArbitraryPrecision', 'LLVMConstIntOfString',
-    'LLVMConstIntOfStringAndSize', 'LLVMConstIntToPtr',
-    'LLVMConstLShr', 'LLVMConstMul', 'LLVMConstNSWAdd',
-    'LLVMConstNSWMul', 'LLVMConstNSWNeg', 'LLVMConstNSWSub',
-    'LLVMConstNUWAdd', 'LLVMConstNUWMul', 'LLVMConstNUWNeg',
-    'LLVMConstNUWSub', 'LLVMConstNamedStruct', 'LLVMConstNeg',
-    'LLVMConstNot', 'LLVMConstNull', 'LLVMConstOr',
-    'LLVMConstPointerCast', 'LLVMConstPointerNull',
-    'LLVMConstPtrToInt', 'LLVMConstReal', 'LLVMConstRealGetDouble',
-    'LLVMConstRealOfString', 'LLVMConstRealOfStringAndSize',
-    'LLVMConstSDiv', 'LLVMConstSExt', 'LLVMConstSExtOrBitCast',
-    'LLVMConstSIToFP', 'LLVMConstSRem', 'LLVMConstSelect',
-    'LLVMConstShl', 'LLVMConstShuffleVector', 'LLVMConstString',
-    'LLVMConstStringInContext', 'LLVMConstStruct',
-    'LLVMConstStructInContext', 'LLVMConstSub', 'LLVMConstTrunc',
-    'LLVMConstTruncOrBitCast', 'LLVMConstUDiv', 'LLVMConstUIToFP',
-    'LLVMConstURem', 'LLVMConstVector', 'LLVMConstXor',
-    'LLVMConstZExt', 'LLVMConstZExtOrBitCast',
-    'LLVMConstantAggregateZeroValueKind',
-    'LLVMConstantArrayValueKind',
-    'LLVMConstantAsMetadataMetadataKind',
-    'LLVMConstantDataArrayValueKind',
-    'LLVMConstantDataVectorValueKind', 'LLVMConstantExprValueKind',
-    'LLVMConstantFPValueKind', 'LLVMConstantIntValueKind',
-    'LLVMConstantPointerNullValueKind', 'LLVMConstantStructValueKind',
-    'LLVMConstantTokenNoneValueKind', 'LLVMConstantVectorValueKind',
-    'LLVMConsumeError', 'LLVMContextCreate', 'LLVMContextDispose',
-    'LLVMContextGetDiagnosticContext',
-    'LLVMContextGetDiagnosticHandler', 'LLVMContextRef',
-    'LLVMContextSetDiagnosticHandler',
-    'LLVMContextSetDiscardValueNames', 'LLVMContextSetYieldCallback',
-    'LLVMContextShouldDiscardValueNames',
-    'LLVMCopyModuleFlagsMetadata', 'LLVMCopyStringRepOfTargetData',
-    'LLVMCountBasicBlocks', 'LLVMCountIncoming',
-    'LLVMCountParamTypes', 'LLVMCountParams',
-    'LLVMCountStructElementTypes', 'LLVMCreateBasicBlockInContext',
-    'LLVMCreateBinary', 'LLVMCreateBuilder',
-    'LLVMCreateBuilderInContext', 'LLVMCreateDIBuilder',
-    'LLVMCreateDIBuilderDisallowUnresolved', 'LLVMCreateDisasm',
-    'LLVMCreateDisasmCPU', 'LLVMCreateDisasmCPUFeatures',
-    'LLVMCreateEnumAttribute', 'LLVMCreateExecutionEngineForModule',
-    'LLVMCreateFunctionPassManager',
-    'LLVMCreateFunctionPassManagerForModule',
-    'LLVMCreateGDBRegistrationListener',
-    'LLVMCreateGenericValueOfFloat', 'LLVMCreateGenericValueOfInt',
-    'LLVMCreateGenericValueOfPointer',
-    'LLVMCreateIntelJITEventListener',
-    'LLVMCreateInterpreterForModule',
-    'LLVMCreateJITCompilerForModule',
-    'LLVMCreateMCJITCompilerForModule',
-    'LLVMCreateMemoryBufferWithContentsOfFile',
-    'LLVMCreateMemoryBufferWithMemoryRange',
-    'LLVMCreateMemoryBufferWithMemoryRangeCopy',
-    'LLVMCreateMemoryBufferWithSTDIN', 'LLVMCreateMessage',
-    'LLVMCreateModuleProviderForExistingModule',
-    'LLVMCreateOProfileJITEventListener', 'LLVMCreateObjectFile',
-    'LLVMCreatePassBuilderOptions', 'LLVMCreatePassManager',
-    'LLVMCreatePerfJITEventListener',
-    'LLVMCreateSimpleMCJITMemoryManager', 'LLVMCreateStringAttribute',
-    'LLVMCreateStringError', 'LLVMCreateTargetData',
-    'LLVMCreateTargetDataLayout', 'LLVMCreateTargetMachine',
-    'LLVMCreateTypeAttribute', 'LLVMDIArgListMetadataKind',
-    'LLVMDIBasicTypeMetadataKind', 'LLVMDIBuilderCreateArrayType',
-    'LLVMDIBuilderCreateArtificialType',
-    'LLVMDIBuilderCreateAutoVariable', 'LLVMDIBuilderCreateBasicType',
-    'LLVMDIBuilderCreateBitFieldMemberType',
-    'LLVMDIBuilderCreateClassType', 'LLVMDIBuilderCreateCompileUnit',
-    'LLVMDIBuilderCreateConstantValueExpression',
-    'LLVMDIBuilderCreateDebugLocation',
-    'LLVMDIBuilderCreateEnumerationType',
-    'LLVMDIBuilderCreateEnumerator', 'LLVMDIBuilderCreateExpression',
-    'LLVMDIBuilderCreateFile', 'LLVMDIBuilderCreateForwardDecl',
-    'LLVMDIBuilderCreateFunction',
-    'LLVMDIBuilderCreateGlobalVariableExpression',
-    'LLVMDIBuilderCreateImportedDeclaration',
-    'LLVMDIBuilderCreateImportedModuleFromAlias',
-    'LLVMDIBuilderCreateImportedModuleFromModule',
-    'LLVMDIBuilderCreateImportedModuleFromNamespace',
-    'LLVMDIBuilderCreateInheritance',
-    'LLVMDIBuilderCreateLexicalBlock',
-    'LLVMDIBuilderCreateLexicalBlockFile', 'LLVMDIBuilderCreateMacro',
-    'LLVMDIBuilderCreateMemberPointerType',
-    'LLVMDIBuilderCreateMemberType', 'LLVMDIBuilderCreateModule',
-    'LLVMDIBuilderCreateNameSpace', 'LLVMDIBuilderCreateNullPtrType',
-    'LLVMDIBuilderCreateObjCIVar', 'LLVMDIBuilderCreateObjCProperty',
-    'LLVMDIBuilderCreateObjectPointerType',
-    'LLVMDIBuilderCreateParameterVariable',
-    'LLVMDIBuilderCreatePointerType',
-    'LLVMDIBuilderCreateQualifiedType',
-    'LLVMDIBuilderCreateReferenceType',
-    'LLVMDIBuilderCreateReplaceableCompositeType',
-    'LLVMDIBuilderCreateStaticMemberType',
-    'LLVMDIBuilderCreateStructType',
-    'LLVMDIBuilderCreateSubroutineType',
-    'LLVMDIBuilderCreateTempGlobalVariableFwdDecl',
-    'LLVMDIBuilderCreateTempMacroFile', 'LLVMDIBuilderCreateTypedef',
-    'LLVMDIBuilderCreateUnionType',
-    'LLVMDIBuilderCreateUnspecifiedType',
-    'LLVMDIBuilderCreateVectorType', 'LLVMDIBuilderFinalize',
-    'LLVMDIBuilderFinalizeSubprogram',
-    'LLVMDIBuilderGetOrCreateArray',
-    'LLVMDIBuilderGetOrCreateSubrange',
-    'LLVMDIBuilderGetOrCreateTypeArray',
-    'LLVMDIBuilderInsertDbgValueAtEnd',
-    'LLVMDIBuilderInsertDbgValueBefore',
-    'LLVMDIBuilderInsertDeclareAtEnd',
-    'LLVMDIBuilderInsertDeclareBefore', 'LLVMDIBuilderRef',
-    'LLVMDICommonBlockMetadataKind', 'LLVMDICompileUnitMetadataKind',
-    'LLVMDICompositeTypeMetadataKind',
-    'LLVMDIDerivedTypeMetadataKind', 'LLVMDIEnumeratorMetadataKind',
-    'LLVMDIExpressionMetadataKind', 'LLVMDIFileGetDirectory',
-    'LLVMDIFileGetFilename', 'LLVMDIFileGetSource',
-    'LLVMDIFileMetadataKind', 'LLVMDIFlagAccessibility',
-    'LLVMDIFlagAppleBlock', 'LLVMDIFlagArtificial',
-    'LLVMDIFlagBigEndian', 'LLVMDIFlagBitField',
-    'LLVMDIFlagEnumClass', 'LLVMDIFlagExplicit',
-    'LLVMDIFlagFixedEnum', 'LLVMDIFlagFwdDecl',
-    'LLVMDIFlagIndirectVirtualBase', 'LLVMDIFlagIntroducedVirtual',
-    'LLVMDIFlagLValueReference', 'LLVMDIFlagLittleEndian',
-    'LLVMDIFlagMultipleInheritance', 'LLVMDIFlagNoReturn',
-    'LLVMDIFlagNonTrivial', 'LLVMDIFlagObjcClassComplete',
-    'LLVMDIFlagObjectPointer', 'LLVMDIFlagPrivate',
-    'LLVMDIFlagProtected', 'LLVMDIFlagPrototyped',
-    'LLVMDIFlagPtrToMemberRep', 'LLVMDIFlagPublic',
-    'LLVMDIFlagRValueReference', 'LLVMDIFlagReserved',
-    'LLVMDIFlagReservedBit4', 'LLVMDIFlagSingleInheritance',
-    'LLVMDIFlagStaticMember', 'LLVMDIFlagThunk',
-    'LLVMDIFlagTypePassByReference', 'LLVMDIFlagTypePassByValue',
-    'LLVMDIFlagVector', 'LLVMDIFlagVirtual',
-    'LLVMDIFlagVirtualInheritance', 'LLVMDIFlagZero', 'LLVMDIFlags',
-    'LLVMDIFlags__enumvalues', 'LLVMDIGenericSubrangeMetadataKind',
-    'LLVMDIGlobalVariableExpressionGetExpression',
-    'LLVMDIGlobalVariableExpressionGetVariable',
-    'LLVMDIGlobalVariableExpressionMetadataKind',
-    'LLVMDIGlobalVariableMetadataKind',
-    'LLVMDIImportedEntityMetadataKind', 'LLVMDILabelMetadataKind',
-    'LLVMDILexicalBlockFileMetadataKind',
-    'LLVMDILexicalBlockMetadataKind',
-    'LLVMDILocalVariableMetadataKind', 'LLVMDILocationGetColumn',
-    'LLVMDILocationGetInlinedAt', 'LLVMDILocationGetLine',
-    'LLVMDILocationGetScope', 'LLVMDILocationMetadataKind',
-    'LLVMDIMacroFileMetadataKind', 'LLVMDIMacroMetadataKind',
-    'LLVMDIModuleMetadataKind', 'LLVMDINamespaceMetadataKind',
-    'LLVMDIObjCPropertyMetadataKind', 'LLVMDIScopeGetFile',
-    'LLVMDIStringTypeMetadataKind', 'LLVMDISubprogramGetLine',
-    'LLVMDISubprogramMetadataKind', 'LLVMDISubrangeMetadataKind',
-    'LLVMDISubroutineTypeMetadataKind',
-    'LLVMDITemplateTypeParameterMetadataKind',
-    'LLVMDITemplateValueParameterMetadataKind',
-    'LLVMDITypeGetAlignInBits', 'LLVMDITypeGetFlags',
-    'LLVMDITypeGetLine', 'LLVMDITypeGetName',
-    'LLVMDITypeGetOffsetInBits', 'LLVMDITypeGetSizeInBits',
-    'LLVMDIVariableGetFile', 'LLVMDIVariableGetLine',
-    'LLVMDIVariableGetScope', 'LLVMDLLExportLinkage',
-    'LLVMDLLExportStorageClass', 'LLVMDLLImportLinkage',
-    'LLVMDLLImportStorageClass', 'LLVMDLLStorageClass',
-    'LLVMDLLStorageClass__enumvalues', 'LLVMDSError', 'LLVMDSNote',
-    'LLVMDSRemark', 'LLVMDSWarning', 'LLVMDWARFEmissionFull',
-    'LLVMDWARFEmissionKind', 'LLVMDWARFEmissionKind__enumvalues',
-    'LLVMDWARFEmissionLineTablesOnly', 'LLVMDWARFEmissionNone',
-    'LLVMDWARFMacinfoRecordType', 'LLVMDWARFMacinfoRecordTypeDefine',
-    'LLVMDWARFMacinfoRecordTypeEndFile',
-    'LLVMDWARFMacinfoRecordTypeMacro',
-    'LLVMDWARFMacinfoRecordTypeStartFile',
-    'LLVMDWARFMacinfoRecordTypeVendorExt',
-    'LLVMDWARFMacinfoRecordType__enumvalues',
-    'LLVMDWARFSourceLanguage', 'LLVMDWARFSourceLanguageAda83',
-    'LLVMDWARFSourceLanguageAda95', 'LLVMDWARFSourceLanguageBLISS',
-    'LLVMDWARFSourceLanguageBORLAND_Delphi',
-    'LLVMDWARFSourceLanguageC', 'LLVMDWARFSourceLanguageC11',
-    'LLVMDWARFSourceLanguageC89', 'LLVMDWARFSourceLanguageC99',
-    'LLVMDWARFSourceLanguageC_plus_plus',
-    'LLVMDWARFSourceLanguageC_plus_plus_03',
-    'LLVMDWARFSourceLanguageC_plus_plus_11',
-    'LLVMDWARFSourceLanguageC_plus_plus_14',
-    'LLVMDWARFSourceLanguageCobol74',
-    'LLVMDWARFSourceLanguageCobol85', 'LLVMDWARFSourceLanguageD',
-    'LLVMDWARFSourceLanguageDylan',
-    'LLVMDWARFSourceLanguageFortran03',
-    'LLVMDWARFSourceLanguageFortran08',
-    'LLVMDWARFSourceLanguageFortran77',
-    'LLVMDWARFSourceLanguageFortran90',
-    'LLVMDWARFSourceLanguageFortran95',
-    'LLVMDWARFSourceLanguageGOOGLE_RenderScript',
-    'LLVMDWARFSourceLanguageGo', 'LLVMDWARFSourceLanguageHaskell',
-    'LLVMDWARFSourceLanguageJava', 'LLVMDWARFSourceLanguageJulia',
-    'LLVMDWARFSourceLanguageMips_Assembler',
-    'LLVMDWARFSourceLanguageModula2',
-    'LLVMDWARFSourceLanguageModula3', 'LLVMDWARFSourceLanguageOCaml',
-    'LLVMDWARFSourceLanguageObjC',
-    'LLVMDWARFSourceLanguageObjC_plus_plus',
-    'LLVMDWARFSourceLanguageOpenCL', 'LLVMDWARFSourceLanguagePLI',
-    'LLVMDWARFSourceLanguagePascal83',
-    'LLVMDWARFSourceLanguagePython',
-    'LLVMDWARFSourceLanguageRenderScript',
-    'LLVMDWARFSourceLanguageRust', 'LLVMDWARFSourceLanguageSwift',
-    'LLVMDWARFSourceLanguageUPC',
-    'LLVMDWARFSourceLanguage__enumvalues', 'LLVMDWARFTypeEncoding',
-    'LLVMDebugMetadataVersion', 'LLVMDefaultStorageClass',
-    'LLVMDefaultVisibility', 'LLVMDeleteBasicBlock',
-    'LLVMDeleteFunction', 'LLVMDeleteGlobal', 'LLVMDiagnosticHandler',
-    'LLVMDiagnosticInfoRef', 'LLVMDiagnosticSeverity',
-    'LLVMDiagnosticSeverity__enumvalues', 'LLVMDisasmContextRef',
-    'LLVMDisasmDispose', 'LLVMDisasmInstruction',
-    'LLVMDisassembler_Option_AsmPrinterVariant',
-    'LLVMDisassembler_Option_PrintImmHex',
-    'LLVMDisassembler_Option_PrintLatency',
-    'LLVMDisassembler_Option_SetInstrComments',
-    'LLVMDisassembler_Option_UseMarkup',
-    'LLVMDisassembler_ReferenceType_DeMangled_Name',
-    'LLVMDisassembler_ReferenceType_InOut_None',
-    'LLVMDisassembler_ReferenceType_In_ARM64_ADDXri',
-    'LLVMDisassembler_ReferenceType_In_ARM64_ADR',
-    'LLVMDisassembler_ReferenceType_In_ARM64_ADRP',
-    'LLVMDisassembler_ReferenceType_In_ARM64_LDRXl',
-    'LLVMDisassembler_ReferenceType_In_ARM64_LDRXui',
-    'LLVMDisassembler_ReferenceType_In_Branch',
-    'LLVMDisassembler_ReferenceType_In_PCrel_Load',
-    'LLVMDisassembler_ReferenceType_Out_LitPool_CstrAddr',
-    'LLVMDisassembler_ReferenceType_Out_LitPool_SymAddr',
-    'LLVMDisassembler_ReferenceType_Out_Objc_CFString_Ref',
-    'LLVMDisassembler_ReferenceType_Out_Objc_Class_Ref',
-    'LLVMDisassembler_ReferenceType_Out_Objc_Message',
-    'LLVMDisassembler_ReferenceType_Out_Objc_Message_Ref',
-    'LLVMDisassembler_ReferenceType_Out_Objc_Selector_Ref',
-    'LLVMDisassembler_ReferenceType_Out_SymbolStub',
-    'LLVMDisassembler_VariantKind_ARM64_GOTPAGE',
-    'LLVMDisassembler_VariantKind_ARM64_GOTPAGEOFF',
-    'LLVMDisassembler_VariantKind_ARM64_PAGE',
-    'LLVMDisassembler_VariantKind_ARM64_PAGEOFF',
-    'LLVMDisassembler_VariantKind_ARM64_TLVOFF',
-    'LLVMDisassembler_VariantKind_ARM64_TLVP',
-    'LLVMDisassembler_VariantKind_ARM_HI16',
-    'LLVMDisassembler_VariantKind_ARM_LO16',
-    'LLVMDisassembler_VariantKind_None', 'LLVMDisposeBinary',
-    'LLVMDisposeBuilder', 'LLVMDisposeDIBuilder',
-    'LLVMDisposeErrorMessage', 'LLVMDisposeExecutionEngine',
-    'LLVMDisposeGenericValue', 'LLVMDisposeMCJITMemoryManager',
-    'LLVMDisposeMemoryBuffer', 'LLVMDisposeMessage',
-    'LLVMDisposeModule', 'LLVMDisposeModuleFlagsMetadata',
-    'LLVMDisposeModuleProvider', 'LLVMDisposeObjectFile',
-    'LLVMDisposePassBuilderOptions', 'LLVMDisposePassManager',
-    'LLVMDisposeRelocationIterator', 'LLVMDisposeSectionIterator',
-    'LLVMDisposeSymbolIterator', 'LLVMDisposeTargetData',
-    'LLVMDisposeTargetMachine', 'LLVMDisposeTemporaryMDNode',
-    'LLVMDisposeValueMetadataEntries',
-    'LLVMDistinctMDOperandPlaceholderMetadataKind', 'LLVMDoubleType',
-    'LLVMDoubleTypeInContext', 'LLVMDoubleTypeKind', 'LLVMDumpModule',
-    'LLVMDumpType', 'LLVMDumpValue', 'LLVMElementAtOffset',
-    'LLVMEnablePrettyStackTrace', 'LLVMEraseGlobalIFunc',
-    'LLVMErrorRef', 'LLVMErrorSuccess', 'LLVMErrorTypeId',
-    'LLVMExactMatchComdatSelectionKind',
-    'LLVMExecutionEngineGetErrMsg', 'LLVMExecutionEngineRef',
-    'LLVMExternalLinkage', 'LLVMExternalWeakLinkage',
-    'LLVMExtractElement', 'LLVMExtractValue', 'LLVMFAdd', 'LLVMFCmp',
-    'LLVMFDiv', 'LLVMFMul', 'LLVMFNeg', 'LLVMFP128Type',
-    'LLVMFP128TypeInContext', 'LLVMFP128TypeKind', 'LLVMFPExt',
-    'LLVMFPToSI', 'LLVMFPToUI', 'LLVMFPTrunc', 'LLVMFRem', 'LLVMFSub',
-    'LLVMFastCallConv', 'LLVMFatalErrorHandler', 'LLVMFence',
-    'LLVMFinalizeFunctionPassManager', 'LLVMFindFunction',
-    'LLVMFloatType', 'LLVMFloatTypeInContext', 'LLVMFloatTypeKind',
-    'LLVMFreeMachineCodeForFunction', 'LLVMFreeze',
-    'LLVMFunctionType', 'LLVMFunctionTypeKind',
-    'LLVMFunctionValueKind', 'LLVMGHCCallConv',
-    'LLVMGeneralDynamicTLSModel', 'LLVMGenericDINodeMetadataKind',
-    'LLVMGenericValueIntWidth', 'LLVMGenericValueRef',
-    'LLVMGenericValueToFloat', 'LLVMGenericValueToInt',
-    'LLVMGenericValueToPointer', 'LLVMGetAlignment',
-    'LLVMGetAllocatedType', 'LLVMGetArgOperand', 'LLVMGetArrayLength',
-    'LLVMGetAsString', 'LLVMGetAtomicRMWBinOp',
-    'LLVMGetAttributeCountAtIndex', 'LLVMGetAttributesAtIndex',
-    'LLVMGetBasicBlockName', 'LLVMGetBasicBlockParent',
-    'LLVMGetBasicBlockTerminator', 'LLVMGetBasicBlocks',
-    'LLVMGetBitcodeModule', 'LLVMGetBitcodeModule2',
-    'LLVMGetBitcodeModuleInContext', 'LLVMGetBitcodeModuleInContext2',
-    'LLVMGetBufferSize', 'LLVMGetBufferStart',
-    'LLVMGetCallSiteAttributeCount', 'LLVMGetCallSiteAttributes',
-    'LLVMGetCallSiteEnumAttribute', 'LLVMGetCallSiteStringAttribute',
-    'LLVMGetCalledFunctionType', 'LLVMGetCalledValue',
-    'LLVMGetClause', 'LLVMGetCmpXchgFailureOrdering',
-    'LLVMGetCmpXchgSuccessOrdering', 'LLVMGetComdat',
-    'LLVMGetComdatSelectionKind', 'LLVMGetCondition',
-    'LLVMGetConstOpcode', 'LLVMGetCurrentDebugLocation',
-    'LLVMGetCurrentDebugLocation2', 'LLVMGetDLLStorageClass',
-    'LLVMGetDataLayout', 'LLVMGetDataLayoutStr',
-    'LLVMGetDebugLocColumn', 'LLVMGetDebugLocDirectory',
-    'LLVMGetDebugLocFilename', 'LLVMGetDebugLocLine',
-    'LLVMGetDefaultTargetTriple', 'LLVMGetDiagInfoDescription',
-    'LLVMGetDiagInfoSeverity', 'LLVMGetElementAsConstant',
-    'LLVMGetElementPtr', 'LLVMGetElementType',
-    'LLVMGetEntryBasicBlock', 'LLVMGetEnumAttributeAtIndex',
-    'LLVMGetEnumAttributeKind', 'LLVMGetEnumAttributeKindForName',
-    'LLVMGetEnumAttributeValue', 'LLVMGetErrorMessage',
-    'LLVMGetErrorTypeId', 'LLVMGetExecutionEngineTargetData',
-    'LLVMGetExecutionEngineTargetMachine', 'LLVMGetFCmpPredicate',
-    'LLVMGetFirstBasicBlock', 'LLVMGetFirstFunction',
-    'LLVMGetFirstGlobal', 'LLVMGetFirstGlobalAlias',
-    'LLVMGetFirstGlobalIFunc', 'LLVMGetFirstInstruction',
-    'LLVMGetFirstNamedMetadata', 'LLVMGetFirstParam',
-    'LLVMGetFirstTarget', 'LLVMGetFirstUse', 'LLVMGetFunctionAddress',
-    'LLVMGetFunctionCallConv', 'LLVMGetGC',
-    'LLVMGetGEPSourceElementType', 'LLVMGetGlobalContext',
-    'LLVMGetGlobalIFuncResolver', 'LLVMGetGlobalParent',
-    'LLVMGetGlobalPassRegistry', 'LLVMGetGlobalValueAddress',
-    'LLVMGetHandlers', 'LLVMGetHostCPUFeatures', 'LLVMGetHostCPUName',
-    'LLVMGetICmpPredicate', 'LLVMGetIncomingBlock',
-    'LLVMGetIncomingValue', 'LLVMGetIndices', 'LLVMGetInitializer',
-    'LLVMGetInlineAsm', 'LLVMGetInsertBlock',
-    'LLVMGetInstructionCallConv', 'LLVMGetInstructionOpcode',
-    'LLVMGetInstructionParent', 'LLVMGetIntTypeWidth',
-    'LLVMGetIntrinsicDeclaration', 'LLVMGetIntrinsicID',
-    'LLVMGetLastBasicBlock', 'LLVMGetLastEnumAttributeKind',
-    'LLVMGetLastFunction', 'LLVMGetLastGlobal',
-    'LLVMGetLastGlobalAlias', 'LLVMGetLastGlobalIFunc',
-    'LLVMGetLastInstruction', 'LLVMGetLastNamedMetadata',
-    'LLVMGetLastParam', 'LLVMGetLinkage', 'LLVMGetMDKindID',
-    'LLVMGetMDKindIDInContext', 'LLVMGetMDNodeNumOperands',
-    'LLVMGetMDNodeOperands', 'LLVMGetMDString', 'LLVMGetMaskValue',
-    'LLVMGetMetadata', 'LLVMGetMetadataKind', 'LLVMGetModuleContext',
-    'LLVMGetModuleDataLayout', 'LLVMGetModuleDebugMetadataVersion',
-    'LLVMGetModuleFlag', 'LLVMGetModuleIdentifier',
-    'LLVMGetModuleInlineAsm', 'LLVMGetNamedFunction',
-    'LLVMGetNamedGlobal', 'LLVMGetNamedGlobalAlias',
-    'LLVMGetNamedGlobalIFunc', 'LLVMGetNamedMetadata',
-    'LLVMGetNamedMetadataName', 'LLVMGetNamedMetadataNumOperands',
-    'LLVMGetNamedMetadataOperands', 'LLVMGetNextBasicBlock',
-    'LLVMGetNextFunction', 'LLVMGetNextGlobal',
-    'LLVMGetNextGlobalAlias', 'LLVMGetNextGlobalIFunc',
-    'LLVMGetNextInstruction', 'LLVMGetNextNamedMetadata',
-    'LLVMGetNextParam', 'LLVMGetNextTarget', 'LLVMGetNextUse',
-    'LLVMGetNormalDest', 'LLVMGetNumArgOperands', 'LLVMGetNumClauses',
-    'LLVMGetNumContainedTypes', 'LLVMGetNumHandlers',
-    'LLVMGetNumIndices', 'LLVMGetNumMaskElements',
-    'LLVMGetNumOperands', 'LLVMGetNumSuccessors', 'LLVMGetOperand',
-    'LLVMGetOperandUse', 'LLVMGetOrInsertComdat',
-    'LLVMGetOrInsertNamedMetadata', 'LLVMGetOrdering', 'LLVMGetParam',
-    'LLVMGetParamParent', 'LLVMGetParamTypes', 'LLVMGetParams',
-    'LLVMGetParentCatchSwitch', 'LLVMGetPersonalityFn',
-    'LLVMGetPointerAddressSpace', 'LLVMGetPointerToGlobal',
-    'LLVMGetPoison', 'LLVMGetPreviousBasicBlock',
-    'LLVMGetPreviousFunction', 'LLVMGetPreviousGlobal',
-    'LLVMGetPreviousGlobalAlias', 'LLVMGetPreviousGlobalIFunc',
-    'LLVMGetPreviousInstruction', 'LLVMGetPreviousNamedMetadata',
-    'LLVMGetPreviousParam', 'LLVMGetRelocationOffset',
-    'LLVMGetRelocationSymbol', 'LLVMGetRelocationType',
-    'LLVMGetRelocationTypeName', 'LLVMGetRelocationValueString',
-    'LLVMGetRelocations', 'LLVMGetReturnType', 'LLVMGetSection',
-    'LLVMGetSectionAddress', 'LLVMGetSectionContainsSymbol',
-    'LLVMGetSectionContents', 'LLVMGetSectionName',
-    'LLVMGetSectionSize', 'LLVMGetSections', 'LLVMGetSourceFileName',
-    'LLVMGetStringAttributeAtIndex', 'LLVMGetStringAttributeKind',
-    'LLVMGetStringAttributeValue', 'LLVMGetStringErrorTypeId',
-    'LLVMGetStructElementTypes', 'LLVMGetStructName',
-    'LLVMGetSubprogram', 'LLVMGetSubtypes', 'LLVMGetSuccessor',
-    'LLVMGetSwitchDefaultDest', 'LLVMGetSymbolAddress',
-    'LLVMGetSymbolName', 'LLVMGetSymbolSize', 'LLVMGetSymbols',
-    'LLVMGetTarget', 'LLVMGetTargetDescription',
-    'LLVMGetTargetFromName', 'LLVMGetTargetFromTriple',
-    'LLVMGetTargetMachineCPU', 'LLVMGetTargetMachineFeatureString',
-    'LLVMGetTargetMachineTarget', 'LLVMGetTargetMachineTriple',
-    'LLVMGetTargetName', 'LLVMGetThreadLocalMode',
-    'LLVMGetTypeAttributeValue', 'LLVMGetTypeByName',
-    'LLVMGetTypeByName2', 'LLVMGetTypeContext', 'LLVMGetTypeKind',
-    'LLVMGetUndef', 'LLVMGetUndefMaskElem', 'LLVMGetUnnamedAddress',
-    'LLVMGetUnwindDest', 'LLVMGetUsedValue', 'LLVMGetUser',
-    'LLVMGetValueKind', 'LLVMGetValueName', 'LLVMGetValueName2',
-    'LLVMGetVectorSize', 'LLVMGetVisibility', 'LLVMGetVolatile',
-    'LLVMGetWeak', 'LLVMGhostLinkage', 'LLVMGlobalAliasValueKind',
-    'LLVMGlobalClearMetadata', 'LLVMGlobalCopyAllMetadata',
-    'LLVMGlobalEraseMetadata', 'LLVMGlobalGetValueType',
-    'LLVMGlobalIFuncValueKind', 'LLVMGlobalSetMetadata',
-    'LLVMGlobalUnnamedAddr', 'LLVMGlobalVariableValueKind',
-    'LLVMHHVMCCallConv', 'LLVMHHVMCallConv', 'LLVMHalfType',
-    'LLVMHalfTypeInContext', 'LLVMHalfTypeKind', 'LLVMHasMetadata',
-    'LLVMHasPersonalityFn', 'LLVMHasUnnamedAddr', 'LLVMHiPECallConv',
-    'LLVMHiddenVisibility', 'LLVMICmp', 'LLVMIndirectBr',
-    'LLVMInitialExecTLSModel', 'LLVMInitializeAArch64AsmParser',
-    'LLVMInitializeAArch64AsmPrinter',
-    'LLVMInitializeAArch64Disassembler',
-    'LLVMInitializeAArch64Target', 'LLVMInitializeAArch64TargetInfo',
-    'LLVMInitializeAArch64TargetMC', 'LLVMInitializeAMDGPUAsmParser',
-    'LLVMInitializeAMDGPUAsmPrinter',
-    'LLVMInitializeAMDGPUDisassembler', 'LLVMInitializeAMDGPUTarget',
-    'LLVMInitializeAMDGPUTargetInfo', 'LLVMInitializeAMDGPUTargetMC',
-    'LLVMInitializeARMAsmParser', 'LLVMInitializeARMAsmPrinter',
-    'LLVMInitializeARMDisassembler', 'LLVMInitializeARMTarget',
-    'LLVMInitializeARMTargetInfo', 'LLVMInitializeARMTargetMC',
-    'LLVMInitializeAVRAsmParser', 'LLVMInitializeAVRAsmPrinter',
-    'LLVMInitializeAVRDisassembler', 'LLVMInitializeAVRTarget',
-    'LLVMInitializeAVRTargetInfo', 'LLVMInitializeAVRTargetMC',
-    'LLVMInitializeAggressiveInstCombiner',
-    'LLVMInitializeAllAsmParsers', 'LLVMInitializeAllAsmPrinters',
-    'LLVMInitializeAllDisassemblers', 'LLVMInitializeAllTargetInfos',
-    'LLVMInitializeAllTargetMCs', 'LLVMInitializeAllTargets',
-    'LLVMInitializeAnalysis', 'LLVMInitializeBPFAsmParser',
-    'LLVMInitializeBPFAsmPrinter', 'LLVMInitializeBPFDisassembler',
-    'LLVMInitializeBPFTarget', 'LLVMInitializeBPFTargetInfo',
-    'LLVMInitializeBPFTargetMC', 'LLVMInitializeCodeGen',
-    'LLVMInitializeCore', 'LLVMInitializeFunctionPassManager',
-    'LLVMInitializeHexagonAsmParser',
-    'LLVMInitializeHexagonAsmPrinter',
-    'LLVMInitializeHexagonDisassembler',
-    'LLVMInitializeHexagonTarget', 'LLVMInitializeHexagonTargetInfo',
-    'LLVMInitializeHexagonTargetMC', 'LLVMInitializeIPA',
-    'LLVMInitializeIPO', 'LLVMInitializeInstCombine',
-    'LLVMInitializeInstrumentation', 'LLVMInitializeLanaiAsmParser',
-    'LLVMInitializeLanaiAsmPrinter',
-    'LLVMInitializeLanaiDisassembler', 'LLVMInitializeLanaiTarget',
-    'LLVMInitializeLanaiTargetInfo', 'LLVMInitializeLanaiTargetMC',
-    'LLVMInitializeM68kAsmParser', 'LLVMInitializeM68kAsmPrinter',
-    'LLVMInitializeM68kDisassembler', 'LLVMInitializeM68kTarget',
-    'LLVMInitializeM68kTargetInfo', 'LLVMInitializeM68kTargetMC',
-    'LLVMInitializeMCJITCompilerOptions',
-    'LLVMInitializeMSP430AsmParser', 'LLVMInitializeMSP430AsmPrinter',
-    'LLVMInitializeMSP430Disassembler', 'LLVMInitializeMSP430Target',
-    'LLVMInitializeMSP430TargetInfo', 'LLVMInitializeMSP430TargetMC',
-    'LLVMInitializeMipsAsmParser', 'LLVMInitializeMipsAsmPrinter',
-    'LLVMInitializeMipsDisassembler', 'LLVMInitializeMipsTarget',
-    'LLVMInitializeMipsTargetInfo', 'LLVMInitializeMipsTargetMC',
-    'LLVMInitializeNVPTXAsmPrinter', 'LLVMInitializeNVPTXTarget',
-    'LLVMInitializeNVPTXTargetInfo', 'LLVMInitializeNVPTXTargetMC',
-    'LLVMInitializeNativeAsmParser', 'LLVMInitializeNativeAsmPrinter',
-    'LLVMInitializeNativeDisassembler', 'LLVMInitializeNativeTarget',
-    'LLVMInitializeObjCARCOpts', 'LLVMInitializePowerPCAsmParser',
-    'LLVMInitializePowerPCAsmPrinter',
-    'LLVMInitializePowerPCDisassembler',
-    'LLVMInitializePowerPCTarget', 'LLVMInitializePowerPCTargetInfo',
-    'LLVMInitializePowerPCTargetMC', 'LLVMInitializeRISCVAsmParser',
-    'LLVMInitializeRISCVAsmPrinter',
-    'LLVMInitializeRISCVDisassembler', 'LLVMInitializeRISCVTarget',
-    'LLVMInitializeRISCVTargetInfo', 'LLVMInitializeRISCVTargetMC',
-    'LLVMInitializeScalarOpts', 'LLVMInitializeSparcAsmParser',
-    'LLVMInitializeSparcAsmPrinter',
-    'LLVMInitializeSparcDisassembler', 'LLVMInitializeSparcTarget',
-    'LLVMInitializeSparcTargetInfo', 'LLVMInitializeSparcTargetMC',
-    'LLVMInitializeSystemZAsmParser',
-    'LLVMInitializeSystemZAsmPrinter',
-    'LLVMInitializeSystemZDisassembler',
-    'LLVMInitializeSystemZTarget', 'LLVMInitializeSystemZTargetInfo',
-    'LLVMInitializeSystemZTargetMC', 'LLVMInitializeTarget',
-    'LLVMInitializeTransformUtils', 'LLVMInitializeVEAsmParser',
-    'LLVMInitializeVEAsmPrinter', 'LLVMInitializeVEDisassembler',
-    'LLVMInitializeVETarget', 'LLVMInitializeVETargetInfo',
-    'LLVMInitializeVETargetMC', 'LLVMInitializeVectorization',
-    'LLVMInitializeWebAssemblyAsmParser',
-    'LLVMInitializeWebAssemblyAsmPrinter',
-    'LLVMInitializeWebAssemblyDisassembler',
-    'LLVMInitializeWebAssemblyTarget',
-    'LLVMInitializeWebAssemblyTargetInfo',
-    'LLVMInitializeWebAssemblyTargetMC', 'LLVMInitializeX86AsmParser',
-    'LLVMInitializeX86AsmPrinter', 'LLVMInitializeX86Disassembler',
-    'LLVMInitializeX86Target', 'LLVMInitializeX86TargetInfo',
-    'LLVMInitializeX86TargetMC', 'LLVMInitializeXCoreAsmPrinter',
-    'LLVMInitializeXCoreDisassembler', 'LLVMInitializeXCoreTarget',
-    'LLVMInitializeXCoreTargetInfo', 'LLVMInitializeXCoreTargetMC',
-    'LLVMInlineAsmDialect', 'LLVMInlineAsmDialectATT',
-    'LLVMInlineAsmDialectIntel', 'LLVMInlineAsmDialect__enumvalues',
-    'LLVMInlineAsmValueKind', 'LLVMInsertBasicBlock',
-    'LLVMInsertBasicBlockInContext', 'LLVMInsertElement',
-    'LLVMInsertExistingBasicBlockAfterInsertBlock',
-    'LLVMInsertIntoBuilder', 'LLVMInsertIntoBuilderWithName',
-    'LLVMInsertValue', 'LLVMInstallFatalErrorHandler',
-    'LLVMInstructionClone', 'LLVMInstructionEraseFromParent',
-    'LLVMInstructionGetAllMetadataOtherThanDebugLoc',
-    'LLVMInstructionGetDebugLoc', 'LLVMInstructionRemoveFromParent',
-    'LLVMInstructionSetDebugLoc', 'LLVMInstructionValueKind',
-    'LLVMInt128Type', 'LLVMInt128TypeInContext', 'LLVMInt16Type',
-    'LLVMInt16TypeInContext', 'LLVMInt1Type', 'LLVMInt1TypeInContext',
-    'LLVMInt32Type', 'LLVMInt32TypeInContext', 'LLVMInt64Type',
-    'LLVMInt64TypeInContext', 'LLVMInt8Type', 'LLVMInt8TypeInContext',
-    'LLVMIntEQ', 'LLVMIntNE', 'LLVMIntPredicate',
-    'LLVMIntPredicate__enumvalues', 'LLVMIntPtrType',
-    'LLVMIntPtrTypeForAS', 'LLVMIntPtrTypeForASInContext',
-    'LLVMIntPtrTypeInContext', 'LLVMIntSGE', 'LLVMIntSGT',
-    'LLVMIntSLE', 'LLVMIntSLT', 'LLVMIntToPtr', 'LLVMIntType',
-    'LLVMIntTypeInContext', 'LLVMIntUGE', 'LLVMIntUGT', 'LLVMIntULE',
-    'LLVMIntULT', 'LLVMIntegerTypeKind', 'LLVMIntelOCLBICallConv',
-    'LLVMInternalLinkage', 'LLVMIntrinsicCopyOverloadedName',
-    'LLVMIntrinsicCopyOverloadedName2', 'LLVMIntrinsicGetName',
-    'LLVMIntrinsicGetType', 'LLVMIntrinsicIsOverloaded', 'LLVMInvoke',
-    'LLVMIsAAddrSpaceCastInst', 'LLVMIsAAllocaInst',
-    'LLVMIsAArgument', 'LLVMIsAAtomicCmpXchgInst',
-    'LLVMIsAAtomicRMWInst', 'LLVMIsABasicBlock',
-    'LLVMIsABinaryOperator', 'LLVMIsABitCastInst',
-    'LLVMIsABlockAddress', 'LLVMIsABranchInst', 'LLVMIsACallBrInst',
-    'LLVMIsACallInst', 'LLVMIsACastInst', 'LLVMIsACatchPadInst',
-    'LLVMIsACatchReturnInst', 'LLVMIsACatchSwitchInst',
-    'LLVMIsACleanupPadInst', 'LLVMIsACleanupReturnInst',
-    'LLVMIsACmpInst', 'LLVMIsAConstant',
-    'LLVMIsAConstantAggregateZero', 'LLVMIsAConstantArray',
-    'LLVMIsAConstantDataArray', 'LLVMIsAConstantDataSequential',
-    'LLVMIsAConstantDataVector', 'LLVMIsAConstantExpr',
-    'LLVMIsAConstantFP', 'LLVMIsAConstantInt',
-    'LLVMIsAConstantPointerNull', 'LLVMIsAConstantStruct',
-    'LLVMIsAConstantTokenNone', 'LLVMIsAConstantVector',
-    'LLVMIsADbgDeclareInst', 'LLVMIsADbgInfoIntrinsic',
-    'LLVMIsADbgLabelInst', 'LLVMIsADbgVariableIntrinsic',
-    'LLVMIsAExtractElementInst', 'LLVMIsAExtractValueInst',
-    'LLVMIsAFCmpInst', 'LLVMIsAFPExtInst', 'LLVMIsAFPToSIInst',
-    'LLVMIsAFPToUIInst', 'LLVMIsAFPTruncInst', 'LLVMIsAFenceInst',
-    'LLVMIsAFreezeInst', 'LLVMIsAFuncletPadInst', 'LLVMIsAFunction',
-    'LLVMIsAGetElementPtrInst', 'LLVMIsAGlobalAlias',
-    'LLVMIsAGlobalIFunc', 'LLVMIsAGlobalObject', 'LLVMIsAGlobalValue',
-    'LLVMIsAGlobalVariable', 'LLVMIsAICmpInst',
-    'LLVMIsAIndirectBrInst', 'LLVMIsAInlineAsm',
-    'LLVMIsAInsertElementInst', 'LLVMIsAInsertValueInst',
-    'LLVMIsAInstruction', 'LLVMIsAIntToPtrInst',
-    'LLVMIsAIntrinsicInst', 'LLVMIsAInvokeInst',
-    'LLVMIsALandingPadInst', 'LLVMIsALoadInst', 'LLVMIsAMDNode',
-    'LLVMIsAMDString', 'LLVMIsAMemCpyInst', 'LLVMIsAMemIntrinsic',
-    'LLVMIsAMemMoveInst', 'LLVMIsAMemSetInst', 'LLVMIsAPHINode',
-    'LLVMIsAPoisonValue', 'LLVMIsAPtrToIntInst', 'LLVMIsAResumeInst',
-    'LLVMIsAReturnInst', 'LLVMIsASExtInst', 'LLVMIsASIToFPInst',
-    'LLVMIsASelectInst', 'LLVMIsAShuffleVectorInst',
-    'LLVMIsAStoreInst', 'LLVMIsASwitchInst', 'LLVMIsATerminatorInst',
-    'LLVMIsATruncInst', 'LLVMIsAUIToFPInst',
-    'LLVMIsAUnaryInstruction', 'LLVMIsAUnaryOperator',
-    'LLVMIsAUndefValue', 'LLVMIsAUnreachableInst', 'LLVMIsAUser',
-    'LLVMIsAVAArgInst', 'LLVMIsAZExtInst', 'LLVMIsAtomicSingleThread',
-    'LLVMIsCleanup', 'LLVMIsConditional', 'LLVMIsConstant',
-    'LLVMIsConstantString', 'LLVMIsDeclaration',
-    'LLVMIsEnumAttribute', 'LLVMIsExternallyInitialized',
-    'LLVMIsFunctionVarArg', 'LLVMIsGlobalConstant', 'LLVMIsInBounds',
-    'LLVMIsLiteralStruct', 'LLVMIsMultithreaded', 'LLVMIsNull',
-    'LLVMIsOpaqueStruct', 'LLVMIsPackedStruct', 'LLVMIsPoison',
-    'LLVMIsRelocationIteratorAtEnd', 'LLVMIsSectionIteratorAtEnd',
-    'LLVMIsStringAttribute', 'LLVMIsSymbolIteratorAtEnd',
-    'LLVMIsTailCall', 'LLVMIsThreadLocal', 'LLVMIsTypeAttribute',
-    'LLVMIsUndef', 'LLVMJITCSymbolMapPair', 'LLVMJITEvaluatedSymbol',
-    'LLVMJITEventListenerRef', 'LLVMJITSymbolFlags',
-    'LLVMJITSymbolGenericFlags', 'LLVMJITSymbolGenericFlagsCallable',
-    'LLVMJITSymbolGenericFlagsExported',
-    'LLVMJITSymbolGenericFlagsMaterializationSideEffectsOnly',
-    'LLVMJITSymbolGenericFlagsWeak',
-    'LLVMJITSymbolGenericFlags__enumvalues',
-    'LLVMJITSymbolTargetFlags', 'LLVMLShr', 'LLVMLabelType',
-    'LLVMLabelTypeInContext', 'LLVMLabelTypeKind', 'LLVMLandingPad',
-    'LLVMLandingPadCatch', 'LLVMLandingPadClauseTy',
-    'LLVMLandingPadClauseTy__enumvalues', 'LLVMLandingPadFilter',
-    'LLVMLargestComdatSelectionKind', 'LLVMLinkInInterpreter',
-    'LLVMLinkInMCJIT', 'LLVMLinkModules2', 'LLVMLinkOnceAnyLinkage',
-    'LLVMLinkOnceODRAutoHideLinkage', 'LLVMLinkOnceODRLinkage',
-    'LLVMLinkage', 'LLVMLinkage__enumvalues',
-    'LLVMLinkerDestroySource', 'LLVMLinkerMode',
-    'LLVMLinkerMode__enumvalues', 'LLVMLinkerPreserveSource_Removed',
-    'LLVMLinkerPrivateLinkage', 'LLVMLinkerPrivateWeakLinkage',
-    'LLVMLittleEndian', 'LLVMLoad', 'LLVMLoadLibraryPermanently',
-    'LLVMLocalAsMetadataMetadataKind', 'LLVMLocalDynamicTLSModel',
-    'LLVMLocalExecTLSModel', 'LLVMLocalUnnamedAddr',
-    'LLVMLookupIntrinsicID', 'LLVMMCJITMemoryManagerRef',
-    'LLVMMDNode', 'LLVMMDNodeInContext', 'LLVMMDNodeInContext2',
-    'LLVMMDString', 'LLVMMDStringInContext', 'LLVMMDStringInContext2',
-    'LLVMMDStringMetadataKind', 'LLVMMDTupleMetadataKind',
-    'LLVMMSP430BUILTINCallConv', 'LLVMMSP430INTRCallConv',
-    'LLVMMachOUniversalBinaryCopyObjectForArch',
-    'LLVMMemoryBufferRef', 'LLVMMemoryDefValueKind',
-    'LLVMMemoryManagerAllocateCodeSectionCallback',
-    'LLVMMemoryManagerAllocateDataSectionCallback',
-    'LLVMMemoryManagerDestroyCallback',
-    'LLVMMemoryManagerFinalizeMemoryCallback',
-    'LLVMMemoryPhiValueKind', 'LLVMMemoryUseValueKind',
-    'LLVMMetadataAsValue', 'LLVMMetadataAsValueValueKind',
-    'LLVMMetadataKind', 'LLVMMetadataRef',
-    'LLVMMetadataReplaceAllUsesWith', 'LLVMMetadataTypeInContext',
-    'LLVMMetadataTypeKind', 'LLVMModuleCreateWithName',
-    'LLVMModuleCreateWithNameInContext', 'LLVMModuleFlagBehavior',
-    'LLVMModuleFlagBehaviorAppend',
-    'LLVMModuleFlagBehaviorAppendUnique',
-    'LLVMModuleFlagBehaviorError', 'LLVMModuleFlagBehaviorOverride',
-    'LLVMModuleFlagBehaviorRequire', 'LLVMModuleFlagBehaviorWarning',
-    'LLVMModuleFlagBehavior__enumvalues',
-    'LLVMModuleFlagEntriesGetFlagBehavior',
-    'LLVMModuleFlagEntriesGetKey', 'LLVMModuleFlagEntriesGetMetadata',
-    'LLVMModuleFlagEntry', 'LLVMModuleProviderRef', 'LLVMModuleRef',
-    'LLVMMoveBasicBlockAfter', 'LLVMMoveBasicBlockBefore',
-    'LLVMMoveToContainingSection', 'LLVMMoveToNextRelocation',
-    'LLVMMoveToNextSection', 'LLVMMoveToNextSymbol', 'LLVMMul',
-    'LLVMNamedMDNodeRef', 'LLVMNoDeduplicateComdatSelectionKind',
-    'LLVMNoUnnamedAddr', 'LLVMNormalizeTargetTriple',
-    'LLVMNotThreadLocal', 'LLVMObjectFile',
-    'LLVMObjectFileCopySectionIterator',
-    'LLVMObjectFileCopySymbolIterator',
-    'LLVMObjectFileIsSectionIteratorAtEnd',
-    'LLVMObjectFileIsSymbolIteratorAtEnd', 'LLVMObjectFileRef',
-    'LLVMOffsetOfElement', 'LLVMOpInfoCallback', 'LLVMOpcode',
-    'LLVMOpcode__enumvalues', 'LLVMOr', 'LLVMOrcAbsoluteSymbols',
-    'LLVMOrcCAPIDefinitionGeneratorTryToGenerateFunction',
-    'LLVMOrcCDependenceMapPair', 'LLVMOrcCDependenceMapPairs',
-    'LLVMOrcCLookupSet', 'LLVMOrcCLookupSetElement',
-    'LLVMOrcCSymbolAliasMapEntry', 'LLVMOrcCSymbolAliasMapPair',
-    'LLVMOrcCSymbolAliasMapPairs', 'LLVMOrcCSymbolFlagsMapPair',
-    'LLVMOrcCSymbolFlagsMapPairs', 'LLVMOrcCSymbolMapPairs',
-    'LLVMOrcCSymbolsList',
-    'LLVMOrcCreateCustomCAPIDefinitionGenerator',
-    'LLVMOrcCreateCustomMaterializationUnit',
-    'LLVMOrcCreateDumpObjects',
-    'LLVMOrcCreateDynamicLibrarySearchGeneratorForPath',
-    'LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess',
-    'LLVMOrcCreateLLJIT', 'LLVMOrcCreateLLJITBuilder',
-    'LLVMOrcCreateLocalIndirectStubsManager',
-    'LLVMOrcCreateLocalLazyCallThroughManager',
-    'LLVMOrcCreateNewThreadSafeContext',
-    'LLVMOrcCreateNewThreadSafeModule',
-    'LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager',
-    'LLVMOrcCreateStaticLibrarySearchGeneratorForPath',
-    'LLVMOrcDefinitionGeneratorRef', 'LLVMOrcDisposeCSymbolFlagsMap',
-    'LLVMOrcDisposeDefinitionGenerator', 'LLVMOrcDisposeDumpObjects',
-    'LLVMOrcDisposeIndirectStubsManager',
-    'LLVMOrcDisposeJITTargetMachineBuilder', 'LLVMOrcDisposeLLJIT',
-    'LLVMOrcDisposeLLJITBuilder',
-    'LLVMOrcDisposeLazyCallThroughManager',
-    'LLVMOrcDisposeMaterializationResponsibility',
-    'LLVMOrcDisposeMaterializationUnit', 'LLVMOrcDisposeObjectLayer',
-    'LLVMOrcDisposeSymbols', 'LLVMOrcDisposeThreadSafeContext',
-    'LLVMOrcDisposeThreadSafeModule', 'LLVMOrcDumpObjectsRef',
-    'LLVMOrcDumpObjects_CallOperator', 'LLVMOrcErrorReporterFunction',
-    'LLVMOrcExecutionSessionCreateBareJITDylib',
-    'LLVMOrcExecutionSessionCreateJITDylib',
-    'LLVMOrcExecutionSessionGetJITDylibByName',
-    'LLVMOrcExecutionSessionGetSymbolStringPool',
-    'LLVMOrcExecutionSessionIntern', 'LLVMOrcExecutionSessionRef',
-    'LLVMOrcExecutionSessionSetErrorReporter',
-    'LLVMOrcExecutorAddress',
-    'LLVMOrcGenericIRModuleOperationFunction',
-    'LLVMOrcIRTransformLayerEmit', 'LLVMOrcIRTransformLayerRef',
-    'LLVMOrcIRTransformLayerSetTransform',
-    'LLVMOrcIRTransformLayerTransformFunction',
-    'LLVMOrcIndirectStubsManagerRef', 'LLVMOrcJITDylibAddGenerator',
-    'LLVMOrcJITDylibClear', 'LLVMOrcJITDylibCreateResourceTracker',
-    'LLVMOrcJITDylibDefine',
-    'LLVMOrcJITDylibGetDefaultResourceTracker',
-    'LLVMOrcJITDylibLookupFlags',
-    'LLVMOrcJITDylibLookupFlagsMatchAllSymbols',
-    'LLVMOrcJITDylibLookupFlagsMatchExportedSymbolsOnly',
-    'LLVMOrcJITDylibLookupFlags__enumvalues', 'LLVMOrcJITDylibRef',
-    'LLVMOrcJITTargetAddress',
-    'LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine',
-    'LLVMOrcJITTargetMachineBuilderDetectHost',
-    'LLVMOrcJITTargetMachineBuilderGetTargetTriple',
-    'LLVMOrcJITTargetMachineBuilderRef',
-    'LLVMOrcJITTargetMachineBuilderSetTargetTriple',
-    'LLVMOrcLLJITAddLLVMIRModule',
-    'LLVMOrcLLJITAddLLVMIRModuleWithRT', 'LLVMOrcLLJITAddObjectFile',
-    'LLVMOrcLLJITAddObjectFileWithRT',
-    'LLVMOrcLLJITBuilderObjectLinkingLayerCreatorFunction',
-    'LLVMOrcLLJITBuilderRef',
-    'LLVMOrcLLJITBuilderSetJITTargetMachineBuilder',
-    'LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator',
-    'LLVMOrcLLJITGetDataLayoutStr', 'LLVMOrcLLJITGetExecutionSession',
-    'LLVMOrcLLJITGetGlobalPrefix', 'LLVMOrcLLJITGetIRTransformLayer',
-    'LLVMOrcLLJITGetMainJITDylib', 'LLVMOrcLLJITGetObjLinkingLayer',
-    'LLVMOrcLLJITGetObjTransformLayer', 'LLVMOrcLLJITGetTripleString',
-    'LLVMOrcLLJITLookup', 'LLVMOrcLLJITMangleAndIntern',
-    'LLVMOrcLLJITRef', 'LLVMOrcLazyCallThroughManagerRef',
-    'LLVMOrcLazyReexports', 'LLVMOrcLookupKind',
-    'LLVMOrcLookupKindDLSym', 'LLVMOrcLookupKindStatic',
-    'LLVMOrcLookupKind__enumvalues', 'LLVMOrcLookupStateRef',
-    'LLVMOrcMaterializationResponsibilityAddDependencies',
-    'LLVMOrcMaterializationResponsibilityAddDependenciesForAll',
-    'LLVMOrcMaterializationResponsibilityDefineMaterializing',
-    'LLVMOrcMaterializationResponsibilityDelegate',
-    'LLVMOrcMaterializationResponsibilityFailMaterialization',
-    'LLVMOrcMaterializationResponsibilityGetExecutionSession',
-    'LLVMOrcMaterializationResponsibilityGetInitializerSymbol',
-    'LLVMOrcMaterializationResponsibilityGetRequestedSymbols',
-    'LLVMOrcMaterializationResponsibilityGetSymbols',
-    'LLVMOrcMaterializationResponsibilityGetTargetDylib',
-    'LLVMOrcMaterializationResponsibilityNotifyEmitted',
-    'LLVMOrcMaterializationResponsibilityNotifyResolved',
-    'LLVMOrcMaterializationResponsibilityRef',
-    'LLVMOrcMaterializationResponsibilityReplace',
-    'LLVMOrcMaterializationUnitDestroyFunction',
-    'LLVMOrcMaterializationUnitDiscardFunction',
-    'LLVMOrcMaterializationUnitMaterializeFunction',
-    'LLVMOrcMaterializationUnitRef',
-    'LLVMOrcObjectLayerAddObjectFile',
-    'LLVMOrcObjectLayerAddObjectFileWithRT', 'LLVMOrcObjectLayerEmit',
-    'LLVMOrcObjectLayerRef', 'LLVMOrcObjectLinkingLayerRef',
-    'LLVMOrcObjectTransformLayerRef',
-    'LLVMOrcObjectTransformLayerSetTransform',
-    'LLVMOrcObjectTransformLayerTransformFunction',
-    'LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener',
-    'LLVMOrcReleaseResourceTracker',
-    'LLVMOrcReleaseSymbolStringPoolEntry',
-    'LLVMOrcResourceTrackerRef', 'LLVMOrcResourceTrackerRemove',
-    'LLVMOrcResourceTrackerTransferTo',
-    'LLVMOrcRetainSymbolStringPoolEntry', 'LLVMOrcSymbolLookupFlags',
-    'LLVMOrcSymbolLookupFlagsRequiredSymbol',
-    'LLVMOrcSymbolLookupFlagsWeaklyReferencedSymbol',
-    'LLVMOrcSymbolLookupFlags__enumvalues', 'LLVMOrcSymbolPredicate',
-    'LLVMOrcSymbolStringPoolClearDeadEntries',
-    'LLVMOrcSymbolStringPoolEntryRef',
-    'LLVMOrcSymbolStringPoolEntryStr', 'LLVMOrcSymbolStringPoolRef',
-    'LLVMOrcThreadSafeContextGetContext',
-    'LLVMOrcThreadSafeContextRef', 'LLVMOrcThreadSafeModuleRef',
-    'LLVMOrcThreadSafeModuleWithModuleDo', 'LLVMPHI',
-    'LLVMPPCFP128Type', 'LLVMPPCFP128TypeInContext',
-    'LLVMPPC_FP128TypeKind', 'LLVMPTXDeviceCallConv',
-    'LLVMPTXKernelCallConv', 'LLVMParseBitcode', 'LLVMParseBitcode2',
-    'LLVMParseBitcodeInContext', 'LLVMParseBitcodeInContext2',
-    'LLVMParseCommandLineOptions', 'LLVMParseIRInContext',
-    'LLVMPassBuilderOptionsRef',
-    'LLVMPassBuilderOptionsSetCallGraphProfile',
-    'LLVMPassBuilderOptionsSetDebugLogging',
-    'LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll',
-    'LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap',
-    'LLVMPassBuilderOptionsSetLicmMssaOptCap',
-    'LLVMPassBuilderOptionsSetLoopInterleaving',
-    'LLVMPassBuilderOptionsSetLoopUnrolling',
-    'LLVMPassBuilderOptionsSetLoopVectorization',
-    'LLVMPassBuilderOptionsSetMergeFunctions',
-    'LLVMPassBuilderOptionsSetSLPVectorization',
-    'LLVMPassBuilderOptionsSetVerifyEach',
-    'LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints',
-    'LLVMPassManagerBuilderCreate', 'LLVMPassManagerBuilderDispose',
-    'LLVMPassManagerBuilderPopulateFunctionPassManager',
-    'LLVMPassManagerBuilderPopulateLTOPassManager',
-    'LLVMPassManagerBuilderPopulateModulePassManager',
-    'LLVMPassManagerBuilderRef',
-    'LLVMPassManagerBuilderSetDisableSimplifyLibCalls',
-    'LLVMPassManagerBuilderSetDisableUnitAtATime',
-    'LLVMPassManagerBuilderSetDisableUnrollLoops',
-    'LLVMPassManagerBuilderSetOptLevel',
-    'LLVMPassManagerBuilderSetSizeLevel',
-    'LLVMPassManagerBuilderUseInlinerWithThreshold',
-    'LLVMPassManagerRef', 'LLVMPassRegistryRef', 'LLVMPointerSize',
-    'LLVMPointerSizeForAS', 'LLVMPointerType', 'LLVMPointerTypeKind',
-    'LLVMPoisonValueValueKind', 'LLVMPositionBuilder',
-    'LLVMPositionBuilderAtEnd', 'LLVMPositionBuilderBefore',
-    'LLVMPreferredAlignmentOfGlobal', 'LLVMPreferredAlignmentOfType',
-    'LLVMPreserveAllCallConv', 'LLVMPreserveMostCallConv',
-    'LLVMPrintMessageAction', 'LLVMPrintModuleToFile',
-    'LLVMPrintModuleToString', 'LLVMPrintTypeToString',
-    'LLVMPrintValueToString', 'LLVMPrivateLinkage',
-    'LLVMProtectedVisibility', 'LLVMPtrToInt', 'LLVMRealOEQ',
-    'LLVMRealOGE', 'LLVMRealOGT', 'LLVMRealOLE', 'LLVMRealOLT',
-    'LLVMRealONE', 'LLVMRealORD', 'LLVMRealPredicate',
-    'LLVMRealPredicateFalse', 'LLVMRealPredicateTrue',
-    'LLVMRealPredicate__enumvalues', 'LLVMRealUEQ', 'LLVMRealUGE',
-    'LLVMRealUGT', 'LLVMRealULE', 'LLVMRealULT', 'LLVMRealUNE',
-    'LLVMRealUNO', 'LLVMRecompileAndRelinkFunction',
-    'LLVMRelocDefault', 'LLVMRelocDynamicNoPic', 'LLVMRelocMode',
-    'LLVMRelocMode__enumvalues', 'LLVMRelocPIC', 'LLVMRelocROPI',
-    'LLVMRelocROPI_RWPI', 'LLVMRelocRWPI', 'LLVMRelocStatic',
-    'LLVMRelocationIteratorRef', 'LLVMRemarkArgGetDebugLoc',
-    'LLVMRemarkArgGetKey', 'LLVMRemarkArgGetValue',
-    'LLVMRemarkArgRef', 'LLVMRemarkDebugLocGetSourceColumn',
-    'LLVMRemarkDebugLocGetSourceFilePath',
-    'LLVMRemarkDebugLocGetSourceLine', 'LLVMRemarkDebugLocRef',
-    'LLVMRemarkEntryDispose', 'LLVMRemarkEntryGetDebugLoc',
-    'LLVMRemarkEntryGetFirstArg', 'LLVMRemarkEntryGetFunctionName',
-    'LLVMRemarkEntryGetHotness', 'LLVMRemarkEntryGetNextArg',
-    'LLVMRemarkEntryGetNumArgs', 'LLVMRemarkEntryGetPassName',
-    'LLVMRemarkEntryGetRemarkName', 'LLVMRemarkEntryGetType',
-    'LLVMRemarkEntryRef', 'LLVMRemarkParserCreateBitstream',
-    'LLVMRemarkParserCreateYAML', 'LLVMRemarkParserDispose',
-    'LLVMRemarkParserGetErrorMessage', 'LLVMRemarkParserGetNext',
-    'LLVMRemarkParserHasError', 'LLVMRemarkParserRef',
-    'LLVMRemarkStringGetData', 'LLVMRemarkStringGetLen',
-    'LLVMRemarkStringRef', 'LLVMRemarkType', 'LLVMRemarkTypeAnalysis',
-    'LLVMRemarkTypeAnalysisAliasing',
-    'LLVMRemarkTypeAnalysisFPCommute', 'LLVMRemarkTypeFailure',
-    'LLVMRemarkTypeMissed', 'LLVMRemarkTypePassed',
-    'LLVMRemarkTypeUnknown', 'LLVMRemarkVersion',
-    'LLVMRemoveBasicBlockFromParent',
-    'LLVMRemoveCallSiteEnumAttribute',
-    'LLVMRemoveCallSiteStringAttribute',
-    'LLVMRemoveEnumAttributeAtIndex', 'LLVMRemoveGlobalIFunc',
-    'LLVMRemoveModule', 'LLVMRemoveStringAttributeAtIndex',
-    'LLVMReplaceAllUsesWith', 'LLVMResetFatalErrorHandler',
-    'LLVMResume', 'LLVMRet', 'LLVMReturnStatusAction',
-    'LLVMRunFunction', 'LLVMRunFunctionAsMain',
-    'LLVMRunFunctionPassManager', 'LLVMRunPassManager',
-    'LLVMRunPasses', 'LLVMRunStaticConstructors',
-    'LLVMRunStaticDestructors', 'LLVMSDiv', 'LLVMSExt', 'LLVMSIToFP',
-    'LLVMSPIRFUNCCallConv', 'LLVMSPIRKERNELCallConv', 'LLVMSRem',
-    'LLVMSameSizeComdatSelectionKind', 'LLVMScalableVectorType',
-    'LLVMScalableVectorTypeKind', 'LLVMSearchForAddressOfSymbol',
-    'LLVMSectionIteratorRef', 'LLVMSelect', 'LLVMSetAlignment',
-    'LLVMSetArgOperand', 'LLVMSetAtomicRMWBinOp',
-    'LLVMSetAtomicSingleThread', 'LLVMSetCleanup',
-    'LLVMSetCmpXchgFailureOrdering', 'LLVMSetCmpXchgSuccessOrdering',
-    'LLVMSetComdat', 'LLVMSetComdatSelectionKind', 'LLVMSetCondition',
-    'LLVMSetCurrentDebugLocation', 'LLVMSetCurrentDebugLocation2',
-    'LLVMSetDLLStorageClass', 'LLVMSetDataLayout',
-    'LLVMSetDisasmOptions', 'LLVMSetExternallyInitialized',
-    'LLVMSetFunctionCallConv', 'LLVMSetGC', 'LLVMSetGlobalConstant',
-    'LLVMSetGlobalIFuncResolver', 'LLVMSetInitializer',
-    'LLVMSetInstDebugLocation', 'LLVMSetInstrParamAlignment',
-    'LLVMSetInstructionCallConv', 'LLVMSetIsInBounds',
-    'LLVMSetLinkage', 'LLVMSetMetadata', 'LLVMSetModuleDataLayout',
-    'LLVMSetModuleIdentifier', 'LLVMSetModuleInlineAsm',
-    'LLVMSetModuleInlineAsm2', 'LLVMSetNormalDest', 'LLVMSetOperand',
-    'LLVMSetOrdering', 'LLVMSetParamAlignment',
-    'LLVMSetParentCatchSwitch', 'LLVMSetPersonalityFn',
-    'LLVMSetSection', 'LLVMSetSourceFileName', 'LLVMSetSubprogram',
-    'LLVMSetSuccessor', 'LLVMSetTailCall', 'LLVMSetTarget',
-    'LLVMSetTargetMachineAsmVerbosity', 'LLVMSetThreadLocal',
-    'LLVMSetThreadLocalMode', 'LLVMSetUnnamedAddr',
-    'LLVMSetUnnamedAddress', 'LLVMSetUnwindDest', 'LLVMSetValueName',
-    'LLVMSetValueName2', 'LLVMSetVisibility', 'LLVMSetVolatile',
-    'LLVMSetWeak', 'LLVMShl', 'LLVMShuffleVector', 'LLVMShutdown',
-    'LLVMSizeOf', 'LLVMSizeOfTypeInBits', 'LLVMStartMultithreaded',
-    'LLVMStopMultithreaded', 'LLVMStore', 'LLVMStoreSizeOfType',
-    'LLVMStripModuleDebugInfo', 'LLVMStructCreateNamed',
-    'LLVMStructGetTypeAtIndex', 'LLVMStructSetBody', 'LLVMStructType',
-    'LLVMStructTypeInContext', 'LLVMStructTypeKind', 'LLVMSub',
-    'LLVMSwiftCallConv', 'LLVMSwitch', 'LLVMSymbolIteratorRef',
-    'LLVMSymbolLookupCallback', 'LLVMTargetDataRef',
-    'LLVMTargetHasAsmBackend', 'LLVMTargetHasJIT',
-    'LLVMTargetHasTargetMachine', 'LLVMTargetLibraryInfoRef',
-    'LLVMTargetMachineEmitToFile',
-    'LLVMTargetMachineEmitToMemoryBuffer', 'LLVMTargetMachineRef',
-    'LLVMTargetRef', 'LLVMTemporaryMDNode', 'LLVMThreadLocalMode',
-    'LLVMThreadLocalMode__enumvalues', 'LLVMTokenTypeInContext',
-    'LLVMTokenTypeKind', 'LLVMTrunc', 'LLVMTypeIsSized',
-    'LLVMTypeKind', 'LLVMTypeKind__enumvalues', 'LLVMTypeOf',
-    'LLVMTypeRef', 'LLVMUDiv', 'LLVMUIToFP', 'LLVMURem',
-    'LLVMUndefValueValueKind', 'LLVMUnnamedAddr',
-    'LLVMUnnamedAddr__enumvalues', 'LLVMUnreachable', 'LLVMUseRef',
-    'LLVMUserOp1', 'LLVMUserOp2', 'LLVMVAArg',
-    'LLVMValueAsBasicBlock', 'LLVMValueAsMetadata',
-    'LLVMValueIsBasicBlock', 'LLVMValueKind',
-    'LLVMValueKind__enumvalues', 'LLVMValueMetadataEntriesGetKind',
-    'LLVMValueMetadataEntriesGetMetadata', 'LLVMValueMetadataEntry',
-    'LLVMValueRef', 'LLVMVectorType', 'LLVMVectorTypeKind',
-    'LLVMVerifierFailureAction',
-    'LLVMVerifierFailureAction__enumvalues', 'LLVMVerifyFunction',
-    'LLVMVerifyModule', 'LLVMViewFunctionCFG',
-    'LLVMViewFunctionCFGOnly', 'LLVMVisibility',
-    'LLVMVisibility__enumvalues', 'LLVMVoidType',
-    'LLVMVoidTypeInContext', 'LLVMVoidTypeKind', 'LLVMWeakAnyLinkage',
-    'LLVMWeakODRLinkage', 'LLVMWebKitJSCallConv', 'LLVMWin64CallConv',
-    'LLVMWriteBitcodeToFD', 'LLVMWriteBitcodeToFile',
-    'LLVMWriteBitcodeToFileHandle', 'LLVMWriteBitcodeToMemoryBuffer',
-    'LLVMX8664SysVCallConv', 'LLVMX86AMXType',
-    'LLVMX86AMXTypeInContext', 'LLVMX86FP80Type',
-    'LLVMX86FP80TypeInContext', 'LLVMX86FastcallCallConv',
-    'LLVMX86INTRCallConv', 'LLVMX86MMXType',
-    'LLVMX86MMXTypeInContext', 'LLVMX86RegCallCallConv',
-    'LLVMX86StdcallCallConv', 'LLVMX86ThisCallCallConv',
-    'LLVMX86VectorCallCallConv', 'LLVMX86_AMXTypeKind',
-    'LLVMX86_FP80TypeKind', 'LLVMX86_MMXTypeKind', 'LLVMXor',
-    'LLVMYieldCallback', 'LLVMZExt', 'LLVM_C_ANALYSIS_H',
-    'LLVM_C_BITREADER_H', 'LLVM_C_BITWRITER_H', 'LLVM_C_COMDAT_H',
-    'LLVM_C_CORE_H', 'LLVM_C_DATATYPES_H', 'LLVM_C_DEBUGINFO_H',
-    'LLVM_C_DEPRECATED_H', 'LLVM_C_DISASSEMBLERTYPES_H',
-    'LLVM_C_DISASSEMBLER_H', 'LLVM_C_ERRORHANDLING_H',
-    'LLVM_C_ERROR_H', 'LLVM_C_EXECUTIONENGINE_H', 'LLVM_C_EXTERNC_H',
-    'LLVM_C_INITIALIZATION_H', 'LLVM_C_IRREADER_H', 'LLVM_C_LINKER_H',
-    'LLVM_C_LLJIT_H', 'LLVM_C_LTO_H', 'LLVM_C_OBJECT_H',
-    'LLVM_C_ORCEE_H', 'LLVM_C_ORC_H', 'LLVM_C_REMARKS_H',
-    'LLVM_C_SUPPORT_H', 'LLVM_C_TARGETMACHINE_H', 'LLVM_C_TARGET_H',
-    'LLVM_C_TRANSFORMS_AGGRESSIVEINSTCOMBINE_H',
-    'LLVM_C_TRANSFORMS_COROUTINES_H',
-    'LLVM_C_TRANSFORMS_INSTCOMBINE_H', 'LLVM_C_TRANSFORMS_IPO_H',
-    'LLVM_C_TRANSFORMS_PASSBUILDER_H',
-    'LLVM_C_TRANSFORMS_PASSMANAGERBUILDER_H',
-    'LLVM_C_TRANSFORMS_SCALAR_H', 'LLVM_C_TRANSFORMS_UTILS_H',
-    'LLVM_C_TRANSFORMS_VECTORIZE_H', 'LLVM_C_TYPES_H',
-    'LTOObjectBuffer', 'LTO_API_VERSION',
-    'LTO_CODEGEN_PIC_MODEL_DEFAULT', 'LTO_CODEGEN_PIC_MODEL_DYNAMIC',
-    'LTO_CODEGEN_PIC_MODEL_DYNAMIC_NO_PIC',
-    'LTO_CODEGEN_PIC_MODEL_STATIC', 'LTO_DEBUG_MODEL_DWARF',
-    'LTO_DEBUG_MODEL_NONE', 'LTO_DS_ERROR', 'LTO_DS_NOTE',
-    'LTO_DS_REMARK', 'LTO_DS_WARNING', 'LTO_SYMBOL_ALIAS',
-    'LTO_SYMBOL_ALIGNMENT_MASK', 'LTO_SYMBOL_COMDAT',
-    'LTO_SYMBOL_DEFINITION_MASK', 'LTO_SYMBOL_DEFINITION_REGULAR',
-    'LTO_SYMBOL_DEFINITION_TENTATIVE',
-    'LTO_SYMBOL_DEFINITION_UNDEFINED', 'LTO_SYMBOL_DEFINITION_WEAK',
-    'LTO_SYMBOL_DEFINITION_WEAKUNDEF', 'LTO_SYMBOL_PERMISSIONS_CODE',
-    'LTO_SYMBOL_PERMISSIONS_DATA', 'LTO_SYMBOL_PERMISSIONS_MASK',
-    'LTO_SYMBOL_PERMISSIONS_RODATA', 'LTO_SYMBOL_SCOPE_DEFAULT',
-    'LTO_SYMBOL_SCOPE_DEFAULT_CAN_BE_HIDDEN',
-    'LTO_SYMBOL_SCOPE_HIDDEN', 'LTO_SYMBOL_SCOPE_INTERNAL',
-    'LTO_SYMBOL_SCOPE_MASK', 'LTO_SYMBOL_SCOPE_PROTECTED',
-    'REMARKS_API_VERSION', 'c__EA_LLVMAtomicOrdering',
-    'c__EA_LLVMAtomicRMWBinOp', 'c__EA_LLVMBinaryType',
-    'c__EA_LLVMCallConv', 'c__EA_LLVMCodeGenFileType',
-    'c__EA_LLVMCodeGenOptLevel', 'c__EA_LLVMCodeModel',
-    'c__EA_LLVMComdatSelectionKind', 'c__EA_LLVMDIFlags',
-    'c__EA_LLVMDLLStorageClass', 'c__EA_LLVMDWARFEmissionKind',
-    'c__EA_LLVMDWARFMacinfoRecordType',
-    'c__EA_LLVMDWARFSourceLanguage', 'c__EA_LLVMDiagnosticSeverity',
-    'c__EA_LLVMInlineAsmDialect', 'c__EA_LLVMIntPredicate',
-    'c__EA_LLVMJITSymbolGenericFlags', 'c__EA_LLVMLandingPadClauseTy',
-    'c__EA_LLVMLinkage', 'c__EA_LLVMLinkerMode',
-    'c__EA_LLVMModuleFlagBehavior', 'c__EA_LLVMOpcode',
-    'c__EA_LLVMOrcJITDylibLookupFlags', 'c__EA_LLVMOrcLookupKind',
-    'c__EA_LLVMOrcSymbolLookupFlags', 'c__EA_LLVMRealPredicate',
-    'c__EA_LLVMRelocMode', 'c__EA_LLVMThreadLocalMode',
-    'c__EA_LLVMTypeKind', 'c__EA_LLVMUnnamedAddr',
-    'c__EA_LLVMValueKind', 'c__EA_LLVMVerifierFailureAction',
-    'c__EA_LLVMVisibility', 'c__EA_lto_codegen_diagnostic_severity_t',
-    'c__EA_lto_codegen_model', 'c__EA_lto_debug_model',
-    'c__EA_lto_symbol_attributes', 'c__Ea_LLVMAttributeReturnIndex',
-    'c__Ea_LLVMMDStringMetadataKind', 'int64_t', 'lto_api_version',
-    'lto_bool_t', 'lto_code_gen_t', 'lto_codegen_add_module',
-    'lto_codegen_add_must_preserve_symbol', 'lto_codegen_compile',
-    'lto_codegen_compile_optimized', 'lto_codegen_compile_to_file',
-    'lto_codegen_create', 'lto_codegen_create_in_local_context',
-    'lto_codegen_debug_options', 'lto_codegen_debug_options_array',
-    'lto_codegen_diagnostic_severity_t',
-    'lto_codegen_diagnostic_severity_t__enumvalues',
-    'lto_codegen_dispose', 'lto_codegen_model',
-    'lto_codegen_model__enumvalues', 'lto_codegen_optimize',
-    'lto_codegen_set_assembler_args',
-    'lto_codegen_set_assembler_path', 'lto_codegen_set_cpu',
-    'lto_codegen_set_debug_model',
-    'lto_codegen_set_diagnostic_handler', 'lto_codegen_set_module',
-    'lto_codegen_set_pic_model',
-    'lto_codegen_set_should_embed_uselists',
-    'lto_codegen_set_should_internalize',
-    'lto_codegen_write_merged_modules', 'lto_debug_model',
-    'lto_debug_model__enumvalues', 'lto_diagnostic_handler_t',
-    'lto_get_error_message', 'lto_get_version',
-    'lto_initialize_disassembler', 'lto_input_create',
-    'lto_input_dispose', 'lto_input_get_dependent_library',
-    'lto_input_get_num_dependent_libraries', 'lto_input_t',
-    'lto_module_create', 'lto_module_create_from_fd',
-    'lto_module_create_from_fd_at_offset',
-    'lto_module_create_from_memory',
-    'lto_module_create_from_memory_with_path',
-    'lto_module_create_in_codegen_context',
-    'lto_module_create_in_local_context', 'lto_module_dispose',
-    'lto_module_get_linkeropts', 'lto_module_get_macho_cputype',
-    'lto_module_get_num_symbols', 'lto_module_get_symbol_attribute',
-    'lto_module_get_symbol_name', 'lto_module_get_target_triple',
-    'lto_module_has_ctor_dtor', 'lto_module_has_objc_category',
-    'lto_module_is_object_file',
-    'lto_module_is_object_file_for_target',
-    'lto_module_is_object_file_in_memory',
-    'lto_module_is_object_file_in_memory_for_target',
-    'lto_module_is_thinlto', 'lto_module_set_target_triple',
-    'lto_module_t', 'lto_runtime_lib_symbols_list',
-    'lto_set_debug_options', 'lto_symbol_attributes',
-    'lto_symbol_attributes__enumvalues', 'off_t', 'size_t',
-    'struct_LLVMComdat', 'struct_LLVMMCJITCompilerOptions',
-    'struct_LLVMOpInfo1', 'struct_LLVMOpInfoSymbol1',
-    'struct_LLVMOpaqueAttributeRef', 'struct_LLVMOpaqueBasicBlock',
-    'struct_LLVMOpaqueBinary', 'struct_LLVMOpaqueBuilder',
-    'struct_LLVMOpaqueContext', 'struct_LLVMOpaqueDIBuilder',
-    'struct_LLVMOpaqueDiagnosticInfo', 'struct_LLVMOpaqueError',
-    'struct_LLVMOpaqueExecutionEngine',
-    'struct_LLVMOpaqueGenericValue',
-    'struct_LLVMOpaqueJITEventListener',
-    'struct_LLVMOpaqueLTOCodeGenerator', 'struct_LLVMOpaqueLTOInput',
-    'struct_LLVMOpaqueLTOModule',
-    'struct_LLVMOpaqueMCJITMemoryManager',
-    'struct_LLVMOpaqueMemoryBuffer', 'struct_LLVMOpaqueMetadata',
-    'struct_LLVMOpaqueModule', 'struct_LLVMOpaqueModuleFlagEntry',
-    'struct_LLVMOpaqueModuleProvider', 'struct_LLVMOpaqueNamedMDNode',
-    'struct_LLVMOpaqueObjectFile',
-    'struct_LLVMOpaquePassBuilderOptions',
-    'struct_LLVMOpaquePassManager',
-    'struct_LLVMOpaquePassManagerBuilder',
-    'struct_LLVMOpaquePassRegistry',
-    'struct_LLVMOpaqueRelocationIterator',
-    'struct_LLVMOpaqueSectionIterator',
-    'struct_LLVMOpaqueSymbolIterator', 'struct_LLVMOpaqueTargetData',
-    'struct_LLVMOpaqueTargetLibraryInfotData',
-    'struct_LLVMOpaqueTargetMachine',
-    'struct_LLVMOpaqueThinLTOCodeGenerator', 'struct_LLVMOpaqueType',
-    'struct_LLVMOpaqueUse', 'struct_LLVMOpaqueValue',
-    'struct_LLVMOpaqueValueMetadataEntry',
-    'struct_LLVMOrcOpaqueDefinitionGenerator',
-    'struct_LLVMOrcOpaqueDumpObjects',
-    'struct_LLVMOrcOpaqueExecutionSession',
-    'struct_LLVMOrcOpaqueIRTransformLayer',
-    'struct_LLVMOrcOpaqueIndirectStubsManager',
-    'struct_LLVMOrcOpaqueJITDylib',
-    'struct_LLVMOrcOpaqueJITTargetMachineBuilder',
-    'struct_LLVMOrcOpaqueLLJIT', 'struct_LLVMOrcOpaqueLLJITBuilder',
-    'struct_LLVMOrcOpaqueLazyCallThroughManager',
-    'struct_LLVMOrcOpaqueLookupState',
-    'struct_LLVMOrcOpaqueMaterializationResponsibility',
-    'struct_LLVMOrcOpaqueMaterializationUnit',
-    'struct_LLVMOrcOpaqueObjectLayer',
-    'struct_LLVMOrcOpaqueObjectLinkingLayer',
-    'struct_LLVMOrcOpaqueObjectTransformLayer',
-    'struct_LLVMOrcOpaqueResourceTracker',
-    'struct_LLVMOrcOpaqueSymbolStringPool',
-    'struct_LLVMOrcOpaqueSymbolStringPoolEntry',
-    'struct_LLVMOrcOpaqueThreadSafeContext',
-    'struct_LLVMOrcOpaqueThreadSafeModule',
-    'struct_LLVMRemarkOpaqueArg', 'struct_LLVMRemarkOpaqueDebugLoc',
-    'struct_LLVMRemarkOpaqueEntry', 'struct_LLVMRemarkOpaqueParser',
-    'struct_LLVMRemarkOpaqueString', 'struct_LLVMTarget',
-    'struct_c__SA_LLVMJITCSymbolMapPair',
-    'struct_c__SA_LLVMJITEvaluatedSymbol',
-    'struct_c__SA_LLVMJITSymbolFlags',
-    'struct_c__SA_LLVMOrcCDependenceMapPair',
-    'struct_c__SA_LLVMOrcCLookupSetElement',
-    'struct_c__SA_LLVMOrcCSymbolAliasMapEntry',
-    'struct_c__SA_LLVMOrcCSymbolAliasMapPair',
-    'struct_c__SA_LLVMOrcCSymbolFlagsMapPair',
-    'struct_c__SA_LLVMOrcCSymbolsList',
-    'struct_c__SA_LTOObjectBuffer', 'thinlto_code_gen_t',
-    'thinlto_codegen_add_cross_referenced_symbol',
-    'thinlto_codegen_add_module',
-    'thinlto_codegen_add_must_preserve_symbol',
-    'thinlto_codegen_disable_codegen', 'thinlto_codegen_dispose',
-    'thinlto_codegen_process', 'thinlto_codegen_set_cache_dir',
-    'thinlto_codegen_set_cache_entry_expiration',
-    'thinlto_codegen_set_cache_pruning_interval',
-    'thinlto_codegen_set_cache_size_bytes',
-    'thinlto_codegen_set_cache_size_files',
-    'thinlto_codegen_set_cache_size_megabytes',
-    'thinlto_codegen_set_codegen_only', 'thinlto_codegen_set_cpu',
-    'thinlto_codegen_set_final_cache_size_relative_to_available_space',
-    'thinlto_codegen_set_pic_model',
-    'thinlto_codegen_set_savetemps_dir', 'thinlto_create_codegen',
-    'thinlto_debug_options', 'thinlto_module_get_num_object_files',
-    'thinlto_module_get_num_objects', 'thinlto_module_get_object',
-    'thinlto_module_get_object_file',
-    'thinlto_set_generated_objects_dir', 'uint32_t', 'uint64_t',
-    'uint8_t']
+  pass
+__all__ = [
+  "LLVMABIAlignmentOfType",
+  "LLVMABISizeOfType",
+  "LLVMAMDGPUCSCallConv",
+  "LLVMAMDGPUESCallConv",
+  "LLVMAMDGPUGSCallConv",
+  "LLVMAMDGPUHSCallConv",
+  "LLVMAMDGPUKERNELCallConv",
+  "LLVMAMDGPULSCallConv",
+  "LLVMAMDGPUPSCallConv",
+  "LLVMAMDGPUVSCallConv",
+  "LLVMARMAAPCSCallConv",
+  "LLVMARMAAPCSVFPCallConv",
+  "LLVMARMAPCSCallConv",
+  "LLVMAShr",
+  "LLVMAVRBUILTINCallConv",
+  "LLVMAVRINTRCallConv",
+  "LLVMAVRSIGNALCallConv",
+  "LLVMAbortProcessAction",
+  "LLVMAdd",
+  "LLVMAddAddDiscriminatorsPass",
+  "LLVMAddAggressiveDCEPass",
+  "LLVMAddAggressiveInstCombinerPass",
+  "LLVMAddAlias",
+  "LLVMAddAlias2",
+  "LLVMAddAlignmentFromAssumptionsPass",
+  "LLVMAddAlwaysInlinerPass",
+  "LLVMAddAnalysisPasses",
+  "LLVMAddArgumentPromotionPass",
+  "LLVMAddAttributeAtIndex",
+  "LLVMAddBasicAliasAnalysisPass",
+  "LLVMAddBitTrackingDCEPass",
+  "LLVMAddCFGSimplificationPass",
+  "LLVMAddCallSiteAttribute",
+  "LLVMAddCalledValuePropagationPass",
+  "LLVMAddCase",
+  "LLVMAddClause",
+  "LLVMAddConstantMergePass",
+  "LLVMAddCoroCleanupPass",
+  "LLVMAddCoroEarlyPass",
+  "LLVMAddCoroElidePass",
+  "LLVMAddCoroSplitPass",
+  "LLVMAddCorrelatedValuePropagationPass",
+  "LLVMAddDCEPass",
+  "LLVMAddDeadArgEliminationPass",
+  "LLVMAddDeadStoreEliminationPass",
+  "LLVMAddDemoteMemoryToRegisterPass",
+  "LLVMAddDestination",
+  "LLVMAddEarlyCSEMemSSAPass",
+  "LLVMAddEarlyCSEPass",
+  "LLVMAddFunction",
+  "LLVMAddFunctionAttrsPass",
+  "LLVMAddFunctionInliningPass",
+  "LLVMAddGVNPass",
+  "LLVMAddGlobal",
+  "LLVMAddGlobalDCEPass",
+  "LLVMAddGlobalIFunc",
+  "LLVMAddGlobalInAddressSpace",
+  "LLVMAddGlobalMapping",
+  "LLVMAddGlobalOptimizerPass",
+  "LLVMAddHandler",
+  "LLVMAddIPSCCPPass",
+  "LLVMAddIncoming",
+  "LLVMAddIndVarSimplifyPass",
+  "LLVMAddInstructionCombiningPass",
+  "LLVMAddInstructionSimplifyPass",
+  "LLVMAddInternalizePass",
+  "LLVMAddInternalizePassWithMustPreservePredicate",
+  "LLVMAddJumpThreadingPass",
+  "LLVMAddLICMPass",
+  "LLVMAddLoopDeletionPass",
+  "LLVMAddLoopIdiomPass",
+  "LLVMAddLoopRerollPass",
+  "LLVMAddLoopRotatePass",
+  "LLVMAddLoopUnrollAndJamPass",
+  "LLVMAddLoopUnrollPass",
+  "LLVMAddLoopUnswitchPass",
+  "LLVMAddLoopVectorizePass",
+  "LLVMAddLowerAtomicPass",
+  "LLVMAddLowerConstantIntrinsicsPass",
+  "LLVMAddLowerExpectIntrinsicPass",
+  "LLVMAddLowerSwitchPass",
+  "LLVMAddMemCpyOptPass",
+  "LLVMAddMergeFunctionsPass",
+  "LLVMAddMergedLoadStoreMotionPass",
+  "LLVMAddMetadataToInst",
+  "LLVMAddModule",
+  "LLVMAddModuleFlag",
+  "LLVMAddNamedMetadataOperand",
+  "LLVMAddNewGVNPass",
+  "LLVMAddPartiallyInlineLibCallsPass",
+  "LLVMAddPromoteMemoryToRegisterPass",
+  "LLVMAddPruneEHPass",
+  "LLVMAddReassociatePass",
+  "LLVMAddSCCPPass",
+  "LLVMAddSLPVectorizePass",
+  "LLVMAddScalarReplAggregatesPass",
+  "LLVMAddScalarReplAggregatesPassSSA",
+  "LLVMAddScalarReplAggregatesPassWithThreshold",
+  "LLVMAddScalarizerPass",
+  "LLVMAddScopedNoAliasAAPass",
+  "LLVMAddSimplifyLibCallsPass",
+  "LLVMAddStripDeadPrototypesPass",
+  "LLVMAddStripSymbolsPass",
+  "LLVMAddSymbol",
+  "LLVMAddTailCallEliminationPass",
+  "LLVMAddTargetDependentFunctionAttr",
+  "LLVMAddTargetLibraryInfo",
+  "LLVMAddTypeBasedAliasAnalysisPass",
+  "LLVMAddUnifyFunctionExitNodesPass",
+  "LLVMAddVerifierPass",
+  "LLVMAddrSpaceCast",
+  "LLVMAliasGetAliasee",
+  "LLVMAliasSetAliasee",
+  "LLVMAlignOf",
+  "LLVMAlloca",
+  "LLVMAnd",
+  "LLVMAnyComdatSelectionKind",
+  "LLVMAnyRegCallConv",
+  "LLVMAppendBasicBlock",
+  "LLVMAppendBasicBlockInContext",
+  "LLVMAppendExistingBasicBlock",
+  "LLVMAppendModuleInlineAsm",
+  "LLVMAppendingLinkage",
+  "LLVMArgumentValueKind",
+  "LLVMArrayType",
+  "LLVMArrayTypeKind",
+  "LLVMAssemblyFile",
+  "LLVMAtomicCmpXchg",
+  "LLVMAtomicOrdering",
+  "LLVMAtomicOrderingAcquire",
+  "LLVMAtomicOrderingAcquireRelease",
+  "LLVMAtomicOrderingMonotonic",
+  "LLVMAtomicOrderingNotAtomic",
+  "LLVMAtomicOrderingRelease",
+  "LLVMAtomicOrderingSequentiallyConsistent",
+  "LLVMAtomicOrderingUnordered",
+  "LLVMAtomicOrdering__enumvalues",
+  "LLVMAtomicRMW",
+  "LLVMAtomicRMWBinOp",
+  "LLVMAtomicRMWBinOpAdd",
+  "LLVMAtomicRMWBinOpAnd",
+  "LLVMAtomicRMWBinOpFAdd",
+  "LLVMAtomicRMWBinOpFSub",
+  "LLVMAtomicRMWBinOpMax",
+  "LLVMAtomicRMWBinOpMin",
+  "LLVMAtomicRMWBinOpNand",
+  "LLVMAtomicRMWBinOpOr",
+  "LLVMAtomicRMWBinOpSub",
+  "LLVMAtomicRMWBinOpUMax",
+  "LLVMAtomicRMWBinOpUMin",
+  "LLVMAtomicRMWBinOpXchg",
+  "LLVMAtomicRMWBinOpXor",
+  "LLVMAtomicRMWBinOp__enumvalues",
+  "LLVMAttributeFunctionIndex",
+  "LLVMAttributeIndex",
+  "LLVMAttributeRef",
+  "LLVMAttributeReturnIndex",
+  "LLVMAvailableExternallyLinkage",
+  "LLVMBFloatType",
+  "LLVMBFloatTypeInContext",
+  "LLVMBFloatTypeKind",
+  "LLVMBasicBlockAsValue",
+  "LLVMBasicBlockRef",
+  "LLVMBasicBlockValueKind",
+  "LLVMBigEndian",
+  "LLVMBinaryCopyMemoryBuffer",
+  "LLVMBinaryGetType",
+  "LLVMBinaryRef",
+  "LLVMBinaryType",
+  "LLVMBinaryTypeArchive",
+  "LLVMBinaryTypeCOFF",
+  "LLVMBinaryTypeCOFFImportFile",
+  "LLVMBinaryTypeELF32B",
+  "LLVMBinaryTypeELF32L",
+  "LLVMBinaryTypeELF64B",
+  "LLVMBinaryTypeELF64L",
+  "LLVMBinaryTypeIR",
+  "LLVMBinaryTypeMachO32B",
+  "LLVMBinaryTypeMachO32L",
+  "LLVMBinaryTypeMachO64B",
+  "LLVMBinaryTypeMachO64L",
+  "LLVMBinaryTypeMachOUniversalBinary",
+  "LLVMBinaryTypeWasm",
+  "LLVMBinaryTypeWinRes",
+  "LLVMBinaryType__enumvalues",
+  "LLVMBitCast",
+  "LLVMBlockAddress",
+  "LLVMBlockAddressValueKind",
+  "LLVMBool",
+  "LLVMBr",
+  "LLVMBuildAShr",
+  "LLVMBuildAdd",
+  "LLVMBuildAddrSpaceCast",
+  "LLVMBuildAggregateRet",
+  "LLVMBuildAlloca",
+  "LLVMBuildAnd",
+  "LLVMBuildArrayAlloca",
+  "LLVMBuildArrayMalloc",
+  "LLVMBuildAtomicCmpXchg",
+  "LLVMBuildAtomicRMW",
+  "LLVMBuildBinOp",
+  "LLVMBuildBitCast",
+  "LLVMBuildBr",
+  "LLVMBuildCall",
+  "LLVMBuildCall2",
+  "LLVMBuildCast",
+  "LLVMBuildCatchPad",
+  "LLVMBuildCatchRet",
+  "LLVMBuildCatchSwitch",
+  "LLVMBuildCleanupPad",
+  "LLVMBuildCleanupRet",
+  "LLVMBuildCondBr",
+  "LLVMBuildExactSDiv",
+  "LLVMBuildExactUDiv",
+  "LLVMBuildExtractElement",
+  "LLVMBuildExtractValue",
+  "LLVMBuildFAdd",
+  "LLVMBuildFCmp",
+  "LLVMBuildFDiv",
+  "LLVMBuildFMul",
+  "LLVMBuildFNeg",
+  "LLVMBuildFPCast",
+  "LLVMBuildFPExt",
+  "LLVMBuildFPToSI",
+  "LLVMBuildFPToUI",
+  "LLVMBuildFPTrunc",
+  "LLVMBuildFRem",
+  "LLVMBuildFSub",
+  "LLVMBuildFence",
+  "LLVMBuildFree",
+  "LLVMBuildFreeze",
+  "LLVMBuildGEP",
+  "LLVMBuildGEP2",
+  "LLVMBuildGlobalString",
+  "LLVMBuildGlobalStringPtr",
+  "LLVMBuildICmp",
+  "LLVMBuildInBoundsGEP",
+  "LLVMBuildInBoundsGEP2",
+  "LLVMBuildIndirectBr",
+  "LLVMBuildInsertElement",
+  "LLVMBuildInsertValue",
+  "LLVMBuildIntCast",
+  "LLVMBuildIntCast2",
+  "LLVMBuildIntToPtr",
+  "LLVMBuildInvoke",
+  "LLVMBuildInvoke2",
+  "LLVMBuildIsNotNull",
+  "LLVMBuildIsNull",
+  "LLVMBuildLShr",
+  "LLVMBuildLandingPad",
+  "LLVMBuildLoad",
+  "LLVMBuildLoad2",
+  "LLVMBuildMalloc",
+  "LLVMBuildMemCpy",
+  "LLVMBuildMemMove",
+  "LLVMBuildMemSet",
+  "LLVMBuildMul",
+  "LLVMBuildNSWAdd",
+  "LLVMBuildNSWMul",
+  "LLVMBuildNSWNeg",
+  "LLVMBuildNSWSub",
+  "LLVMBuildNUWAdd",
+  "LLVMBuildNUWMul",
+  "LLVMBuildNUWNeg",
+  "LLVMBuildNUWSub",
+  "LLVMBuildNeg",
+  "LLVMBuildNot",
+  "LLVMBuildOr",
+  "LLVMBuildPhi",
+  "LLVMBuildPointerCast",
+  "LLVMBuildPtrDiff",
+  "LLVMBuildPtrDiff2",
+  "LLVMBuildPtrToInt",
+  "LLVMBuildResume",
+  "LLVMBuildRet",
+  "LLVMBuildRetVoid",
+  "LLVMBuildSDiv",
+  "LLVMBuildSExt",
+  "LLVMBuildSExtOrBitCast",
+  "LLVMBuildSIToFP",
+  "LLVMBuildSRem",
+  "LLVMBuildSelect",
+  "LLVMBuildShl",
+  "LLVMBuildShuffleVector",
+  "LLVMBuildStore",
+  "LLVMBuildStructGEP",
+  "LLVMBuildStructGEP2",
+  "LLVMBuildSub",
+  "LLVMBuildSwitch",
+  "LLVMBuildTrunc",
+  "LLVMBuildTruncOrBitCast",
+  "LLVMBuildUDiv",
+  "LLVMBuildUIToFP",
+  "LLVMBuildURem",
+  "LLVMBuildUnreachable",
+  "LLVMBuildVAArg",
+  "LLVMBuildXor",
+  "LLVMBuildZExt",
+  "LLVMBuildZExtOrBitCast",
+  "LLVMBuilderGetDefaultFPMathTag",
+  "LLVMBuilderRef",
+  "LLVMBuilderSetDefaultFPMathTag",
+  "LLVMByteOrder",
+  "LLVMByteOrdering",
+  "LLVMCCallConv",
+  "LLVMCXXFASTTLSCallConv",
+  "LLVMCall",
+  "LLVMCallBr",
+  "LLVMCallConv",
+  "LLVMCallConv__enumvalues",
+  "LLVMCallFrameAlignmentOfType",
+  "LLVMCatchPad",
+  "LLVMCatchRet",
+  "LLVMCatchSwitch",
+  "LLVMCleanupPad",
+  "LLVMCleanupRet",
+  "LLVMClearInsertionPosition",
+  "LLVMCloneModule",
+  "LLVMCodeGenFileType",
+  "LLVMCodeGenFileType__enumvalues",
+  "LLVMCodeGenLevelAggressive",
+  "LLVMCodeGenLevelDefault",
+  "LLVMCodeGenLevelLess",
+  "LLVMCodeGenLevelNone",
+  "LLVMCodeGenOptLevel",
+  "LLVMCodeGenOptLevel__enumvalues",
+  "LLVMCodeModel",
+  "LLVMCodeModelDefault",
+  "LLVMCodeModelJITDefault",
+  "LLVMCodeModelKernel",
+  "LLVMCodeModelLarge",
+  "LLVMCodeModelMedium",
+  "LLVMCodeModelSmall",
+  "LLVMCodeModelTiny",
+  "LLVMCodeModel__enumvalues",
+  "LLVMColdCallConv",
+  "LLVMComdatRef",
+  "LLVMComdatSelectionKind",
+  "LLVMComdatSelectionKind__enumvalues",
+  "LLVMCommonLinkage",
+  "LLVMConstAShr",
+  "LLVMConstAdd",
+  "LLVMConstAddrSpaceCast",
+  "LLVMConstAllOnes",
+  "LLVMConstAnd",
+  "LLVMConstArray",
+  "LLVMConstBitCast",
+  "LLVMConstExactSDiv",
+  "LLVMConstExactUDiv",
+  "LLVMConstExtractElement",
+  "LLVMConstExtractValue",
+  "LLVMConstFAdd",
+  "LLVMConstFCmp",
+  "LLVMConstFDiv",
+  "LLVMConstFMul",
+  "LLVMConstFNeg",
+  "LLVMConstFPCast",
+  "LLVMConstFPExt",
+  "LLVMConstFPToSI",
+  "LLVMConstFPToUI",
+  "LLVMConstFPTrunc",
+  "LLVMConstFRem",
+  "LLVMConstFSub",
+  "LLVMConstGEP",
+  "LLVMConstGEP2",
+  "LLVMConstICmp",
+  "LLVMConstInBoundsGEP",
+  "LLVMConstInBoundsGEP2",
+  "LLVMConstInlineAsm",
+  "LLVMConstInsertElement",
+  "LLVMConstInsertValue",
+  "LLVMConstInt",
+  "LLVMConstIntCast",
+  "LLVMConstIntGetSExtValue",
+  "LLVMConstIntGetZExtValue",
+  "LLVMConstIntOfArbitraryPrecision",
+  "LLVMConstIntOfString",
+  "LLVMConstIntOfStringAndSize",
+  "LLVMConstIntToPtr",
+  "LLVMConstLShr",
+  "LLVMConstMul",
+  "LLVMConstNSWAdd",
+  "LLVMConstNSWMul",
+  "LLVMConstNSWNeg",
+  "LLVMConstNSWSub",
+  "LLVMConstNUWAdd",
+  "LLVMConstNUWMul",
+  "LLVMConstNUWNeg",
+  "LLVMConstNUWSub",
+  "LLVMConstNamedStruct",
+  "LLVMConstNeg",
+  "LLVMConstNot",
+  "LLVMConstNull",
+  "LLVMConstOr",
+  "LLVMConstPointerCast",
+  "LLVMConstPointerNull",
+  "LLVMConstPtrToInt",
+  "LLVMConstReal",
+  "LLVMConstRealGetDouble",
+  "LLVMConstRealOfString",
+  "LLVMConstRealOfStringAndSize",
+  "LLVMConstSDiv",
+  "LLVMConstSExt",
+  "LLVMConstSExtOrBitCast",
+  "LLVMConstSIToFP",
+  "LLVMConstSRem",
+  "LLVMConstSelect",
+  "LLVMConstShl",
+  "LLVMConstShuffleVector",
+  "LLVMConstString",
+  "LLVMConstStringInContext",
+  "LLVMConstStruct",
+  "LLVMConstStructInContext",
+  "LLVMConstSub",
+  "LLVMConstTrunc",
+  "LLVMConstTruncOrBitCast",
+  "LLVMConstUDiv",
+  "LLVMConstUIToFP",
+  "LLVMConstURem",
+  "LLVMConstVector",
+  "LLVMConstXor",
+  "LLVMConstZExt",
+  "LLVMConstZExtOrBitCast",
+  "LLVMConstantAggregateZeroValueKind",
+  "LLVMConstantArrayValueKind",
+  "LLVMConstantAsMetadataMetadataKind",
+  "LLVMConstantDataArrayValueKind",
+  "LLVMConstantDataVectorValueKind",
+  "LLVMConstantExprValueKind",
+  "LLVMConstantFPValueKind",
+  "LLVMConstantIntValueKind",
+  "LLVMConstantPointerNullValueKind",
+  "LLVMConstantStructValueKind",
+  "LLVMConstantTokenNoneValueKind",
+  "LLVMConstantVectorValueKind",
+  "LLVMConsumeError",
+  "LLVMContextCreate",
+  "LLVMContextDispose",
+  "LLVMContextGetDiagnosticContext",
+  "LLVMContextGetDiagnosticHandler",
+  "LLVMContextRef",
+  "LLVMContextSetDiagnosticHandler",
+  "LLVMContextSetDiscardValueNames",
+  "LLVMContextSetYieldCallback",
+  "LLVMContextShouldDiscardValueNames",
+  "LLVMCopyModuleFlagsMetadata",
+  "LLVMCopyStringRepOfTargetData",
+  "LLVMCountBasicBlocks",
+  "LLVMCountIncoming",
+  "LLVMCountParamTypes",
+  "LLVMCountParams",
+  "LLVMCountStructElementTypes",
+  "LLVMCreateBasicBlockInContext",
+  "LLVMCreateBinary",
+  "LLVMCreateBuilder",
+  "LLVMCreateBuilderInContext",
+  "LLVMCreateDIBuilder",
+  "LLVMCreateDIBuilderDisallowUnresolved",
+  "LLVMCreateDisasm",
+  "LLVMCreateDisasmCPU",
+  "LLVMCreateDisasmCPUFeatures",
+  "LLVMCreateEnumAttribute",
+  "LLVMCreateExecutionEngineForModule",
+  "LLVMCreateFunctionPassManager",
+  "LLVMCreateFunctionPassManagerForModule",
+  "LLVMCreateGDBRegistrationListener",
+  "LLVMCreateGenericValueOfFloat",
+  "LLVMCreateGenericValueOfInt",
+  "LLVMCreateGenericValueOfPointer",
+  "LLVMCreateIntelJITEventListener",
+  "LLVMCreateInterpreterForModule",
+  "LLVMCreateJITCompilerForModule",
+  "LLVMCreateMCJITCompilerForModule",
+  "LLVMCreateMemoryBufferWithContentsOfFile",
+  "LLVMCreateMemoryBufferWithMemoryRange",
+  "LLVMCreateMemoryBufferWithMemoryRangeCopy",
+  "LLVMCreateMemoryBufferWithSTDIN",
+  "LLVMCreateMessage",
+  "LLVMCreateModuleProviderForExistingModule",
+  "LLVMCreateOProfileJITEventListener",
+  "LLVMCreateObjectFile",
+  "LLVMCreatePassBuilderOptions",
+  "LLVMCreatePassManager",
+  "LLVMCreatePerfJITEventListener",
+  "LLVMCreateSimpleMCJITMemoryManager",
+  "LLVMCreateStringAttribute",
+  "LLVMCreateStringError",
+  "LLVMCreateTargetData",
+  "LLVMCreateTargetDataLayout",
+  "LLVMCreateTargetMachine",
+  "LLVMCreateTypeAttribute",
+  "LLVMDIArgListMetadataKind",
+  "LLVMDIBasicTypeMetadataKind",
+  "LLVMDIBuilderCreateArrayType",
+  "LLVMDIBuilderCreateArtificialType",
+  "LLVMDIBuilderCreateAutoVariable",
+  "LLVMDIBuilderCreateBasicType",
+  "LLVMDIBuilderCreateBitFieldMemberType",
+  "LLVMDIBuilderCreateClassType",
+  "LLVMDIBuilderCreateCompileUnit",
+  "LLVMDIBuilderCreateConstantValueExpression",
+  "LLVMDIBuilderCreateDebugLocation",
+  "LLVMDIBuilderCreateEnumerationType",
+  "LLVMDIBuilderCreateEnumerator",
+  "LLVMDIBuilderCreateExpression",
+  "LLVMDIBuilderCreateFile",
+  "LLVMDIBuilderCreateForwardDecl",
+  "LLVMDIBuilderCreateFunction",
+  "LLVMDIBuilderCreateGlobalVariableExpression",
+  "LLVMDIBuilderCreateImportedDeclaration",
+  "LLVMDIBuilderCreateImportedModuleFromAlias",
+  "LLVMDIBuilderCreateImportedModuleFromModule",
+  "LLVMDIBuilderCreateImportedModuleFromNamespace",
+  "LLVMDIBuilderCreateInheritance",
+  "LLVMDIBuilderCreateLexicalBlock",
+  "LLVMDIBuilderCreateLexicalBlockFile",
+  "LLVMDIBuilderCreateMacro",
+  "LLVMDIBuilderCreateMemberPointerType",
+  "LLVMDIBuilderCreateMemberType",
+  "LLVMDIBuilderCreateModule",
+  "LLVMDIBuilderCreateNameSpace",
+  "LLVMDIBuilderCreateNullPtrType",
+  "LLVMDIBuilderCreateObjCIVar",
+  "LLVMDIBuilderCreateObjCProperty",
+  "LLVMDIBuilderCreateObjectPointerType",
+  "LLVMDIBuilderCreateParameterVariable",
+  "LLVMDIBuilderCreatePointerType",
+  "LLVMDIBuilderCreateQualifiedType",
+  "LLVMDIBuilderCreateReferenceType",
+  "LLVMDIBuilderCreateReplaceableCompositeType",
+  "LLVMDIBuilderCreateStaticMemberType",
+  "LLVMDIBuilderCreateStructType",
+  "LLVMDIBuilderCreateSubroutineType",
+  "LLVMDIBuilderCreateTempGlobalVariableFwdDecl",
+  "LLVMDIBuilderCreateTempMacroFile",
+  "LLVMDIBuilderCreateTypedef",
+  "LLVMDIBuilderCreateUnionType",
+  "LLVMDIBuilderCreateUnspecifiedType",
+  "LLVMDIBuilderCreateVectorType",
+  "LLVMDIBuilderFinalize",
+  "LLVMDIBuilderFinalizeSubprogram",
+  "LLVMDIBuilderGetOrCreateArray",
+  "LLVMDIBuilderGetOrCreateSubrange",
+  "LLVMDIBuilderGetOrCreateTypeArray",
+  "LLVMDIBuilderInsertDbgValueAtEnd",
+  "LLVMDIBuilderInsertDbgValueBefore",
+  "LLVMDIBuilderInsertDeclareAtEnd",
+  "LLVMDIBuilderInsertDeclareBefore",
+  "LLVMDIBuilderRef",
+  "LLVMDICommonBlockMetadataKind",
+  "LLVMDICompileUnitMetadataKind",
+  "LLVMDICompositeTypeMetadataKind",
+  "LLVMDIDerivedTypeMetadataKind",
+  "LLVMDIEnumeratorMetadataKind",
+  "LLVMDIExpressionMetadataKind",
+  "LLVMDIFileGetDirectory",
+  "LLVMDIFileGetFilename",
+  "LLVMDIFileGetSource",
+  "LLVMDIFileMetadataKind",
+  "LLVMDIFlagAccessibility",
+  "LLVMDIFlagAppleBlock",
+  "LLVMDIFlagArtificial",
+  "LLVMDIFlagBigEndian",
+  "LLVMDIFlagBitField",
+  "LLVMDIFlagEnumClass",
+  "LLVMDIFlagExplicit",
+  "LLVMDIFlagFixedEnum",
+  "LLVMDIFlagFwdDecl",
+  "LLVMDIFlagIndirectVirtualBase",
+  "LLVMDIFlagIntroducedVirtual",
+  "LLVMDIFlagLValueReference",
+  "LLVMDIFlagLittleEndian",
+  "LLVMDIFlagMultipleInheritance",
+  "LLVMDIFlagNoReturn",
+  "LLVMDIFlagNonTrivial",
+  "LLVMDIFlagObjcClassComplete",
+  "LLVMDIFlagObjectPointer",
+  "LLVMDIFlagPrivate",
+  "LLVMDIFlagProtected",
+  "LLVMDIFlagPrototyped",
+  "LLVMDIFlagPtrToMemberRep",
+  "LLVMDIFlagPublic",
+  "LLVMDIFlagRValueReference",
+  "LLVMDIFlagReserved",
+  "LLVMDIFlagReservedBit4",
+  "LLVMDIFlagSingleInheritance",
+  "LLVMDIFlagStaticMember",
+  "LLVMDIFlagThunk",
+  "LLVMDIFlagTypePassByReference",
+  "LLVMDIFlagTypePassByValue",
+  "LLVMDIFlagVector",
+  "LLVMDIFlagVirtual",
+  "LLVMDIFlagVirtualInheritance",
+  "LLVMDIFlagZero",
+  "LLVMDIFlags",
+  "LLVMDIFlags__enumvalues",
+  "LLVMDIGenericSubrangeMetadataKind",
+  "LLVMDIGlobalVariableExpressionGetExpression",
+  "LLVMDIGlobalVariableExpressionGetVariable",
+  "LLVMDIGlobalVariableExpressionMetadataKind",
+  "LLVMDIGlobalVariableMetadataKind",
+  "LLVMDIImportedEntityMetadataKind",
+  "LLVMDILabelMetadataKind",
+  "LLVMDILexicalBlockFileMetadataKind",
+  "LLVMDILexicalBlockMetadataKind",
+  "LLVMDILocalVariableMetadataKind",
+  "LLVMDILocationGetColumn",
+  "LLVMDILocationGetInlinedAt",
+  "LLVMDILocationGetLine",
+  "LLVMDILocationGetScope",
+  "LLVMDILocationMetadataKind",
+  "LLVMDIMacroFileMetadataKind",
+  "LLVMDIMacroMetadataKind",
+  "LLVMDIModuleMetadataKind",
+  "LLVMDINamespaceMetadataKind",
+  "LLVMDIObjCPropertyMetadataKind",
+  "LLVMDIScopeGetFile",
+  "LLVMDIStringTypeMetadataKind",
+  "LLVMDISubprogramGetLine",
+  "LLVMDISubprogramMetadataKind",
+  "LLVMDISubrangeMetadataKind",
+  "LLVMDISubroutineTypeMetadataKind",
+  "LLVMDITemplateTypeParameterMetadataKind",
+  "LLVMDITemplateValueParameterMetadataKind",
+  "LLVMDITypeGetAlignInBits",
+  "LLVMDITypeGetFlags",
+  "LLVMDITypeGetLine",
+  "LLVMDITypeGetName",
+  "LLVMDITypeGetOffsetInBits",
+  "LLVMDITypeGetSizeInBits",
+  "LLVMDIVariableGetFile",
+  "LLVMDIVariableGetLine",
+  "LLVMDIVariableGetScope",
+  "LLVMDLLExportLinkage",
+  "LLVMDLLExportStorageClass",
+  "LLVMDLLImportLinkage",
+  "LLVMDLLImportStorageClass",
+  "LLVMDLLStorageClass",
+  "LLVMDLLStorageClass__enumvalues",
+  "LLVMDSError",
+  "LLVMDSNote",
+  "LLVMDSRemark",
+  "LLVMDSWarning",
+  "LLVMDWARFEmissionFull",
+  "LLVMDWARFEmissionKind",
+  "LLVMDWARFEmissionKind__enumvalues",
+  "LLVMDWARFEmissionLineTablesOnly",
+  "LLVMDWARFEmissionNone",
+  "LLVMDWARFMacinfoRecordType",
+  "LLVMDWARFMacinfoRecordTypeDefine",
+  "LLVMDWARFMacinfoRecordTypeEndFile",
+  "LLVMDWARFMacinfoRecordTypeMacro",
+  "LLVMDWARFMacinfoRecordTypeStartFile",
+  "LLVMDWARFMacinfoRecordTypeVendorExt",
+  "LLVMDWARFMacinfoRecordType__enumvalues",
+  "LLVMDWARFSourceLanguage",
+  "LLVMDWARFSourceLanguageAda83",
+  "LLVMDWARFSourceLanguageAda95",
+  "LLVMDWARFSourceLanguageBLISS",
+  "LLVMDWARFSourceLanguageBORLAND_Delphi",
+  "LLVMDWARFSourceLanguageC",
+  "LLVMDWARFSourceLanguageC11",
+  "LLVMDWARFSourceLanguageC89",
+  "LLVMDWARFSourceLanguageC99",
+  "LLVMDWARFSourceLanguageC_plus_plus",
+  "LLVMDWARFSourceLanguageC_plus_plus_03",
+  "LLVMDWARFSourceLanguageC_plus_plus_11",
+  "LLVMDWARFSourceLanguageC_plus_plus_14",
+  "LLVMDWARFSourceLanguageCobol74",
+  "LLVMDWARFSourceLanguageCobol85",
+  "LLVMDWARFSourceLanguageD",
+  "LLVMDWARFSourceLanguageDylan",
+  "LLVMDWARFSourceLanguageFortran03",
+  "LLVMDWARFSourceLanguageFortran08",
+  "LLVMDWARFSourceLanguageFortran77",
+  "LLVMDWARFSourceLanguageFortran90",
+  "LLVMDWARFSourceLanguageFortran95",
+  "LLVMDWARFSourceLanguageGOOGLE_RenderScript",
+  "LLVMDWARFSourceLanguageGo",
+  "LLVMDWARFSourceLanguageHaskell",
+  "LLVMDWARFSourceLanguageJava",
+  "LLVMDWARFSourceLanguageJulia",
+  "LLVMDWARFSourceLanguageMips_Assembler",
+  "LLVMDWARFSourceLanguageModula2",
+  "LLVMDWARFSourceLanguageModula3",
+  "LLVMDWARFSourceLanguageOCaml",
+  "LLVMDWARFSourceLanguageObjC",
+  "LLVMDWARFSourceLanguageObjC_plus_plus",
+  "LLVMDWARFSourceLanguageOpenCL",
+  "LLVMDWARFSourceLanguagePLI",
+  "LLVMDWARFSourceLanguagePascal83",
+  "LLVMDWARFSourceLanguagePython",
+  "LLVMDWARFSourceLanguageRenderScript",
+  "LLVMDWARFSourceLanguageRust",
+  "LLVMDWARFSourceLanguageSwift",
+  "LLVMDWARFSourceLanguageUPC",
+  "LLVMDWARFSourceLanguage__enumvalues",
+  "LLVMDWARFTypeEncoding",
+  "LLVMDebugMetadataVersion",
+  "LLVMDefaultStorageClass",
+  "LLVMDefaultVisibility",
+  "LLVMDeleteBasicBlock",
+  "LLVMDeleteFunction",
+  "LLVMDeleteGlobal",
+  "LLVMDiagnosticHandler",
+  "LLVMDiagnosticInfoRef",
+  "LLVMDiagnosticSeverity",
+  "LLVMDiagnosticSeverity__enumvalues",
+  "LLVMDisasmContextRef",
+  "LLVMDisasmDispose",
+  "LLVMDisasmInstruction",
+  "LLVMDisassembler_Option_AsmPrinterVariant",
+  "LLVMDisassembler_Option_PrintImmHex",
+  "LLVMDisassembler_Option_PrintLatency",
+  "LLVMDisassembler_Option_SetInstrComments",
+  "LLVMDisassembler_Option_UseMarkup",
+  "LLVMDisassembler_ReferenceType_DeMangled_Name",
+  "LLVMDisassembler_ReferenceType_InOut_None",
+  "LLVMDisassembler_ReferenceType_In_ARM64_ADDXri",
+  "LLVMDisassembler_ReferenceType_In_ARM64_ADR",
+  "LLVMDisassembler_ReferenceType_In_ARM64_ADRP",
+  "LLVMDisassembler_ReferenceType_In_ARM64_LDRXl",
+  "LLVMDisassembler_ReferenceType_In_ARM64_LDRXui",
+  "LLVMDisassembler_ReferenceType_In_Branch",
+  "LLVMDisassembler_ReferenceType_In_PCrel_Load",
+  "LLVMDisassembler_ReferenceType_Out_LitPool_CstrAddr",
+  "LLVMDisassembler_ReferenceType_Out_LitPool_SymAddr",
+  "LLVMDisassembler_ReferenceType_Out_Objc_CFString_Ref",
+  "LLVMDisassembler_ReferenceType_Out_Objc_Class_Ref",
+  "LLVMDisassembler_ReferenceType_Out_Objc_Message",
+  "LLVMDisassembler_ReferenceType_Out_Objc_Message_Ref",
+  "LLVMDisassembler_ReferenceType_Out_Objc_Selector_Ref",
+  "LLVMDisassembler_ReferenceType_Out_SymbolStub",
+  "LLVMDisassembler_VariantKind_ARM64_GOTPAGE",
+  "LLVMDisassembler_VariantKind_ARM64_GOTPAGEOFF",
+  "LLVMDisassembler_VariantKind_ARM64_PAGE",
+  "LLVMDisassembler_VariantKind_ARM64_PAGEOFF",
+  "LLVMDisassembler_VariantKind_ARM64_TLVOFF",
+  "LLVMDisassembler_VariantKind_ARM64_TLVP",
+  "LLVMDisassembler_VariantKind_ARM_HI16",
+  "LLVMDisassembler_VariantKind_ARM_LO16",
+  "LLVMDisassembler_VariantKind_None",
+  "LLVMDisposeBinary",
+  "LLVMDisposeBuilder",
+  "LLVMDisposeDIBuilder",
+  "LLVMDisposeErrorMessage",
+  "LLVMDisposeExecutionEngine",
+  "LLVMDisposeGenericValue",
+  "LLVMDisposeMCJITMemoryManager",
+  "LLVMDisposeMemoryBuffer",
+  "LLVMDisposeMessage",
+  "LLVMDisposeModule",
+  "LLVMDisposeModuleFlagsMetadata",
+  "LLVMDisposeModuleProvider",
+  "LLVMDisposeObjectFile",
+  "LLVMDisposePassBuilderOptions",
+  "LLVMDisposePassManager",
+  "LLVMDisposeRelocationIterator",
+  "LLVMDisposeSectionIterator",
+  "LLVMDisposeSymbolIterator",
+  "LLVMDisposeTargetData",
+  "LLVMDisposeTargetMachine",
+  "LLVMDisposeTemporaryMDNode",
+  "LLVMDisposeValueMetadataEntries",
+  "LLVMDistinctMDOperandPlaceholderMetadataKind",
+  "LLVMDoubleType",
+  "LLVMDoubleTypeInContext",
+  "LLVMDoubleTypeKind",
+  "LLVMDumpModule",
+  "LLVMDumpType",
+  "LLVMDumpValue",
+  "LLVMElementAtOffset",
+  "LLVMEnablePrettyStackTrace",
+  "LLVMEraseGlobalIFunc",
+  "LLVMErrorRef",
+  "LLVMErrorSuccess",
+  "LLVMErrorTypeId",
+  "LLVMExactMatchComdatSelectionKind",
+  "LLVMExecutionEngineGetErrMsg",
+  "LLVMExecutionEngineRef",
+  "LLVMExternalLinkage",
+  "LLVMExternalWeakLinkage",
+  "LLVMExtractElement",
+  "LLVMExtractValue",
+  "LLVMFAdd",
+  "LLVMFCmp",
+  "LLVMFDiv",
+  "LLVMFMul",
+  "LLVMFNeg",
+  "LLVMFP128Type",
+  "LLVMFP128TypeInContext",
+  "LLVMFP128TypeKind",
+  "LLVMFPExt",
+  "LLVMFPToSI",
+  "LLVMFPToUI",
+  "LLVMFPTrunc",
+  "LLVMFRem",
+  "LLVMFSub",
+  "LLVMFastCallConv",
+  "LLVMFatalErrorHandler",
+  "LLVMFence",
+  "LLVMFinalizeFunctionPassManager",
+  "LLVMFindFunction",
+  "LLVMFloatType",
+  "LLVMFloatTypeInContext",
+  "LLVMFloatTypeKind",
+  "LLVMFreeMachineCodeForFunction",
+  "LLVMFreeze",
+  "LLVMFunctionType",
+  "LLVMFunctionTypeKind",
+  "LLVMFunctionValueKind",
+  "LLVMGHCCallConv",
+  "LLVMGeneralDynamicTLSModel",
+  "LLVMGenericDINodeMetadataKind",
+  "LLVMGenericValueIntWidth",
+  "LLVMGenericValueRef",
+  "LLVMGenericValueToFloat",
+  "LLVMGenericValueToInt",
+  "LLVMGenericValueToPointer",
+  "LLVMGetAlignment",
+  "LLVMGetAllocatedType",
+  "LLVMGetArgOperand",
+  "LLVMGetArrayLength",
+  "LLVMGetAsString",
+  "LLVMGetAtomicRMWBinOp",
+  "LLVMGetAttributeCountAtIndex",
+  "LLVMGetAttributesAtIndex",
+  "LLVMGetBasicBlockName",
+  "LLVMGetBasicBlockParent",
+  "LLVMGetBasicBlockTerminator",
+  "LLVMGetBasicBlocks",
+  "LLVMGetBitcodeModule",
+  "LLVMGetBitcodeModule2",
+  "LLVMGetBitcodeModuleInContext",
+  "LLVMGetBitcodeModuleInContext2",
+  "LLVMGetBufferSize",
+  "LLVMGetBufferStart",
+  "LLVMGetCallSiteAttributeCount",
+  "LLVMGetCallSiteAttributes",
+  "LLVMGetCallSiteEnumAttribute",
+  "LLVMGetCallSiteStringAttribute",
+  "LLVMGetCalledFunctionType",
+  "LLVMGetCalledValue",
+  "LLVMGetClause",
+  "LLVMGetCmpXchgFailureOrdering",
+  "LLVMGetCmpXchgSuccessOrdering",
+  "LLVMGetComdat",
+  "LLVMGetComdatSelectionKind",
+  "LLVMGetCondition",
+  "LLVMGetConstOpcode",
+  "LLVMGetCurrentDebugLocation",
+  "LLVMGetCurrentDebugLocation2",
+  "LLVMGetDLLStorageClass",
+  "LLVMGetDataLayout",
+  "LLVMGetDataLayoutStr",
+  "LLVMGetDebugLocColumn",
+  "LLVMGetDebugLocDirectory",
+  "LLVMGetDebugLocFilename",
+  "LLVMGetDebugLocLine",
+  "LLVMGetDefaultTargetTriple",
+  "LLVMGetDiagInfoDescription",
+  "LLVMGetDiagInfoSeverity",
+  "LLVMGetElementAsConstant",
+  "LLVMGetElementPtr",
+  "LLVMGetElementType",
+  "LLVMGetEntryBasicBlock",
+  "LLVMGetEnumAttributeAtIndex",
+  "LLVMGetEnumAttributeKind",
+  "LLVMGetEnumAttributeKindForName",
+  "LLVMGetEnumAttributeValue",
+  "LLVMGetErrorMessage",
+  "LLVMGetErrorTypeId",
+  "LLVMGetExecutionEngineTargetData",
+  "LLVMGetExecutionEngineTargetMachine",
+  "LLVMGetFCmpPredicate",
+  "LLVMGetFirstBasicBlock",
+  "LLVMGetFirstFunction",
+  "LLVMGetFirstGlobal",
+  "LLVMGetFirstGlobalAlias",
+  "LLVMGetFirstGlobalIFunc",
+  "LLVMGetFirstInstruction",
+  "LLVMGetFirstNamedMetadata",
+  "LLVMGetFirstParam",
+  "LLVMGetFirstTarget",
+  "LLVMGetFirstUse",
+  "LLVMGetFunctionAddress",
+  "LLVMGetFunctionCallConv",
+  "LLVMGetGC",
+  "LLVMGetGEPSourceElementType",
+  "LLVMGetGlobalContext",
+  "LLVMGetGlobalIFuncResolver",
+  "LLVMGetGlobalParent",
+  "LLVMGetGlobalPassRegistry",
+  "LLVMGetGlobalValueAddress",
+  "LLVMGetHandlers",
+  "LLVMGetHostCPUFeatures",
+  "LLVMGetHostCPUName",
+  "LLVMGetICmpPredicate",
+  "LLVMGetIncomingBlock",
+  "LLVMGetIncomingValue",
+  "LLVMGetIndices",
+  "LLVMGetInitializer",
+  "LLVMGetInlineAsm",
+  "LLVMGetInsertBlock",
+  "LLVMGetInstructionCallConv",
+  "LLVMGetInstructionOpcode",
+  "LLVMGetInstructionParent",
+  "LLVMGetIntTypeWidth",
+  "LLVMGetIntrinsicDeclaration",
+  "LLVMGetIntrinsicID",
+  "LLVMGetLastBasicBlock",
+  "LLVMGetLastEnumAttributeKind",
+  "LLVMGetLastFunction",
+  "LLVMGetLastGlobal",
+  "LLVMGetLastGlobalAlias",
+  "LLVMGetLastGlobalIFunc",
+  "LLVMGetLastInstruction",
+  "LLVMGetLastNamedMetadata",
+  "LLVMGetLastParam",
+  "LLVMGetLinkage",
+  "LLVMGetMDKindID",
+  "LLVMGetMDKindIDInContext",
+  "LLVMGetMDNodeNumOperands",
+  "LLVMGetMDNodeOperands",
+  "LLVMGetMDString",
+  "LLVMGetMaskValue",
+  "LLVMGetMetadata",
+  "LLVMGetMetadataKind",
+  "LLVMGetModuleContext",
+  "LLVMGetModuleDataLayout",
+  "LLVMGetModuleDebugMetadataVersion",
+  "LLVMGetModuleFlag",
+  "LLVMGetModuleIdentifier",
+  "LLVMGetModuleInlineAsm",
+  "LLVMGetNamedFunction",
+  "LLVMGetNamedGlobal",
+  "LLVMGetNamedGlobalAlias",
+  "LLVMGetNamedGlobalIFunc",
+  "LLVMGetNamedMetadata",
+  "LLVMGetNamedMetadataName",
+  "LLVMGetNamedMetadataNumOperands",
+  "LLVMGetNamedMetadataOperands",
+  "LLVMGetNextBasicBlock",
+  "LLVMGetNextFunction",
+  "LLVMGetNextGlobal",
+  "LLVMGetNextGlobalAlias",
+  "LLVMGetNextGlobalIFunc",
+  "LLVMGetNextInstruction",
+  "LLVMGetNextNamedMetadata",
+  "LLVMGetNextParam",
+  "LLVMGetNextTarget",
+  "LLVMGetNextUse",
+  "LLVMGetNormalDest",
+  "LLVMGetNumArgOperands",
+  "LLVMGetNumClauses",
+  "LLVMGetNumContainedTypes",
+  "LLVMGetNumHandlers",
+  "LLVMGetNumIndices",
+  "LLVMGetNumMaskElements",
+  "LLVMGetNumOperands",
+  "LLVMGetNumSuccessors",
+  "LLVMGetOperand",
+  "LLVMGetOperandUse",
+  "LLVMGetOrInsertComdat",
+  "LLVMGetOrInsertNamedMetadata",
+  "LLVMGetOrdering",
+  "LLVMGetParam",
+  "LLVMGetParamParent",
+  "LLVMGetParamTypes",
+  "LLVMGetParams",
+  "LLVMGetParentCatchSwitch",
+  "LLVMGetPersonalityFn",
+  "LLVMGetPointerAddressSpace",
+  "LLVMGetPointerToGlobal",
+  "LLVMGetPoison",
+  "LLVMGetPreviousBasicBlock",
+  "LLVMGetPreviousFunction",
+  "LLVMGetPreviousGlobal",
+  "LLVMGetPreviousGlobalAlias",
+  "LLVMGetPreviousGlobalIFunc",
+  "LLVMGetPreviousInstruction",
+  "LLVMGetPreviousNamedMetadata",
+  "LLVMGetPreviousParam",
+  "LLVMGetRelocationOffset",
+  "LLVMGetRelocationSymbol",
+  "LLVMGetRelocationType",
+  "LLVMGetRelocationTypeName",
+  "LLVMGetRelocationValueString",
+  "LLVMGetRelocations",
+  "LLVMGetReturnType",
+  "LLVMGetSection",
+  "LLVMGetSectionAddress",
+  "LLVMGetSectionContainsSymbol",
+  "LLVMGetSectionContents",
+  "LLVMGetSectionName",
+  "LLVMGetSectionSize",
+  "LLVMGetSections",
+  "LLVMGetSourceFileName",
+  "LLVMGetStringAttributeAtIndex",
+  "LLVMGetStringAttributeKind",
+  "LLVMGetStringAttributeValue",
+  "LLVMGetStringErrorTypeId",
+  "LLVMGetStructElementTypes",
+  "LLVMGetStructName",
+  "LLVMGetSubprogram",
+  "LLVMGetSubtypes",
+  "LLVMGetSuccessor",
+  "LLVMGetSwitchDefaultDest",
+  "LLVMGetSymbolAddress",
+  "LLVMGetSymbolName",
+  "LLVMGetSymbolSize",
+  "LLVMGetSymbols",
+  "LLVMGetTarget",
+  "LLVMGetTargetDescription",
+  "LLVMGetTargetFromName",
+  "LLVMGetTargetFromTriple",
+  "LLVMGetTargetMachineCPU",
+  "LLVMGetTargetMachineFeatureString",
+  "LLVMGetTargetMachineTarget",
+  "LLVMGetTargetMachineTriple",
+  "LLVMGetTargetName",
+  "LLVMGetThreadLocalMode",
+  "LLVMGetTypeAttributeValue",
+  "LLVMGetTypeByName",
+  "LLVMGetTypeByName2",
+  "LLVMGetTypeContext",
+  "LLVMGetTypeKind",
+  "LLVMGetUndef",
+  "LLVMGetUndefMaskElem",
+  "LLVMGetUnnamedAddress",
+  "LLVMGetUnwindDest",
+  "LLVMGetUsedValue",
+  "LLVMGetUser",
+  "LLVMGetValueKind",
+  "LLVMGetValueName",
+  "LLVMGetValueName2",
+  "LLVMGetVectorSize",
+  "LLVMGetVisibility",
+  "LLVMGetVolatile",
+  "LLVMGetWeak",
+  "LLVMGhostLinkage",
+  "LLVMGlobalAliasValueKind",
+  "LLVMGlobalClearMetadata",
+  "LLVMGlobalCopyAllMetadata",
+  "LLVMGlobalEraseMetadata",
+  "LLVMGlobalGetValueType",
+  "LLVMGlobalIFuncValueKind",
+  "LLVMGlobalSetMetadata",
+  "LLVMGlobalUnnamedAddr",
+  "LLVMGlobalVariableValueKind",
+  "LLVMHHVMCCallConv",
+  "LLVMHHVMCallConv",
+  "LLVMHalfType",
+  "LLVMHalfTypeInContext",
+  "LLVMHalfTypeKind",
+  "LLVMHasMetadata",
+  "LLVMHasPersonalityFn",
+  "LLVMHasUnnamedAddr",
+  "LLVMHiPECallConv",
+  "LLVMHiddenVisibility",
+  "LLVMICmp",
+  "LLVMIndirectBr",
+  "LLVMInitialExecTLSModel",
+  "LLVMInitializeAArch64AsmParser",
+  "LLVMInitializeAArch64AsmPrinter",
+  "LLVMInitializeAArch64Disassembler",
+  "LLVMInitializeAArch64Target",
+  "LLVMInitializeAArch64TargetInfo",
+  "LLVMInitializeAArch64TargetMC",
+  "LLVMInitializeAMDGPUAsmParser",
+  "LLVMInitializeAMDGPUAsmPrinter",
+  "LLVMInitializeAMDGPUDisassembler",
+  "LLVMInitializeAMDGPUTarget",
+  "LLVMInitializeAMDGPUTargetInfo",
+  "LLVMInitializeAMDGPUTargetMC",
+  "LLVMInitializeARMAsmParser",
+  "LLVMInitializeARMAsmPrinter",
+  "LLVMInitializeARMDisassembler",
+  "LLVMInitializeARMTarget",
+  "LLVMInitializeARMTargetInfo",
+  "LLVMInitializeARMTargetMC",
+  "LLVMInitializeAVRAsmParser",
+  "LLVMInitializeAVRAsmPrinter",
+  "LLVMInitializeAVRDisassembler",
+  "LLVMInitializeAVRTarget",
+  "LLVMInitializeAVRTargetInfo",
+  "LLVMInitializeAVRTargetMC",
+  "LLVMInitializeAggressiveInstCombiner",
+  "LLVMInitializeAllAsmParsers",
+  "LLVMInitializeAllAsmPrinters",
+  "LLVMInitializeAllDisassemblers",
+  "LLVMInitializeAllTargetInfos",
+  "LLVMInitializeAllTargetMCs",
+  "LLVMInitializeAllTargets",
+  "LLVMInitializeAnalysis",
+  "LLVMInitializeBPFAsmParser",
+  "LLVMInitializeBPFAsmPrinter",
+  "LLVMInitializeBPFDisassembler",
+  "LLVMInitializeBPFTarget",
+  "LLVMInitializeBPFTargetInfo",
+  "LLVMInitializeBPFTargetMC",
+  "LLVMInitializeCodeGen",
+  "LLVMInitializeCore",
+  "LLVMInitializeFunctionPassManager",
+  "LLVMInitializeHexagonAsmParser",
+  "LLVMInitializeHexagonAsmPrinter",
+  "LLVMInitializeHexagonDisassembler",
+  "LLVMInitializeHexagonTarget",
+  "LLVMInitializeHexagonTargetInfo",
+  "LLVMInitializeHexagonTargetMC",
+  "LLVMInitializeIPA",
+  "LLVMInitializeIPO",
+  "LLVMInitializeInstCombine",
+  "LLVMInitializeInstrumentation",
+  "LLVMInitializeLanaiAsmParser",
+  "LLVMInitializeLanaiAsmPrinter",
+  "LLVMInitializeLanaiDisassembler",
+  "LLVMInitializeLanaiTarget",
+  "LLVMInitializeLanaiTargetInfo",
+  "LLVMInitializeLanaiTargetMC",
+  "LLVMInitializeM68kAsmParser",
+  "LLVMInitializeM68kAsmPrinter",
+  "LLVMInitializeM68kDisassembler",
+  "LLVMInitializeM68kTarget",
+  "LLVMInitializeM68kTargetInfo",
+  "LLVMInitializeM68kTargetMC",
+  "LLVMInitializeMCJITCompilerOptions",
+  "LLVMInitializeMSP430AsmParser",
+  "LLVMInitializeMSP430AsmPrinter",
+  "LLVMInitializeMSP430Disassembler",
+  "LLVMInitializeMSP430Target",
+  "LLVMInitializeMSP430TargetInfo",
+  "LLVMInitializeMSP430TargetMC",
+  "LLVMInitializeMipsAsmParser",
+  "LLVMInitializeMipsAsmPrinter",
+  "LLVMInitializeMipsDisassembler",
+  "LLVMInitializeMipsTarget",
+  "LLVMInitializeMipsTargetInfo",
+  "LLVMInitializeMipsTargetMC",
+  "LLVMInitializeNVPTXAsmPrinter",
+  "LLVMInitializeNVPTXTarget",
+  "LLVMInitializeNVPTXTargetInfo",
+  "LLVMInitializeNVPTXTargetMC",
+  "LLVMInitializeNativeAsmParser",
+  "LLVMInitializeNativeAsmPrinter",
+  "LLVMInitializeNativeDisassembler",
+  "LLVMInitializeNativeTarget",
+  "LLVMInitializeObjCARCOpts",
+  "LLVMInitializePowerPCAsmParser",
+  "LLVMInitializePowerPCAsmPrinter",
+  "LLVMInitializePowerPCDisassembler",
+  "LLVMInitializePowerPCTarget",
+  "LLVMInitializePowerPCTargetInfo",
+  "LLVMInitializePowerPCTargetMC",
+  "LLVMInitializeRISCVAsmParser",
+  "LLVMInitializeRISCVAsmPrinter",
+  "LLVMInitializeRISCVDisassembler",
+  "LLVMInitializeRISCVTarget",
+  "LLVMInitializeRISCVTargetInfo",
+  "LLVMInitializeRISCVTargetMC",
+  "LLVMInitializeScalarOpts",
+  "LLVMInitializeSparcAsmParser",
+  "LLVMInitializeSparcAsmPrinter",
+  "LLVMInitializeSparcDisassembler",
+  "LLVMInitializeSparcTarget",
+  "LLVMInitializeSparcTargetInfo",
+  "LLVMInitializeSparcTargetMC",
+  "LLVMInitializeSystemZAsmParser",
+  "LLVMInitializeSystemZAsmPrinter",
+  "LLVMInitializeSystemZDisassembler",
+  "LLVMInitializeSystemZTarget",
+  "LLVMInitializeSystemZTargetInfo",
+  "LLVMInitializeSystemZTargetMC",
+  "LLVMInitializeTarget",
+  "LLVMInitializeTransformUtils",
+  "LLVMInitializeVEAsmParser",
+  "LLVMInitializeVEAsmPrinter",
+  "LLVMInitializeVEDisassembler",
+  "LLVMInitializeVETarget",
+  "LLVMInitializeVETargetInfo",
+  "LLVMInitializeVETargetMC",
+  "LLVMInitializeVectorization",
+  "LLVMInitializeWebAssemblyAsmParser",
+  "LLVMInitializeWebAssemblyAsmPrinter",
+  "LLVMInitializeWebAssemblyDisassembler",
+  "LLVMInitializeWebAssemblyTarget",
+  "LLVMInitializeWebAssemblyTargetInfo",
+  "LLVMInitializeWebAssemblyTargetMC",
+  "LLVMInitializeX86AsmParser",
+  "LLVMInitializeX86AsmPrinter",
+  "LLVMInitializeX86Disassembler",
+  "LLVMInitializeX86Target",
+  "LLVMInitializeX86TargetInfo",
+  "LLVMInitializeX86TargetMC",
+  "LLVMInitializeXCoreAsmPrinter",
+  "LLVMInitializeXCoreDisassembler",
+  "LLVMInitializeXCoreTarget",
+  "LLVMInitializeXCoreTargetInfo",
+  "LLVMInitializeXCoreTargetMC",
+  "LLVMInlineAsmDialect",
+  "LLVMInlineAsmDialectATT",
+  "LLVMInlineAsmDialectIntel",
+  "LLVMInlineAsmDialect__enumvalues",
+  "LLVMInlineAsmValueKind",
+  "LLVMInsertBasicBlock",
+  "LLVMInsertBasicBlockInContext",
+  "LLVMInsertElement",
+  "LLVMInsertExistingBasicBlockAfterInsertBlock",
+  "LLVMInsertIntoBuilder",
+  "LLVMInsertIntoBuilderWithName",
+  "LLVMInsertValue",
+  "LLVMInstallFatalErrorHandler",
+  "LLVMInstructionClone",
+  "LLVMInstructionEraseFromParent",
+  "LLVMInstructionGetAllMetadataOtherThanDebugLoc",
+  "LLVMInstructionGetDebugLoc",
+  "LLVMInstructionRemoveFromParent",
+  "LLVMInstructionSetDebugLoc",
+  "LLVMInstructionValueKind",
+  "LLVMInt128Type",
+  "LLVMInt128TypeInContext",
+  "LLVMInt16Type",
+  "LLVMInt16TypeInContext",
+  "LLVMInt1Type",
+  "LLVMInt1TypeInContext",
+  "LLVMInt32Type",
+  "LLVMInt32TypeInContext",
+  "LLVMInt64Type",
+  "LLVMInt64TypeInContext",
+  "LLVMInt8Type",
+  "LLVMInt8TypeInContext",
+  "LLVMIntEQ",
+  "LLVMIntNE",
+  "LLVMIntPredicate",
+  "LLVMIntPredicate__enumvalues",
+  "LLVMIntPtrType",
+  "LLVMIntPtrTypeForAS",
+  "LLVMIntPtrTypeForASInContext",
+  "LLVMIntPtrTypeInContext",
+  "LLVMIntSGE",
+  "LLVMIntSGT",
+  "LLVMIntSLE",
+  "LLVMIntSLT",
+  "LLVMIntToPtr",
+  "LLVMIntType",
+  "LLVMIntTypeInContext",
+  "LLVMIntUGE",
+  "LLVMIntUGT",
+  "LLVMIntULE",
+  "LLVMIntULT",
+  "LLVMIntegerTypeKind",
+  "LLVMIntelOCLBICallConv",
+  "LLVMInternalLinkage",
+  "LLVMIntrinsicCopyOverloadedName",
+  "LLVMIntrinsicCopyOverloadedName2",
+  "LLVMIntrinsicGetName",
+  "LLVMIntrinsicGetType",
+  "LLVMIntrinsicIsOverloaded",
+  "LLVMInvoke",
+  "LLVMIsAAddrSpaceCastInst",
+  "LLVMIsAAllocaInst",
+  "LLVMIsAArgument",
+  "LLVMIsAAtomicCmpXchgInst",
+  "LLVMIsAAtomicRMWInst",
+  "LLVMIsABasicBlock",
+  "LLVMIsABinaryOperator",
+  "LLVMIsABitCastInst",
+  "LLVMIsABlockAddress",
+  "LLVMIsABranchInst",
+  "LLVMIsACallBrInst",
+  "LLVMIsACallInst",
+  "LLVMIsACastInst",
+  "LLVMIsACatchPadInst",
+  "LLVMIsACatchReturnInst",
+  "LLVMIsACatchSwitchInst",
+  "LLVMIsACleanupPadInst",
+  "LLVMIsACleanupReturnInst",
+  "LLVMIsACmpInst",
+  "LLVMIsAConstant",
+  "LLVMIsAConstantAggregateZero",
+  "LLVMIsAConstantArray",
+  "LLVMIsAConstantDataArray",
+  "LLVMIsAConstantDataSequential",
+  "LLVMIsAConstantDataVector",
+  "LLVMIsAConstantExpr",
+  "LLVMIsAConstantFP",
+  "LLVMIsAConstantInt",
+  "LLVMIsAConstantPointerNull",
+  "LLVMIsAConstantStruct",
+  "LLVMIsAConstantTokenNone",
+  "LLVMIsAConstantVector",
+  "LLVMIsADbgDeclareInst",
+  "LLVMIsADbgInfoIntrinsic",
+  "LLVMIsADbgLabelInst",
+  "LLVMIsADbgVariableIntrinsic",
+  "LLVMIsAExtractElementInst",
+  "LLVMIsAExtractValueInst",
+  "LLVMIsAFCmpInst",
+  "LLVMIsAFPExtInst",
+  "LLVMIsAFPToSIInst",
+  "LLVMIsAFPToUIInst",
+  "LLVMIsAFPTruncInst",
+  "LLVMIsAFenceInst",
+  "LLVMIsAFreezeInst",
+  "LLVMIsAFuncletPadInst",
+  "LLVMIsAFunction",
+  "LLVMIsAGetElementPtrInst",
+  "LLVMIsAGlobalAlias",
+  "LLVMIsAGlobalIFunc",
+  "LLVMIsAGlobalObject",
+  "LLVMIsAGlobalValue",
+  "LLVMIsAGlobalVariable",
+  "LLVMIsAICmpInst",
+  "LLVMIsAIndirectBrInst",
+  "LLVMIsAInlineAsm",
+  "LLVMIsAInsertElementInst",
+  "LLVMIsAInsertValueInst",
+  "LLVMIsAInstruction",
+  "LLVMIsAIntToPtrInst",
+  "LLVMIsAIntrinsicInst",
+  "LLVMIsAInvokeInst",
+  "LLVMIsALandingPadInst",
+  "LLVMIsALoadInst",
+  "LLVMIsAMDNode",
+  "LLVMIsAMDString",
+  "LLVMIsAMemCpyInst",
+  "LLVMIsAMemIntrinsic",
+  "LLVMIsAMemMoveInst",
+  "LLVMIsAMemSetInst",
+  "LLVMIsAPHINode",
+  "LLVMIsAPoisonValue",
+  "LLVMIsAPtrToIntInst",
+  "LLVMIsAResumeInst",
+  "LLVMIsAReturnInst",
+  "LLVMIsASExtInst",
+  "LLVMIsASIToFPInst",
+  "LLVMIsASelectInst",
+  "LLVMIsAShuffleVectorInst",
+  "LLVMIsAStoreInst",
+  "LLVMIsASwitchInst",
+  "LLVMIsATerminatorInst",
+  "LLVMIsATruncInst",
+  "LLVMIsAUIToFPInst",
+  "LLVMIsAUnaryInstruction",
+  "LLVMIsAUnaryOperator",
+  "LLVMIsAUndefValue",
+  "LLVMIsAUnreachableInst",
+  "LLVMIsAUser",
+  "LLVMIsAVAArgInst",
+  "LLVMIsAZExtInst",
+  "LLVMIsAtomicSingleThread",
+  "LLVMIsCleanup",
+  "LLVMIsConditional",
+  "LLVMIsConstant",
+  "LLVMIsConstantString",
+  "LLVMIsDeclaration",
+  "LLVMIsEnumAttribute",
+  "LLVMIsExternallyInitialized",
+  "LLVMIsFunctionVarArg",
+  "LLVMIsGlobalConstant",
+  "LLVMIsInBounds",
+  "LLVMIsLiteralStruct",
+  "LLVMIsMultithreaded",
+  "LLVMIsNull",
+  "LLVMIsOpaqueStruct",
+  "LLVMIsPackedStruct",
+  "LLVMIsPoison",
+  "LLVMIsRelocationIteratorAtEnd",
+  "LLVMIsSectionIteratorAtEnd",
+  "LLVMIsStringAttribute",
+  "LLVMIsSymbolIteratorAtEnd",
+  "LLVMIsTailCall",
+  "LLVMIsThreadLocal",
+  "LLVMIsTypeAttribute",
+  "LLVMIsUndef",
+  "LLVMJITCSymbolMapPair",
+  "LLVMJITEvaluatedSymbol",
+  "LLVMJITEventListenerRef",
+  "LLVMJITSymbolFlags",
+  "LLVMJITSymbolGenericFlags",
+  "LLVMJITSymbolGenericFlagsCallable",
+  "LLVMJITSymbolGenericFlagsExported",
+  "LLVMJITSymbolGenericFlagsMaterializationSideEffectsOnly",
+  "LLVMJITSymbolGenericFlagsWeak",
+  "LLVMJITSymbolGenericFlags__enumvalues",
+  "LLVMJITSymbolTargetFlags",
+  "LLVMLShr",
+  "LLVMLabelType",
+  "LLVMLabelTypeInContext",
+  "LLVMLabelTypeKind",
+  "LLVMLandingPad",
+  "LLVMLandingPadCatch",
+  "LLVMLandingPadClauseTy",
+  "LLVMLandingPadClauseTy__enumvalues",
+  "LLVMLandingPadFilter",
+  "LLVMLargestComdatSelectionKind",
+  "LLVMLinkInInterpreter",
+  "LLVMLinkInMCJIT",
+  "LLVMLinkModules2",
+  "LLVMLinkOnceAnyLinkage",
+  "LLVMLinkOnceODRAutoHideLinkage",
+  "LLVMLinkOnceODRLinkage",
+  "LLVMLinkage",
+  "LLVMLinkage__enumvalues",
+  "LLVMLinkerDestroySource",
+  "LLVMLinkerMode",
+  "LLVMLinkerMode__enumvalues",
+  "LLVMLinkerPreserveSource_Removed",
+  "LLVMLinkerPrivateLinkage",
+  "LLVMLinkerPrivateWeakLinkage",
+  "LLVMLittleEndian",
+  "LLVMLoad",
+  "LLVMLoadLibraryPermanently",
+  "LLVMLocalAsMetadataMetadataKind",
+  "LLVMLocalDynamicTLSModel",
+  "LLVMLocalExecTLSModel",
+  "LLVMLocalUnnamedAddr",
+  "LLVMLookupIntrinsicID",
+  "LLVMMCJITMemoryManagerRef",
+  "LLVMMDNode",
+  "LLVMMDNodeInContext",
+  "LLVMMDNodeInContext2",
+  "LLVMMDString",
+  "LLVMMDStringInContext",
+  "LLVMMDStringInContext2",
+  "LLVMMDStringMetadataKind",
+  "LLVMMDTupleMetadataKind",
+  "LLVMMSP430BUILTINCallConv",
+  "LLVMMSP430INTRCallConv",
+  "LLVMMachOUniversalBinaryCopyObjectForArch",
+  "LLVMMemoryBufferRef",
+  "LLVMMemoryDefValueKind",
+  "LLVMMemoryManagerAllocateCodeSectionCallback",
+  "LLVMMemoryManagerAllocateDataSectionCallback",
+  "LLVMMemoryManagerDestroyCallback",
+  "LLVMMemoryManagerFinalizeMemoryCallback",
+  "LLVMMemoryPhiValueKind",
+  "LLVMMemoryUseValueKind",
+  "LLVMMetadataAsValue",
+  "LLVMMetadataAsValueValueKind",
+  "LLVMMetadataKind",
+  "LLVMMetadataRef",
+  "LLVMMetadataReplaceAllUsesWith",
+  "LLVMMetadataTypeInContext",
+  "LLVMMetadataTypeKind",
+  "LLVMModuleCreateWithName",
+  "LLVMModuleCreateWithNameInContext",
+  "LLVMModuleFlagBehavior",
+  "LLVMModuleFlagBehaviorAppend",
+  "LLVMModuleFlagBehaviorAppendUnique",
+  "LLVMModuleFlagBehaviorError",
+  "LLVMModuleFlagBehaviorOverride",
+  "LLVMModuleFlagBehaviorRequire",
+  "LLVMModuleFlagBehaviorWarning",
+  "LLVMModuleFlagBehavior__enumvalues",
+  "LLVMModuleFlagEntriesGetFlagBehavior",
+  "LLVMModuleFlagEntriesGetKey",
+  "LLVMModuleFlagEntriesGetMetadata",
+  "LLVMModuleFlagEntry",
+  "LLVMModuleProviderRef",
+  "LLVMModuleRef",
+  "LLVMMoveBasicBlockAfter",
+  "LLVMMoveBasicBlockBefore",
+  "LLVMMoveToContainingSection",
+  "LLVMMoveToNextRelocation",
+  "LLVMMoveToNextSection",
+  "LLVMMoveToNextSymbol",
+  "LLVMMul",
+  "LLVMNamedMDNodeRef",
+  "LLVMNoDeduplicateComdatSelectionKind",
+  "LLVMNoUnnamedAddr",
+  "LLVMNormalizeTargetTriple",
+  "LLVMNotThreadLocal",
+  "LLVMObjectFile",
+  "LLVMObjectFileCopySectionIterator",
+  "LLVMObjectFileCopySymbolIterator",
+  "LLVMObjectFileIsSectionIteratorAtEnd",
+  "LLVMObjectFileIsSymbolIteratorAtEnd",
+  "LLVMObjectFileRef",
+  "LLVMOffsetOfElement",
+  "LLVMOpInfoCallback",
+  "LLVMOpcode",
+  "LLVMOpcode__enumvalues",
+  "LLVMOr",
+  "LLVMOrcAbsoluteSymbols",
+  "LLVMOrcCAPIDefinitionGeneratorTryToGenerateFunction",
+  "LLVMOrcCDependenceMapPair",
+  "LLVMOrcCDependenceMapPairs",
+  "LLVMOrcCLookupSet",
+  "LLVMOrcCLookupSetElement",
+  "LLVMOrcCSymbolAliasMapEntry",
+  "LLVMOrcCSymbolAliasMapPair",
+  "LLVMOrcCSymbolAliasMapPairs",
+  "LLVMOrcCSymbolFlagsMapPair",
+  "LLVMOrcCSymbolFlagsMapPairs",
+  "LLVMOrcCSymbolMapPairs",
+  "LLVMOrcCSymbolsList",
+  "LLVMOrcCreateCustomCAPIDefinitionGenerator",
+  "LLVMOrcCreateCustomMaterializationUnit",
+  "LLVMOrcCreateDumpObjects",
+  "LLVMOrcCreateDynamicLibrarySearchGeneratorForPath",
+  "LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess",
+  "LLVMOrcCreateLLJIT",
+  "LLVMOrcCreateLLJITBuilder",
+  "LLVMOrcCreateLocalIndirectStubsManager",
+  "LLVMOrcCreateLocalLazyCallThroughManager",
+  "LLVMOrcCreateNewThreadSafeContext",
+  "LLVMOrcCreateNewThreadSafeModule",
+  "LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager",
+  "LLVMOrcCreateStaticLibrarySearchGeneratorForPath",
+  "LLVMOrcDefinitionGeneratorRef",
+  "LLVMOrcDisposeCSymbolFlagsMap",
+  "LLVMOrcDisposeDefinitionGenerator",
+  "LLVMOrcDisposeDumpObjects",
+  "LLVMOrcDisposeIndirectStubsManager",
+  "LLVMOrcDisposeJITTargetMachineBuilder",
+  "LLVMOrcDisposeLLJIT",
+  "LLVMOrcDisposeLLJITBuilder",
+  "LLVMOrcDisposeLazyCallThroughManager",
+  "LLVMOrcDisposeMaterializationResponsibility",
+  "LLVMOrcDisposeMaterializationUnit",
+  "LLVMOrcDisposeObjectLayer",
+  "LLVMOrcDisposeSymbols",
+  "LLVMOrcDisposeThreadSafeContext",
+  "LLVMOrcDisposeThreadSafeModule",
+  "LLVMOrcDumpObjectsRef",
+  "LLVMOrcDumpObjects_CallOperator",
+  "LLVMOrcErrorReporterFunction",
+  "LLVMOrcExecutionSessionCreateBareJITDylib",
+  "LLVMOrcExecutionSessionCreateJITDylib",
+  "LLVMOrcExecutionSessionGetJITDylibByName",
+  "LLVMOrcExecutionSessionGetSymbolStringPool",
+  "LLVMOrcExecutionSessionIntern",
+  "LLVMOrcExecutionSessionRef",
+  "LLVMOrcExecutionSessionSetErrorReporter",
+  "LLVMOrcExecutorAddress",
+  "LLVMOrcGenericIRModuleOperationFunction",
+  "LLVMOrcIRTransformLayerEmit",
+  "LLVMOrcIRTransformLayerRef",
+  "LLVMOrcIRTransformLayerSetTransform",
+  "LLVMOrcIRTransformLayerTransformFunction",
+  "LLVMOrcIndirectStubsManagerRef",
+  "LLVMOrcJITDylibAddGenerator",
+  "LLVMOrcJITDylibClear",
+  "LLVMOrcJITDylibCreateResourceTracker",
+  "LLVMOrcJITDylibDefine",
+  "LLVMOrcJITDylibGetDefaultResourceTracker",
+  "LLVMOrcJITDylibLookupFlags",
+  "LLVMOrcJITDylibLookupFlagsMatchAllSymbols",
+  "LLVMOrcJITDylibLookupFlagsMatchExportedSymbolsOnly",
+  "LLVMOrcJITDylibLookupFlags__enumvalues",
+  "LLVMOrcJITDylibRef",
+  "LLVMOrcJITTargetAddress",
+  "LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine",
+  "LLVMOrcJITTargetMachineBuilderDetectHost",
+  "LLVMOrcJITTargetMachineBuilderGetTargetTriple",
+  "LLVMOrcJITTargetMachineBuilderRef",
+  "LLVMOrcJITTargetMachineBuilderSetTargetTriple",
+  "LLVMOrcLLJITAddLLVMIRModule",
+  "LLVMOrcLLJITAddLLVMIRModuleWithRT",
+  "LLVMOrcLLJITAddObjectFile",
+  "LLVMOrcLLJITAddObjectFileWithRT",
+  "LLVMOrcLLJITBuilderObjectLinkingLayerCreatorFunction",
+  "LLVMOrcLLJITBuilderRef",
+  "LLVMOrcLLJITBuilderSetJITTargetMachineBuilder",
+  "LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator",
+  "LLVMOrcLLJITGetDataLayoutStr",
+  "LLVMOrcLLJITGetExecutionSession",
+  "LLVMOrcLLJITGetGlobalPrefix",
+  "LLVMOrcLLJITGetIRTransformLayer",
+  "LLVMOrcLLJITGetMainJITDylib",
+  "LLVMOrcLLJITGetObjLinkingLayer",
+  "LLVMOrcLLJITGetObjTransformLayer",
+  "LLVMOrcLLJITGetTripleString",
+  "LLVMOrcLLJITLookup",
+  "LLVMOrcLLJITMangleAndIntern",
+  "LLVMOrcLLJITRef",
+  "LLVMOrcLazyCallThroughManagerRef",
+  "LLVMOrcLazyReexports",
+  "LLVMOrcLookupKind",
+  "LLVMOrcLookupKindDLSym",
+  "LLVMOrcLookupKindStatic",
+  "LLVMOrcLookupKind__enumvalues",
+  "LLVMOrcLookupStateRef",
+  "LLVMOrcMaterializationResponsibilityAddDependencies",
+  "LLVMOrcMaterializationResponsibilityAddDependenciesForAll",
+  "LLVMOrcMaterializationResponsibilityDefineMaterializing",
+  "LLVMOrcMaterializationResponsibilityDelegate",
+  "LLVMOrcMaterializationResponsibilityFailMaterialization",
+  "LLVMOrcMaterializationResponsibilityGetExecutionSession",
+  "LLVMOrcMaterializationResponsibilityGetInitializerSymbol",
+  "LLVMOrcMaterializationResponsibilityGetRequestedSymbols",
+  "LLVMOrcMaterializationResponsibilityGetSymbols",
+  "LLVMOrcMaterializationResponsibilityGetTargetDylib",
+  "LLVMOrcMaterializationResponsibilityNotifyEmitted",
+  "LLVMOrcMaterializationResponsibilityNotifyResolved",
+  "LLVMOrcMaterializationResponsibilityRef",
+  "LLVMOrcMaterializationResponsibilityReplace",
+  "LLVMOrcMaterializationUnitDestroyFunction",
+  "LLVMOrcMaterializationUnitDiscardFunction",
+  "LLVMOrcMaterializationUnitMaterializeFunction",
+  "LLVMOrcMaterializationUnitRef",
+  "LLVMOrcObjectLayerAddObjectFile",
+  "LLVMOrcObjectLayerAddObjectFileWithRT",
+  "LLVMOrcObjectLayerEmit",
+  "LLVMOrcObjectLayerRef",
+  "LLVMOrcObjectLinkingLayerRef",
+  "LLVMOrcObjectTransformLayerRef",
+  "LLVMOrcObjectTransformLayerSetTransform",
+  "LLVMOrcObjectTransformLayerTransformFunction",
+  "LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener",
+  "LLVMOrcReleaseResourceTracker",
+  "LLVMOrcReleaseSymbolStringPoolEntry",
+  "LLVMOrcResourceTrackerRef",
+  "LLVMOrcResourceTrackerRemove",
+  "LLVMOrcResourceTrackerTransferTo",
+  "LLVMOrcRetainSymbolStringPoolEntry",
+  "LLVMOrcSymbolLookupFlags",
+  "LLVMOrcSymbolLookupFlagsRequiredSymbol",
+  "LLVMOrcSymbolLookupFlagsWeaklyReferencedSymbol",
+  "LLVMOrcSymbolLookupFlags__enumvalues",
+  "LLVMOrcSymbolPredicate",
+  "LLVMOrcSymbolStringPoolClearDeadEntries",
+  "LLVMOrcSymbolStringPoolEntryRef",
+  "LLVMOrcSymbolStringPoolEntryStr",
+  "LLVMOrcSymbolStringPoolRef",
+  "LLVMOrcThreadSafeContextGetContext",
+  "LLVMOrcThreadSafeContextRef",
+  "LLVMOrcThreadSafeModuleRef",
+  "LLVMOrcThreadSafeModuleWithModuleDo",
+  "LLVMPHI",
+  "LLVMPPCFP128Type",
+  "LLVMPPCFP128TypeInContext",
+  "LLVMPPC_FP128TypeKind",
+  "LLVMPTXDeviceCallConv",
+  "LLVMPTXKernelCallConv",
+  "LLVMParseBitcode",
+  "LLVMParseBitcode2",
+  "LLVMParseBitcodeInContext",
+  "LLVMParseBitcodeInContext2",
+  "LLVMParseCommandLineOptions",
+  "LLVMParseIRInContext",
+  "LLVMPassBuilderOptionsRef",
+  "LLVMPassBuilderOptionsSetCallGraphProfile",
+  "LLVMPassBuilderOptionsSetDebugLogging",
+  "LLVMPassBuilderOptionsSetForgetAllSCEVInLoopUnroll",
+  "LLVMPassBuilderOptionsSetLicmMssaNoAccForPromotionCap",
+  "LLVMPassBuilderOptionsSetLicmMssaOptCap",
+  "LLVMPassBuilderOptionsSetLoopInterleaving",
+  "LLVMPassBuilderOptionsSetLoopUnrolling",
+  "LLVMPassBuilderOptionsSetLoopVectorization",
+  "LLVMPassBuilderOptionsSetMergeFunctions",
+  "LLVMPassBuilderOptionsSetSLPVectorization",
+  "LLVMPassBuilderOptionsSetVerifyEach",
+  "LLVMPassManagerBuilderAddCoroutinePassesToExtensionPoints",
+  "LLVMPassManagerBuilderCreate",
+  "LLVMPassManagerBuilderDispose",
+  "LLVMPassManagerBuilderPopulateFunctionPassManager",
+  "LLVMPassManagerBuilderPopulateLTOPassManager",
+  "LLVMPassManagerBuilderPopulateModulePassManager",
+  "LLVMPassManagerBuilderRef",
+  "LLVMPassManagerBuilderSetDisableSimplifyLibCalls",
+  "LLVMPassManagerBuilderSetDisableUnitAtATime",
+  "LLVMPassManagerBuilderSetDisableUnrollLoops",
+  "LLVMPassManagerBuilderSetOptLevel",
+  "LLVMPassManagerBuilderSetSizeLevel",
+  "LLVMPassManagerBuilderUseInlinerWithThreshold",
+  "LLVMPassManagerRef",
+  "LLVMPassRegistryRef",
+  "LLVMPointerSize",
+  "LLVMPointerSizeForAS",
+  "LLVMPointerType",
+  "LLVMPointerTypeKind",
+  "LLVMPoisonValueValueKind",
+  "LLVMPositionBuilder",
+  "LLVMPositionBuilderAtEnd",
+  "LLVMPositionBuilderBefore",
+  "LLVMPreferredAlignmentOfGlobal",
+  "LLVMPreferredAlignmentOfType",
+  "LLVMPreserveAllCallConv",
+  "LLVMPreserveMostCallConv",
+  "LLVMPrintMessageAction",
+  "LLVMPrintModuleToFile",
+  "LLVMPrintModuleToString",
+  "LLVMPrintTypeToString",
+  "LLVMPrintValueToString",
+  "LLVMPrivateLinkage",
+  "LLVMProtectedVisibility",
+  "LLVMPtrToInt",
+  "LLVMRealOEQ",
+  "LLVMRealOGE",
+  "LLVMRealOGT",
+  "LLVMRealOLE",
+  "LLVMRealOLT",
+  "LLVMRealONE",
+  "LLVMRealORD",
+  "LLVMRealPredicate",
+  "LLVMRealPredicateFalse",
+  "LLVMRealPredicateTrue",
+  "LLVMRealPredicate__enumvalues",
+  "LLVMRealUEQ",
+  "LLVMRealUGE",
+  "LLVMRealUGT",
+  "LLVMRealULE",
+  "LLVMRealULT",
+  "LLVMRealUNE",
+  "LLVMRealUNO",
+  "LLVMRecompileAndRelinkFunction",
+  "LLVMRelocDefault",
+  "LLVMRelocDynamicNoPic",
+  "LLVMRelocMode",
+  "LLVMRelocMode__enumvalues",
+  "LLVMRelocPIC",
+  "LLVMRelocROPI",
+  "LLVMRelocROPI_RWPI",
+  "LLVMRelocRWPI",
+  "LLVMRelocStatic",
+  "LLVMRelocationIteratorRef",
+  "LLVMRemarkArgGetDebugLoc",
+  "LLVMRemarkArgGetKey",
+  "LLVMRemarkArgGetValue",
+  "LLVMRemarkArgRef",
+  "LLVMRemarkDebugLocGetSourceColumn",
+  "LLVMRemarkDebugLocGetSourceFilePath",
+  "LLVMRemarkDebugLocGetSourceLine",
+  "LLVMRemarkDebugLocRef",
+  "LLVMRemarkEntryDispose",
+  "LLVMRemarkEntryGetDebugLoc",
+  "LLVMRemarkEntryGetFirstArg",
+  "LLVMRemarkEntryGetFunctionName",
+  "LLVMRemarkEntryGetHotness",
+  "LLVMRemarkEntryGetNextArg",
+  "LLVMRemarkEntryGetNumArgs",
+  "LLVMRemarkEntryGetPassName",
+  "LLVMRemarkEntryGetRemarkName",
+  "LLVMRemarkEntryGetType",
+  "LLVMRemarkEntryRef",
+  "LLVMRemarkParserCreateBitstream",
+  "LLVMRemarkParserCreateYAML",
+  "LLVMRemarkParserDispose",
+  "LLVMRemarkParserGetErrorMessage",
+  "LLVMRemarkParserGetNext",
+  "LLVMRemarkParserHasError",
+  "LLVMRemarkParserRef",
+  "LLVMRemarkStringGetData",
+  "LLVMRemarkStringGetLen",
+  "LLVMRemarkStringRef",
+  "LLVMRemarkType",
+  "LLVMRemarkTypeAnalysis",
+  "LLVMRemarkTypeAnalysisAliasing",
+  "LLVMRemarkTypeAnalysisFPCommute",
+  "LLVMRemarkTypeFailure",
+  "LLVMRemarkTypeMissed",
+  "LLVMRemarkTypePassed",
+  "LLVMRemarkTypeUnknown",
+  "LLVMRemarkVersion",
+  "LLVMRemoveBasicBlockFromParent",
+  "LLVMRemoveCallSiteEnumAttribute",
+  "LLVMRemoveCallSiteStringAttribute",
+  "LLVMRemoveEnumAttributeAtIndex",
+  "LLVMRemoveGlobalIFunc",
+  "LLVMRemoveModule",
+  "LLVMRemoveStringAttributeAtIndex",
+  "LLVMReplaceAllUsesWith",
+  "LLVMResetFatalErrorHandler",
+  "LLVMResume",
+  "LLVMRet",
+  "LLVMReturnStatusAction",
+  "LLVMRunFunction",
+  "LLVMRunFunctionAsMain",
+  "LLVMRunFunctionPassManager",
+  "LLVMRunPassManager",
+  "LLVMRunPasses",
+  "LLVMRunStaticConstructors",
+  "LLVMRunStaticDestructors",
+  "LLVMSDiv",
+  "LLVMSExt",
+  "LLVMSIToFP",
+  "LLVMSPIRFUNCCallConv",
+  "LLVMSPIRKERNELCallConv",
+  "LLVMSRem",
+  "LLVMSameSizeComdatSelectionKind",
+  "LLVMScalableVectorType",
+  "LLVMScalableVectorTypeKind",
+  "LLVMSearchForAddressOfSymbol",
+  "LLVMSectionIteratorRef",
+  "LLVMSelect",
+  "LLVMSetAlignment",
+  "LLVMSetArgOperand",
+  "LLVMSetAtomicRMWBinOp",
+  "LLVMSetAtomicSingleThread",
+  "LLVMSetCleanup",
+  "LLVMSetCmpXchgFailureOrdering",
+  "LLVMSetCmpXchgSuccessOrdering",
+  "LLVMSetComdat",
+  "LLVMSetComdatSelectionKind",
+  "LLVMSetCondition",
+  "LLVMSetCurrentDebugLocation",
+  "LLVMSetCurrentDebugLocation2",
+  "LLVMSetDLLStorageClass",
+  "LLVMSetDataLayout",
+  "LLVMSetDisasmOptions",
+  "LLVMSetExternallyInitialized",
+  "LLVMSetFunctionCallConv",
+  "LLVMSetGC",
+  "LLVMSetGlobalConstant",
+  "LLVMSetGlobalIFuncResolver",
+  "LLVMSetInitializer",
+  "LLVMSetInstDebugLocation",
+  "LLVMSetInstrParamAlignment",
+  "LLVMSetInstructionCallConv",
+  "LLVMSetIsInBounds",
+  "LLVMSetLinkage",
+  "LLVMSetMetadata",
+  "LLVMSetModuleDataLayout",
+  "LLVMSetModuleIdentifier",
+  "LLVMSetModuleInlineAsm",
+  "LLVMSetModuleInlineAsm2",
+  "LLVMSetNormalDest",
+  "LLVMSetOperand",
+  "LLVMSetOrdering",
+  "LLVMSetParamAlignment",
+  "LLVMSetParentCatchSwitch",
+  "LLVMSetPersonalityFn",
+  "LLVMSetSection",
+  "LLVMSetSourceFileName",
+  "LLVMSetSubprogram",
+  "LLVMSetSuccessor",
+  "LLVMSetTailCall",
+  "LLVMSetTarget",
+  "LLVMSetTargetMachineAsmVerbosity",
+  "LLVMSetThreadLocal",
+  "LLVMSetThreadLocalMode",
+  "LLVMSetUnnamedAddr",
+  "LLVMSetUnnamedAddress",
+  "LLVMSetUnwindDest",
+  "LLVMSetValueName",
+  "LLVMSetValueName2",
+  "LLVMSetVisibility",
+  "LLVMSetVolatile",
+  "LLVMSetWeak",
+  "LLVMShl",
+  "LLVMShuffleVector",
+  "LLVMShutdown",
+  "LLVMSizeOf",
+  "LLVMSizeOfTypeInBits",
+  "LLVMStartMultithreaded",
+  "LLVMStopMultithreaded",
+  "LLVMStore",
+  "LLVMStoreSizeOfType",
+  "LLVMStripModuleDebugInfo",
+  "LLVMStructCreateNamed",
+  "LLVMStructGetTypeAtIndex",
+  "LLVMStructSetBody",
+  "LLVMStructType",
+  "LLVMStructTypeInContext",
+  "LLVMStructTypeKind",
+  "LLVMSub",
+  "LLVMSwiftCallConv",
+  "LLVMSwitch",
+  "LLVMSymbolIteratorRef",
+  "LLVMSymbolLookupCallback",
+  "LLVMTargetDataRef",
+  "LLVMTargetHasAsmBackend",
+  "LLVMTargetHasJIT",
+  "LLVMTargetHasTargetMachine",
+  "LLVMTargetLibraryInfoRef",
+  "LLVMTargetMachineEmitToFile",
+  "LLVMTargetMachineEmitToMemoryBuffer",
+  "LLVMTargetMachineRef",
+  "LLVMTargetRef",
+  "LLVMTemporaryMDNode",
+  "LLVMThreadLocalMode",
+  "LLVMThreadLocalMode__enumvalues",
+  "LLVMTokenTypeInContext",
+  "LLVMTokenTypeKind",
+  "LLVMTrunc",
+  "LLVMTypeIsSized",
+  "LLVMTypeKind",
+  "LLVMTypeKind__enumvalues",
+  "LLVMTypeOf",
+  "LLVMTypeRef",
+  "LLVMUDiv",
+  "LLVMUIToFP",
+  "LLVMURem",
+  "LLVMUndefValueValueKind",
+  "LLVMUnnamedAddr",
+  "LLVMUnnamedAddr__enumvalues",
+  "LLVMUnreachable",
+  "LLVMUseRef",
+  "LLVMUserOp1",
+  "LLVMUserOp2",
+  "LLVMVAArg",
+  "LLVMValueAsBasicBlock",
+  "LLVMValueAsMetadata",
+  "LLVMValueIsBasicBlock",
+  "LLVMValueKind",
+  "LLVMValueKind__enumvalues",
+  "LLVMValueMetadataEntriesGetKind",
+  "LLVMValueMetadataEntriesGetMetadata",
+  "LLVMValueMetadataEntry",
+  "LLVMValueRef",
+  "LLVMVectorType",
+  "LLVMVectorTypeKind",
+  "LLVMVerifierFailureAction",
+  "LLVMVerifierFailureAction__enumvalues",
+  "LLVMVerifyFunction",
+  "LLVMVerifyModule",
+  "LLVMViewFunctionCFG",
+  "LLVMViewFunctionCFGOnly",
+  "LLVMVisibility",
+  "LLVMVisibility__enumvalues",
+  "LLVMVoidType",
+  "LLVMVoidTypeInContext",
+  "LLVMVoidTypeKind",
+  "LLVMWeakAnyLinkage",
+  "LLVMWeakODRLinkage",
+  "LLVMWebKitJSCallConv",
+  "LLVMWin64CallConv",
+  "LLVMWriteBitcodeToFD",
+  "LLVMWriteBitcodeToFile",
+  "LLVMWriteBitcodeToFileHandle",
+  "LLVMWriteBitcodeToMemoryBuffer",
+  "LLVMX8664SysVCallConv",
+  "LLVMX86AMXType",
+  "LLVMX86AMXTypeInContext",
+  "LLVMX86FP80Type",
+  "LLVMX86FP80TypeInContext",
+  "LLVMX86FastcallCallConv",
+  "LLVMX86INTRCallConv",
+  "LLVMX86MMXType",
+  "LLVMX86MMXTypeInContext",
+  "LLVMX86RegCallCallConv",
+  "LLVMX86StdcallCallConv",
+  "LLVMX86ThisCallCallConv",
+  "LLVMX86VectorCallCallConv",
+  "LLVMX86_AMXTypeKind",
+  "LLVMX86_FP80TypeKind",
+  "LLVMX86_MMXTypeKind",
+  "LLVMXor",
+  "LLVMYieldCallback",
+  "LLVMZExt",
+  "LLVM_C_ANALYSIS_H",
+  "LLVM_C_BITREADER_H",
+  "LLVM_C_BITWRITER_H",
+  "LLVM_C_COMDAT_H",
+  "LLVM_C_CORE_H",
+  "LLVM_C_DATATYPES_H",
+  "LLVM_C_DEBUGINFO_H",
+  "LLVM_C_DEPRECATED_H",
+  "LLVM_C_DISASSEMBLERTYPES_H",
+  "LLVM_C_DISASSEMBLER_H",
+  "LLVM_C_ERRORHANDLING_H",
+  "LLVM_C_ERROR_H",
+  "LLVM_C_EXECUTIONENGINE_H",
+  "LLVM_C_EXTERNC_H",
+  "LLVM_C_INITIALIZATION_H",
+  "LLVM_C_IRREADER_H",
+  "LLVM_C_LINKER_H",
+  "LLVM_C_LLJIT_H",
+  "LLVM_C_LTO_H",
+  "LLVM_C_OBJECT_H",
+  "LLVM_C_ORCEE_H",
+  "LLVM_C_ORC_H",
+  "LLVM_C_REMARKS_H",
+  "LLVM_C_SUPPORT_H",
+  "LLVM_C_TARGETMACHINE_H",
+  "LLVM_C_TARGET_H",
+  "LLVM_C_TRANSFORMS_AGGRESSIVEINSTCOMBINE_H",
+  "LLVM_C_TRANSFORMS_COROUTINES_H",
+  "LLVM_C_TRANSFORMS_INSTCOMBINE_H",
+  "LLVM_C_TRANSFORMS_IPO_H",
+  "LLVM_C_TRANSFORMS_PASSBUILDER_H",
+  "LLVM_C_TRANSFORMS_PASSMANAGERBUILDER_H",
+  "LLVM_C_TRANSFORMS_SCALAR_H",
+  "LLVM_C_TRANSFORMS_UTILS_H",
+  "LLVM_C_TRANSFORMS_VECTORIZE_H",
+  "LLVM_C_TYPES_H",
+  "LTOObjectBuffer",
+  "LTO_API_VERSION",
+  "LTO_CODEGEN_PIC_MODEL_DEFAULT",
+  "LTO_CODEGEN_PIC_MODEL_DYNAMIC",
+  "LTO_CODEGEN_PIC_MODEL_DYNAMIC_NO_PIC",
+  "LTO_CODEGEN_PIC_MODEL_STATIC",
+  "LTO_DEBUG_MODEL_DWARF",
+  "LTO_DEBUG_MODEL_NONE",
+  "LTO_DS_ERROR",
+  "LTO_DS_NOTE",
+  "LTO_DS_REMARK",
+  "LTO_DS_WARNING",
+  "LTO_SYMBOL_ALIAS",
+  "LTO_SYMBOL_ALIGNMENT_MASK",
+  "LTO_SYMBOL_COMDAT",
+  "LTO_SYMBOL_DEFINITION_MASK",
+  "LTO_SYMBOL_DEFINITION_REGULAR",
+  "LTO_SYMBOL_DEFINITION_TENTATIVE",
+  "LTO_SYMBOL_DEFINITION_UNDEFINED",
+  "LTO_SYMBOL_DEFINITION_WEAK",
+  "LTO_SYMBOL_DEFINITION_WEAKUNDEF",
+  "LTO_SYMBOL_PERMISSIONS_CODE",
+  "LTO_SYMBOL_PERMISSIONS_DATA",
+  "LTO_SYMBOL_PERMISSIONS_MASK",
+  "LTO_SYMBOL_PERMISSIONS_RODATA",
+  "LTO_SYMBOL_SCOPE_DEFAULT",
+  "LTO_SYMBOL_SCOPE_DEFAULT_CAN_BE_HIDDEN",
+  "LTO_SYMBOL_SCOPE_HIDDEN",
+  "LTO_SYMBOL_SCOPE_INTERNAL",
+  "LTO_SYMBOL_SCOPE_MASK",
+  "LTO_SYMBOL_SCOPE_PROTECTED",
+  "REMARKS_API_VERSION",
+  "c__EA_LLVMAtomicOrdering",
+  "c__EA_LLVMAtomicRMWBinOp",
+  "c__EA_LLVMBinaryType",
+  "c__EA_LLVMCallConv",
+  "c__EA_LLVMCodeGenFileType",
+  "c__EA_LLVMCodeGenOptLevel",
+  "c__EA_LLVMCodeModel",
+  "c__EA_LLVMComdatSelectionKind",
+  "c__EA_LLVMDIFlags",
+  "c__EA_LLVMDLLStorageClass",
+  "c__EA_LLVMDWARFEmissionKind",
+  "c__EA_LLVMDWARFMacinfoRecordType",
+  "c__EA_LLVMDWARFSourceLanguage",
+  "c__EA_LLVMDiagnosticSeverity",
+  "c__EA_LLVMInlineAsmDialect",
+  "c__EA_LLVMIntPredicate",
+  "c__EA_LLVMJITSymbolGenericFlags",
+  "c__EA_LLVMLandingPadClauseTy",
+  "c__EA_LLVMLinkage",
+  "c__EA_LLVMLinkerMode",
+  "c__EA_LLVMModuleFlagBehavior",
+  "c__EA_LLVMOpcode",
+  "c__EA_LLVMOrcJITDylibLookupFlags",
+  "c__EA_LLVMOrcLookupKind",
+  "c__EA_LLVMOrcSymbolLookupFlags",
+  "c__EA_LLVMRealPredicate",
+  "c__EA_LLVMRelocMode",
+  "c__EA_LLVMThreadLocalMode",
+  "c__EA_LLVMTypeKind",
+  "c__EA_LLVMUnnamedAddr",
+  "c__EA_LLVMValueKind",
+  "c__EA_LLVMVerifierFailureAction",
+  "c__EA_LLVMVisibility",
+  "c__EA_lto_codegen_diagnostic_severity_t",
+  "c__EA_lto_codegen_model",
+  "c__EA_lto_debug_model",
+  "c__EA_lto_symbol_attributes",
+  "c__Ea_LLVMAttributeReturnIndex",
+  "c__Ea_LLVMMDStringMetadataKind",
+  "int64_t",
+  "lto_api_version",
+  "lto_bool_t",
+  "lto_code_gen_t",
+  "lto_codegen_add_module",
+  "lto_codegen_add_must_preserve_symbol",
+  "lto_codegen_compile",
+  "lto_codegen_compile_optimized",
+  "lto_codegen_compile_to_file",
+  "lto_codegen_create",
+  "lto_codegen_create_in_local_context",
+  "lto_codegen_debug_options",
+  "lto_codegen_debug_options_array",
+  "lto_codegen_diagnostic_severity_t",
+  "lto_codegen_diagnostic_severity_t__enumvalues",
+  "lto_codegen_dispose",
+  "lto_codegen_model",
+  "lto_codegen_model__enumvalues",
+  "lto_codegen_optimize",
+  "lto_codegen_set_assembler_args",
+  "lto_codegen_set_assembler_path",
+  "lto_codegen_set_cpu",
+  "lto_codegen_set_debug_model",
+  "lto_codegen_set_diagnostic_handler",
+  "lto_codegen_set_module",
+  "lto_codegen_set_pic_model",
+  "lto_codegen_set_should_embed_uselists",
+  "lto_codegen_set_should_internalize",
+  "lto_codegen_write_merged_modules",
+  "lto_debug_model",
+  "lto_debug_model__enumvalues",
+  "lto_diagnostic_handler_t",
+  "lto_get_error_message",
+  "lto_get_version",
+  "lto_initialize_disassembler",
+  "lto_input_create",
+  "lto_input_dispose",
+  "lto_input_get_dependent_library",
+  "lto_input_get_num_dependent_libraries",
+  "lto_input_t",
+  "lto_module_create",
+  "lto_module_create_from_fd",
+  "lto_module_create_from_fd_at_offset",
+  "lto_module_create_from_memory",
+  "lto_module_create_from_memory_with_path",
+  "lto_module_create_in_codegen_context",
+  "lto_module_create_in_local_context",
+  "lto_module_dispose",
+  "lto_module_get_linkeropts",
+  "lto_module_get_macho_cputype",
+  "lto_module_get_num_symbols",
+  "lto_module_get_symbol_attribute",
+  "lto_module_get_symbol_name",
+  "lto_module_get_target_triple",
+  "lto_module_has_ctor_dtor",
+  "lto_module_has_objc_category",
+  "lto_module_is_object_file",
+  "lto_module_is_object_file_for_target",
+  "lto_module_is_object_file_in_memory",
+  "lto_module_is_object_file_in_memory_for_target",
+  "lto_module_is_thinlto",
+  "lto_module_set_target_triple",
+  "lto_module_t",
+  "lto_runtime_lib_symbols_list",
+  "lto_set_debug_options",
+  "lto_symbol_attributes",
+  "lto_symbol_attributes__enumvalues",
+  "off_t",
+  "size_t",
+  "struct_LLVMComdat",
+  "struct_LLVMMCJITCompilerOptions",
+  "struct_LLVMOpInfo1",
+  "struct_LLVMOpInfoSymbol1",
+  "struct_LLVMOpaqueAttributeRef",
+  "struct_LLVMOpaqueBasicBlock",
+  "struct_LLVMOpaqueBinary",
+  "struct_LLVMOpaqueBuilder",
+  "struct_LLVMOpaqueContext",
+  "struct_LLVMOpaqueDIBuilder",
+  "struct_LLVMOpaqueDiagnosticInfo",
+  "struct_LLVMOpaqueError",
+  "struct_LLVMOpaqueExecutionEngine",
+  "struct_LLVMOpaqueGenericValue",
+  "struct_LLVMOpaqueJITEventListener",
+  "struct_LLVMOpaqueLTOCodeGenerator",
+  "struct_LLVMOpaqueLTOInput",
+  "struct_LLVMOpaqueLTOModule",
+  "struct_LLVMOpaqueMCJITMemoryManager",
+  "struct_LLVMOpaqueMemoryBuffer",
+  "struct_LLVMOpaqueMetadata",
+  "struct_LLVMOpaqueModule",
+  "struct_LLVMOpaqueModuleFlagEntry",
+  "struct_LLVMOpaqueModuleProvider",
+  "struct_LLVMOpaqueNamedMDNode",
+  "struct_LLVMOpaqueObjectFile",
+  "struct_LLVMOpaquePassBuilderOptions",
+  "struct_LLVMOpaquePassManager",
+  "struct_LLVMOpaquePassManagerBuilder",
+  "struct_LLVMOpaquePassRegistry",
+  "struct_LLVMOpaqueRelocationIterator",
+  "struct_LLVMOpaqueSectionIterator",
+  "struct_LLVMOpaqueSymbolIterator",
+  "struct_LLVMOpaqueTargetData",
+  "struct_LLVMOpaqueTargetLibraryInfotData",
+  "struct_LLVMOpaqueTargetMachine",
+  "struct_LLVMOpaqueThinLTOCodeGenerator",
+  "struct_LLVMOpaqueType",
+  "struct_LLVMOpaqueUse",
+  "struct_LLVMOpaqueValue",
+  "struct_LLVMOpaqueValueMetadataEntry",
+  "struct_LLVMOrcOpaqueDefinitionGenerator",
+  "struct_LLVMOrcOpaqueDumpObjects",
+  "struct_LLVMOrcOpaqueExecutionSession",
+  "struct_LLVMOrcOpaqueIRTransformLayer",
+  "struct_LLVMOrcOpaqueIndirectStubsManager",
+  "struct_LLVMOrcOpaqueJITDylib",
+  "struct_LLVMOrcOpaqueJITTargetMachineBuilder",
+  "struct_LLVMOrcOpaqueLLJIT",
+  "struct_LLVMOrcOpaqueLLJITBuilder",
+  "struct_LLVMOrcOpaqueLazyCallThroughManager",
+  "struct_LLVMOrcOpaqueLookupState",
+  "struct_LLVMOrcOpaqueMaterializationResponsibility",
+  "struct_LLVMOrcOpaqueMaterializationUnit",
+  "struct_LLVMOrcOpaqueObjectLayer",
+  "struct_LLVMOrcOpaqueObjectLinkingLayer",
+  "struct_LLVMOrcOpaqueObjectTransformLayer",
+  "struct_LLVMOrcOpaqueResourceTracker",
+  "struct_LLVMOrcOpaqueSymbolStringPool",
+  "struct_LLVMOrcOpaqueSymbolStringPoolEntry",
+  "struct_LLVMOrcOpaqueThreadSafeContext",
+  "struct_LLVMOrcOpaqueThreadSafeModule",
+  "struct_LLVMRemarkOpaqueArg",
+  "struct_LLVMRemarkOpaqueDebugLoc",
+  "struct_LLVMRemarkOpaqueEntry",
+  "struct_LLVMRemarkOpaqueParser",
+  "struct_LLVMRemarkOpaqueString",
+  "struct_LLVMTarget",
+  "struct_c__SA_LLVMJITCSymbolMapPair",
+  "struct_c__SA_LLVMJITEvaluatedSymbol",
+  "struct_c__SA_LLVMJITSymbolFlags",
+  "struct_c__SA_LLVMOrcCDependenceMapPair",
+  "struct_c__SA_LLVMOrcCLookupSetElement",
+  "struct_c__SA_LLVMOrcCSymbolAliasMapEntry",
+  "struct_c__SA_LLVMOrcCSymbolAliasMapPair",
+  "struct_c__SA_LLVMOrcCSymbolFlagsMapPair",
+  "struct_c__SA_LLVMOrcCSymbolsList",
+  "struct_c__SA_LTOObjectBuffer",
+  "thinlto_code_gen_t",
+  "thinlto_codegen_add_cross_referenced_symbol",
+  "thinlto_codegen_add_module",
+  "thinlto_codegen_add_must_preserve_symbol",
+  "thinlto_codegen_disable_codegen",
+  "thinlto_codegen_dispose",
+  "thinlto_codegen_process",
+  "thinlto_codegen_set_cache_dir",
+  "thinlto_codegen_set_cache_entry_expiration",
+  "thinlto_codegen_set_cache_pruning_interval",
+  "thinlto_codegen_set_cache_size_bytes",
+  "thinlto_codegen_set_cache_size_files",
+  "thinlto_codegen_set_cache_size_megabytes",
+  "thinlto_codegen_set_codegen_only",
+  "thinlto_codegen_set_cpu",
+  "thinlto_codegen_set_final_cache_size_relative_to_available_space",
+  "thinlto_codegen_set_pic_model",
+  "thinlto_codegen_set_savetemps_dir",
+  "thinlto_create_codegen",
+  "thinlto_debug_options",
+  "thinlto_module_get_num_object_files",
+  "thinlto_module_get_num_objects",
+  "thinlto_module_get_object",
+  "thinlto_module_get_object_file",
+  "thinlto_set_generated_objects_dir",
+  "uint32_t",
+  "uint64_t",
+  "uint8_t",
+]
